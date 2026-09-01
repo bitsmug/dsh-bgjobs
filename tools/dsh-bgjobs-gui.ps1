@@ -75,76 +75,136 @@ function Show-GuiDetail {
     $script:detail.Text = $sb.ToString()
 }
 
-# ── submit dialog (name / command / workdir / engine radio) ───────────────
+# ── 示例：倒计时（每 1 秒打印剩余时间，15 秒后发 Toast 系统通知）─────────
+$script:CountdownExampleName = '倒计时演示'
+$script:CountdownExampleWorkdir = [Environment]::GetFolderPath('MyDocuments')
+$script:CountdownExample = @'
+$n = 15
+for ($i = $n; $i -ge 1; $i--) {
+    '{0,3} 秒后结束...' -f $i
+    Start-Sleep -Seconds 1
+}
+'倒计时结束！'
+try {
+    [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+    [Windows.UI.Notifications.ToastNotification, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+    [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
+    $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
+    $xml.LoadXml('<toast><visual><binding template="ToastGeneric"><text>bgjobs 提醒</text><text>倒计时结束（15 秒）</text></binding></visual></toast>')
+    $toast = New-Object Windows.UI.Notifications.ToastNotification($xml)
+    [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('bgjobs').Show($toast)
+} catch { '（Toast 通知失败，已写入日志）' }
+'@
+
+function Set-GuiCountdownExample {
+    # 填充三个输入框 + 自动选 pwsh 引擎（命令是 PowerShell 语法，bat 引擎无法运行）
+    $script:submitInputs[0].Text = $script:CountdownExampleName
+    $script:submitInputs[1].Text = $script:CountdownExample
+    $script:submitInputs[2].Text = $script:CountdownExampleWorkdir
+    $script:submitRadioPwsh.Checked = $true
+}
+
+# ── submit dialog (name / command / workdir / engine radio + example) ─────
 function Show-GuiSubmitDialog {
     $dlg = New-Object System.Windows.Forms.Form
     $dlg.Text = '提交后台任务'
-    $dlg.Size = New-Object System.Drawing.Size(560, 300)
+    $dlg.Size = New-Object System.Drawing.Size(560, 400)
     $dlg.StartPosition = 'CenterParent'
     $dlg.FormBorderStyle = 'FixedDialog'
     $dlg.MaximizeBox = $false
     $dlg.MinimizeBox = $false
 
-    $y = 14
-    $labels = @('任务名：', '命令（可多行）：', '工作目录：')
-    $inputs = @()
-    foreach ($text in $labels) {
-        $lbl = New-Object System.Windows.Forms.Label
-        $lbl.Text = $text
-        $lbl.Location = New-Object System.Drawing.Point(14, $y + 3)
-        $lbl.Size = New-Object System.Drawing.Size(110, 20)
-        $dlg.Controls.Add($lbl)
-        $txt = New-Object System.Windows.Forms.TextBox
-        $txt.Location = New-Object System.Drawing.Point(130, $y)
-        $txt.Size = New-Object System.Drawing.Size(400, 22)
-        $txt.Multiline = ($text -eq '命令（可多行）：')
-        $txt.Height = if ($text -eq '命令（可多行）：') { 70 } else { 22 }
-        $dlg.Controls.Add($txt)
-        $inputs += $txt
-        $y += $(if ($text -eq '命令（可多行）：') { 90 } else { 34 })
+    $x = 16
+    $w = 528
+    function New-GuiLabel([string]$text, [int]$y) {
+        $l = New-Object System.Windows.Forms.Label
+        $l.Text = $text
+        $l.Location = New-Object System.Drawing.Point($x, $y)
+        $l.Size = New-Object System.Drawing.Size($w, 16)
+        $dlg.Controls.Add($l)
+        return $l
     }
+    function New-GuiField([string]$labelText, [int]$y, [int]$height) {
+        $null = New-GuiLabel $labelText $y
+        $txt = New-Object System.Windows.Forms.TextBox
+        $txt.Location = New-Object System.Drawing.Point($x, ($y + 18))
+        $txt.Size = New-Object System.Drawing.Size($w, [Math]::Max($height, 22))
+        if ($height -gt 22) { $txt.Multiline = $true; $txt.Height = $height }
+        $dlg.Controls.Add($txt)
+        return $txt
+    }
+
+    $y = 12
+    # 示例下拉：一键填充三框
+    $null = New-GuiLabel '示例：' $y
+    $comboExample = New-Object System.Windows.Forms.ComboBox
+    $comboExample.DropDownStyle = 'DropDownList'
+    $comboExample.Location = New-Object System.Drawing.Point($x, ($y + 18))
+    $comboExample.Size = New-Object System.Drawing.Size($w, 22)
+    [void]$comboExample.Items.Add('（无）')
+    [void]$comboExample.Items.Add('倒计时（每1秒打印剩余时间，结束Toast提醒）')
+    $comboExample.SelectedIndex = 0
+    $dlg.Controls.Add($comboExample)
+    $y += 48
+
+    $script:submitInputs = @()
+    # 任务名
+    $script:submitInputs += (New-GuiField '任务名（给任务起个名字，如：倒计时演示）' $y 22)
+    $y += 48
+    # 命令（可多行）
+    $script:submitInputs += (New-GuiField '命令（要执行的命令，可多行）' $y 74)
+    $y += 96
+    # 命令提示（灰字，仅提示）
+    $hint = New-GuiLabel '提示：不知道怎么写？用上方【示例】下拉选【倒计时】一键填充。' $y
+    $hint.ForeColor = [System.Drawing.Color]::Gray
+    $y += 22
+    # 工作目录
+    $script:submitInputs += (New-GuiField '工作目录（任务运行目录，如 C:\logs）' $y 22)
+    $y += 48
     # 引擎单选列表：bat（cmd，默认） / pwsh（PowerShell，pwsh 优先）
-    $lblEngine = New-Object System.Windows.Forms.Label
-    $lblEngine.Text = '引擎：'
-    $lblEngine.Location = New-Object System.Drawing.Point(14, $y + 3)
-    $lblEngine.Size = New-Object System.Drawing.Size(110, 20)
-    $dlg.Controls.Add($lblEngine)
+    $null = New-GuiLabel '引擎：' $y
     $radioBat = New-Object System.Windows.Forms.RadioButton
     $radioBat.Text = 'bat（cmd）'
-    $radioBat.Location = New-Object System.Drawing.Point(130, $y)
-    $radioBat.Size = New-Object System.Drawing.Size(100, 22)
+    $radioBat.Location = New-Object System.Drawing.Point($x, ($y + 18))
+    $radioBat.Size = New-Object System.Drawing.Size(110, 22)
     $radioBat.Checked = $true
     $dlg.Controls.Add($radioBat)
-    $radioPwsh = New-Object System.Windows.Forms.RadioButton
-    $radioPwsh.Text = 'pwsh（PowerShell）'
-    $radioPwsh.Location = New-Object System.Drawing.Point(240, $y)
-    $radioPwsh.Size = New-Object System.Drawing.Size(170, 22)
-    $dlg.Controls.Add($radioPwsh)
-    $y += 34
+    $script:submitRadioPwsh = New-Object System.Windows.Forms.RadioButton
+    $script:submitRadioPwsh.Text = 'pwsh（PowerShell）'
+    $script:submitRadioPwsh.Location = New-Object System.Drawing.Point(($x + 140), ($y + 18))
+    $script:submitRadioPwsh.Size = New-Object System.Drawing.Size(190, 22)
+    $dlg.Controls.Add($script:submitRadioPwsh)
+    $y += 44
+
+    # 提交 / 取消（右下角，完整可见）
     $btnOk = New-Object System.Windows.Forms.Button
     $btnOk.Text = '提交'
-    $btnOk.Location = New-Object System.Drawing.Point(330, $y + 8)
-    $btnOk.Size = New-Object System.Drawing.Size(90, 28)
+    $btnOk.Location = New-Object System.Drawing.Point(360, $y)
+    $btnOk.Size = New-Object System.Drawing.Size(90, 30)
     $btnOk.DialogResult = 'OK'
     $dlg.Controls.Add($btnOk)
     $btnCancel = New-Object System.Windows.Forms.Button
     $btnCancel.Text = '取消'
-    $btnCancel.Location = New-Object System.Drawing.Point(430, $y + 8)
-    $btnCancel.Size = New-Object System.Drawing.Size(90, 28)
+    $btnCancel.Location = New-Object System.Drawing.Point(460, $y)
+    $btnCancel.Size = New-Object System.Drawing.Size(90, 30)
     $btnCancel.DialogResult = 'Cancel'
     $dlg.Controls.Add($btnCancel)
     $dlg.AcceptButton = $btnOk
     $dlg.CancelButton = $btnCancel
 
+    $comboExample.Add_SelectedIndexChanged({
+        if ($comboExample.SelectedIndex -eq 1) { Set-GuiCountdownExample }
+    })
+
     if ($dlg.ShowDialog($script:form) -ne 'OK') { return }
-    $name = $inputs[0].Text.Trim()
-    $command = $inputs[1].Text
-    $workdir = $inputs[2].Text.Trim()
+    $name = $script:submitInputs[0].Text.Trim()
+    $command = $script:submitInputs[1].Text
+    $workdir = $script:submitInputs[2].Text.Trim()
     if (-not $name -or -not $command -or -not $workdir) {
         [System.Windows.Forms.MessageBox]::Show('任务名、命令、工作目录都不能为空。', 'bgjobs', 'OK', 'Warning')
         return
     }
-    $engine = if ($radioPwsh.Checked) { 'pwsh' } else { 'bat' }
+    $engine = if ($script:submitRadioPwsh.Checked) { 'pwsh' } else { 'bat' }
     $r = Submit-BgjobsJob $name $command $workdir '' -Engine $engine
     if (-not $r.ok) {
         [System.Windows.Forms.MessageBox]::Show("提交失败：$($r.error)", 'bgjobs', 'OK', 'Error')

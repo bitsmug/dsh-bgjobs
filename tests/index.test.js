@@ -248,10 +248,10 @@ test('submitJob: 成功路径完整落盘（run.bat+cmd.bat+job.json）+ /Create
   assert.equal(cmd, 'echo ok\r\n')
   assert.ok(calls.some((argv) => argv.includes('/Create')))
   assert.ok(calls.some((argv) => argv.includes('/Run')))
-  // /Run 成功后立即 /Delete（防 /ST 整分双跑）
+  // /Run 成功后立即 /Change /DISABLE（防 /ST 整分双跑；禁用而非删除，防排队实例被丢弃）
   const runIdx = calls.findIndex((argv) => argv.includes('/Run'))
-  const delIdx = calls.findIndex((argv) => argv.includes('/Delete'))
-  assert.ok(runIdx >= 0 && delIdx > runIdx, '/Run 成功后应立即 /Delete 任务计划')
+  const disableIdx = calls.findIndex((argv) => argv.includes('/DISABLE'))
+  assert.ok(runIdx >= 0 && disableIdx > runIdx, '/Run 成功后应立即 /Change /DISABLE 任务计划')
   await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
 })
@@ -334,8 +334,8 @@ test('submitJob(pwsh): 写 job.ps1（UTF-8 BOM）+ run.bat 调 interpreter，met
   assert.ok(calls.some((argv) => argv.includes('/Create')))
   assert.ok(calls.some((argv) => argv.includes('/Run')))
   const runIdx = calls.findIndex((argv) => argv.includes('/Run'))
-  const delIdx = calls.findIndex((argv) => argv.includes('/Delete'))
-  assert.ok(runIdx >= 0 && delIdx > runIdx, '/Run 成功后应立即 /Delete 任务计划')
+  const disableIdx = calls.findIndex((argv) => argv.includes('/DISABLE'))
+  assert.ok(runIdx >= 0 && disableIdx > runIdx, '/Run 成功后应立即 /Change /DISABLE 任务计划')
   await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
 })
@@ -798,6 +798,192 @@ test('索引: recover 补入近期任务；剪枝移除超期任务', async () =
     assert.equal(idx.jobs.length, 1, '近期任务入索引，超期任务被剪枝移除')
     assert.equal(idx.jobs[0].id, 'bg-fresh')
     await fsp.rm(workdir, { recursive: true, force: true })
+    dispose()
+  } finally {
+    delete process.env.DSH_HOME
+    await fsp.rm(home, { recursive: true, force: true })
+  }
+})
+
+// ── bgjob_status 磁盘回退（会话重启后旧 id 不再被追踪的假象修复）──
+
+test('bgjob_status: 内存注册表命中走内存路径（回归）', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  const workdir = await makeWorkdir()
+  const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
+  const dispose = apply(ctx)
+  const submit = tools.find((t) => t.name === 'bgjob_submit')
+  const status = tools.find((t) => t.name === 'bgjob_status')
+  const res = await submit.execute({ name: 't', command: 'echo x', workdir }, { agent: undefined })
+  const st = await status.execute({ jobId: res.jobId })
+  assert.equal(st.error, undefined)
+  assert.equal(st.id, res.jobId)
+  assert.equal(st.status, 'running')
+  await fsp.rm(workdir, { recursive: true, force: true })
+  dispose()
+})
+
+test('bgjob_status: 磁盘回退（索引）—— 重启后旧 running 任务返回 running 而非 not found', async () => {
+  const home = await makeDshHome()
+  try {
+    const workdir = await makeWorkdir()
+    const jobId = 'bg-old-running'
+    const jobDir = workdir + '\\.dsh\\bgjobs\\' + jobId
+    await fsp.mkdir(jobDir, { recursive: true })
+    const meta = {
+      id: jobId, name: 'old-r', workdir, jobDir,
+      logPath: jobDir + '\\stdout.log', exitcodePath: jobDir + '\\exitcode.txt',
+      jsonPath: jobDir + '\\job.json', taskName: 'dsh-bgj-old-r',
+      command: 'ping -n 9 127.0.0.1', status: 'running', createdAt: Date.now(),
+    }
+    await fsp.writeFile(path.join(jobDir, 'job.json'), JSON.stringify(meta), 'utf8')
+    await fsp.writeFile(path.join(jobDir, 'stdout.log'), 'line1\nline2\n', 'utf8')
+    await writeBgjobsIndex({ version: 1, updatedAt: Date.now(), jobs: [{ id: jobId, jobDir, workdir, name: 'old-r', createdAt: meta.createdAt }] }, home)
+    // 不提供 workspaceRegistry：只能走中央索引定位。
+    const { ctx, tools } = makeCtx({ services: {} })
+    const dispose = apply(ctx)
+    const status = tools.find((t) => t.name === 'bgjob_status')
+    const st = await status.execute({ jobId })
+    assert.equal(st.error, undefined)
+    assert.equal(st.id, jobId)
+    assert.equal(st.name, 'old-r')
+    assert.equal(st.status, 'running')
+    assert.equal(st.exitCode, null)
+    assert.equal(st.logPath, meta.logPath)
+    assert.ok(st.tail.includes('line2'))
+    await fsp.rm(workdir, { recursive: true, force: true })
+    dispose()
+  } finally {
+    delete process.env.DSH_HOME
+    await fsp.rm(home, { recursive: true, force: true })
+  }
+})
+
+test('bgjob_status: 磁盘回退 —— DSH 离线期间任务结束（exitcode.txt）→ done + 退出码', async () => {
+  const home = await makeDshHome()
+  try {
+    const workdir = await makeWorkdir()
+    const jobId = 'bg-old-done'
+    const jobDir = workdir + '\\.dsh\\bgjobs\\' + jobId
+    await fsp.mkdir(jobDir, { recursive: true })
+    const meta = {
+      id: jobId, name: 'old-d', workdir, jobDir,
+      logPath: jobDir + '\\stdout.log', exitcodePath: jobDir + '\\exitcode.txt',
+      jsonPath: jobDir + '\\job.json', taskName: 'dsh-bgj-old-d',
+      command: 'exit 3', status: 'running', createdAt: Date.now(),
+    }
+    await fsp.writeFile(path.join(jobDir, 'job.json'), JSON.stringify(meta), 'utf8')
+    await fsp.writeFile(path.join(jobDir, 'exitcode.txt'), '3', 'utf8')
+    await writeBgjobsIndex({ version: 1, updatedAt: Date.now(), jobs: [{ id: jobId, jobDir, workdir, name: 'old-d', createdAt: meta.createdAt }] }, home)
+    const { ctx, tools } = makeCtx({ services: {} })
+    const dispose = apply(ctx)
+    const status = tools.find((t) => t.name === 'bgjob_status')
+    const st = await status.execute({ jobId })
+    assert.equal(st.status, 'done')
+    assert.equal(st.exitCode, 3)
+    await fsp.rm(workdir, { recursive: true, force: true })
+    dispose()
+  } finally {
+    delete process.env.DSH_HOME
+    await fsp.rm(home, { recursive: true, force: true })
+  }
+})
+
+test('bgjob_status: 磁盘回退 —— job.json 已落盘 done 终态直接返回', async () => {
+  const home = await makeDshHome()
+  try {
+    const workdir = await makeWorkdir()
+    const jobId = 'bg-final'
+    const jobDir = workdir + '\\.dsh\\bgjobs\\' + jobId
+    await fsp.mkdir(jobDir, { recursive: true })
+    await fsp.writeFile(path.join(jobDir, 'job.json'), JSON.stringify({
+      id: jobId, name: 'f', workdir, jobDir,
+      logPath: jobDir + '\\stdout.log', exitcodePath: jobDir + '\\exitcode.txt',
+      jsonPath: jobDir + '\\job.json', taskName: 'dsh-bgj-f',
+      command: 'echo done', status: 'done', exitCode: 0, finishedAt: Date.now(), createdAt: Date.now(),
+    }), 'utf8')
+    await writeBgjobsIndex({ version: 1, updatedAt: Date.now(), jobs: [{ id: jobId, jobDir, workdir, name: 'f', createdAt: Date.now() }] }, home)
+    const { ctx, tools } = makeCtx({ services: {} })
+    const dispose = apply(ctx)
+    const status = tools.find((t) => t.name === 'bgjob_status')
+    const st = await status.execute({ jobId })
+    assert.equal(st.status, 'done')
+    assert.equal(st.exitCode, 0)
+    await fsp.rm(workdir, { recursive: true, force: true })
+    dispose()
+  } finally {
+    delete process.env.DSH_HOME
+    await fsp.rm(home, { recursive: true, force: true })
+  }
+})
+
+test('bgjob_status: 磁盘回退 —— 索引缺失时按工作区扫描定位', async () => {
+  const home = await makeDshHome()
+  try {
+    const workdir = await makeWorkdir()
+    const jobId = 'bg-scan'
+    const jobDir = workdir + '\\.dsh\\bgjobs\\' + jobId
+    await fsp.mkdir(jobDir, { recursive: true })
+    await fsp.writeFile(path.join(jobDir, 'job.json'), JSON.stringify({
+      id: jobId, name: 's', workdir, jobDir,
+      logPath: jobDir + '\\stdout.log', exitcodePath: jobDir + '\\exitcode.txt',
+      jsonPath: jobDir + '\\job.json', taskName: 'dsh-bgj-s',
+      command: 'echo s', status: 'running', createdAt: Date.now(),
+    }), 'utf8')
+    // 不写中央索引；只提供 workspaceRegistry 兜底扫描。
+    const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [{ path: workdir }] } } })
+    const dispose = apply(ctx)
+    const status = tools.find((t) => t.name === 'bgjob_status')
+    const st = await status.execute({ jobId })
+    assert.equal(st.error, undefined)
+    assert.equal(st.status, 'running')
+    assert.equal(st.name, 's')
+    await fsp.rm(workdir, { recursive: true, force: true })
+    dispose()
+  } finally {
+    delete process.env.DSH_HOME
+    await fsp.rm(home, { recursive: true, force: true })
+  }
+})
+
+test('bgjob_status: 磁盘回退只读，不触发任何 schtasks（不终止任务）', async () => {
+  const home = await makeDshHome()
+  try {
+    const workdir = await makeWorkdir()
+    const jobId = 'bg-nokill'
+    const jobDir = workdir + '\\.dsh\\bgjobs\\' + jobId
+    await fsp.mkdir(jobDir, { recursive: true })
+    await fsp.writeFile(path.join(jobDir, 'job.json'), JSON.stringify({
+      id: jobId, name: 'k', workdir, jobDir,
+      logPath: jobDir + '\\stdout.log', exitcodePath: jobDir + '\\exitcode.txt',
+      jsonPath: jobDir + '\\job.json', taskName: 'dsh-bgj-k',
+      command: 'ping -n 9 127.0.0.1', status: 'running', createdAt: Date.now(),
+    }), 'utf8')
+    await writeBgjobsIndex({ version: 1, updatedAt: Date.now(), jobs: [{ id: jobId, jobDir, workdir, name: 'k', createdAt: Date.now() }] }, home)
+    const calls = []
+    setSchtasksRunner(makeFakeRunner(calls))
+    const { ctx, tools } = makeCtx({ services: {} })
+    const dispose = apply(ctx)
+    const status = tools.find((t) => t.name === 'bgjob_status')
+    const st = await status.execute({ jobId })
+    assert.equal(st.status, 'running', 'running 任务被如实返回，不受查询影响')
+    assert.deepEqual(calls, [], '状态查询不得调用 schtasks（/End//Delete 等终止逻辑）')
+    await fsp.rm(workdir, { recursive: true, force: true })
+    dispose()
+  } finally {
+    delete process.env.DSH_HOME
+    await fsp.rm(home, { recursive: true, force: true })
+  }
+})
+
+test('bgjob_status: 磁盘回退 —— 未知 id 仍返回 job not found', async () => {
+  const home = await makeDshHome()
+  try {
+    const { ctx, tools } = makeCtx({ services: {} })
+    const dispose = apply(ctx)
+    const status = tools.find((t) => t.name === 'bgjob_status')
+    const st = await status.execute({ jobId: 'bg-nonexistent' })
+    assert.ok(st.error && st.error.includes('not found'))
     dispose()
   } finally {
     delete process.env.DSH_HOME

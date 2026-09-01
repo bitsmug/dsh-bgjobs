@@ -104,15 +104,26 @@ function Get-BgjobsJobs {
         if (-not (Test-Path -LiteralPath $jobJson)) { continue }
         try {
             $meta = Get-Content -LiteralPath $jobJson -Raw -Encoding UTF8 | ConvertFrom-Json
+            # 状态对账：任务实际已完成（exitcode.txt 已落盘）但 job.json 仍为 running 时，
+            # 说明进程已结束、仅元数据未更新（历史竞态或宿主未写回），此处理性显示为 done。
+            $exitcodePath = if ($meta.exitcodePath) { $meta.exitcodePath } else { Join-Path $entry.jobDir 'exitcode.txt' }
+            $liveStatus = if ($meta.status) { $meta.status } else { 'unknown' }
+            $exitCode = if ($null -ne $meta.exitCode) { $meta.exitCode } else { $null }
+            if ($liveStatus -eq 'running' -and (Test-Path -LiteralPath $exitcodePath)) {
+                $liveStatus = 'done'
+                if ($null -eq $exitCode) {
+                    $exitCode = ConvertFrom-BgjobsExitCode ([System.IO.File]::ReadAllText($exitcodePath))
+                }
+            }
             $out += [pscustomobject]@{
                 id = $meta.id
                 name = if ($meta.name) { $meta.name } else { $entry.name }
-                status = if ($meta.status) { $meta.status } else { 'unknown' }
-                exitCode = if ($null -ne $meta.exitCode) { $meta.exitCode } else { $null }
+                status = $liveStatus
+                exitCode = $exitCode
                 workdir = if ($meta.workdir) { $meta.workdir } else { $entry.workdir }
                 jobDir = $entry.jobDir
                 logPath = if ($meta.logPath) { $meta.logPath } else { Join-Path $entry.jobDir 'stdout.log' }
-                exitcodePath = if ($meta.exitcodePath) { $meta.exitcodePath } else { Join-Path $entry.jobDir 'exitcode.txt' }
+                exitcodePath = $exitcodePath
                 createdAt = if ($meta.createdAt) { $meta.createdAt } else { 0 }
                 finishedAt = if ($meta.finishedAt) { $meta.finishedAt } else { $null }
                 taskName = if ($meta.taskName) { $meta.taskName } else { '' }
@@ -249,7 +260,7 @@ function Submit-BgjobsJob([string]$Name, [string]$Command, [string]$WorkdirRaw, 
     if ($isPwsh) {
         $shell = Resolve-BgjobsShell
         if ($null -eq $shell) {
-            Remove-Item -LiteralPath $jobDir -Recurse -Force -ErrorAction SilentlyContinue
+            [void](Remove-Item -LiteralPath $jobDir -Recurse -Force -ErrorAction SilentlyContinue)
             return @{ ok = $false; error = 'PowerShell not found: install pwsh (7+) or Windows PowerShell' }
         }
     }
@@ -281,24 +292,26 @@ function Submit-BgjobsJob([string]$Name, [string]$Command, [string]$WorkdirRaw, 
         $json = $meta | ConvertTo-Json -Depth 5
         [System.IO.File]::WriteAllText($jsonPath, $json, (New-Object System.Text.UTF8Encoding($false)))
     } catch {
-        Remove-Item -LiteralPath $jobDir -Recurse -Force -ErrorAction SilentlyContinue
+        [void](Remove-Item -LiteralPath $jobDir -Recurse -Force -ErrorAction SilentlyContinue)
         return @{ ok = $false; error = 'write job files failed: ' + $_.Exception.Message }
     }
     $st = (Get-Date).AddMinutes(1).ToString('HH:mm')
     $create = Invoke-BgjobsSchtasks @('/Create', '/TN', $taskName, '/TR', ('"' + $batPath + '"'), '/SC', 'ONCE', '/ST', $st, '/F') $workdir
     if ($create.exitCode -ne 0) {
-        Remove-Item -LiteralPath $jobDir -Recurse -Force -ErrorAction SilentlyContinue
+        [void](Remove-Item -LiteralPath $jobDir -Recurse -Force -ErrorAction SilentlyContinue)
         return @{ ok = $false; error = 'schtasks create failed: ' + $create.stderr + $create.stdout }
     }
     $run = Invoke-BgjobsSchtasks @('/Run', '/TN', $taskName) $workdir
     if ($run.exitCode -ne 0) {
         [void](Invoke-BgjobsSchtasks @('/Delete', '/TN', $taskName, '/F') $workdir)
-        Remove-Item -LiteralPath $jobDir -Recurse -Force -ErrorAction SilentlyContinue
+        [void](Remove-Item -LiteralPath $jobDir -Recurse -Force -ErrorAction SilentlyContinue)
         return @{ ok = $false; error = 'schtasks run failed: ' + $run.stderr + $run.stdout }
     }
-    # /Run 已触发执行：立即删任务计划，防 /ST（now+1min）整分再触发导致任务双跑
-    # （与插件 JS 侧 submitJob 一致；bat 末尾自删与 done 兜底 /Delete 变 no-op）。
-    [void](Invoke-BgjobsSchtasks @('/Delete', '/TN', $taskName, '/F') $workdir)
+    # /Run 已触发执行：立即禁用任务计划，防 /ST（now+1min）整分再触发导致任务双跑。
+    # 用 /Change /DISABLE 而非 /Delete：/Run 的实例是异步排队启动的，若紧接着 /Delete，
+    # Task Scheduler 会连同注册一起丢弃排队中的运行实例→进程从未启动→永远 running 且无日志。
+    # 禁用保留注册（运行实例照常跑完），末尾 bat 自删与 done 兜底 /Delete 变 no-op。
+    [void](Invoke-BgjobsSchtasks @('/Change', '/TN', $taskName, '/DISABLE') $workdir)
     # update central index (append entry)
     $idx = Get-BgjobsIndex
     $entry = [pscustomobject]@{
@@ -322,7 +335,7 @@ function Stop-BgjobsJob([string]$Id, [switch]$NoDeleteDir) {
     }
     [void](Invoke-BgjobsSchtasks @('/Delete', '/TN', $taskName, '/F') $job.workdir)
     if (-not $NoDeleteDir) {
-        Remove-Item -LiteralPath $job.jobDir -Recurse -Force -ErrorAction SilentlyContinue
+        [void](Remove-Item -LiteralPath $job.jobDir -Recurse -Force -ErrorAction SilentlyContinue)
     }
     # remove from central index
     $idx = Get-BgjobsIndex
@@ -347,7 +360,7 @@ function Clear-BgjobsDone([int]$OlderThanHours) {
                 $done = ($meta.status -eq 'done')
                 $finished = ConvertFrom-BgjobsTimeMs $meta.finishedAt
                 if ($done -and ($null -eq $finished -or $finished -lt $retention)) {
-                    Remove-Item -LiteralPath $entry.jobDir -Recurse -Force -ErrorAction SilentlyContinue
+                    [void](Remove-Item -LiteralPath $entry.jobDir -Recurse -Force -ErrorAction SilentlyContinue)
                     $removed += $entry.id
                     $delete = $true
                 }

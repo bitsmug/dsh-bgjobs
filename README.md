@@ -13,7 +13,7 @@
 | **清理已完成** | 一键清理所有已完成任务（🧹 按钮）；单条已完成/异常退出任务可拖到面板底部"垃圾篓"快速删除 |
 | **完成通知** | 任务退出瞬间网页顶部弹出 Toast 提示（退出码 + 任务名，UI toast 不污染会话消息；fs.watch 事件驱动，亚秒级） |
 | **agent 可识别** | 工具自动进 system prompt + 注入使用指引（何时用 bgjob_submit / bgjob_submit_pwsh、bat/PowerShell 语法注意事项），新会话 agent 开箱即用 |
-| **断线续跟** | DSH 重启后自动扫描工作区恢复跟踪之前留下的任务（含运行中任务，done 不重复通知） |
+| **断线续跟** | DSH 重启后自动扫描工作区恢复跟踪之前留下的任务（含运行中任务，done 不重复通知）；`bgjob_status` 对重启前的旧任务 id 也能从磁盘实时查询（running/done/退出码/日志尾部），不会误报 not found |
 | **离线管理** | DSH 不运行时，`tools/` 下的 CLI 与 GUI 直接读写任务磁盘文件，照常 list / status / log / submit / kill |
 | **零残留** | 任务跑完 bat 自动删除 schtasks 定义（插件侧另有兜底删除）；done 任务保留 24h 后清理，job.json 落盘不丢历史 |
 
