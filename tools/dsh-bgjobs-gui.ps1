@@ -1,4 +1,4 @@
-﻿﻿# dsh-bgjobs-gui.ps1 - bgjobs standalone management window (works WITHOUT DSH).
+﻿# dsh-bgjobs-gui.ps1 - bgjobs standalone management window (works WITHOUT DSH).
 # Mirrors dsh-undo-savepoint-gui.ps1: single-instance mutex, hidden console,
 # WinForms list with refresh/submit/kill/cleanup, live log tail panel.
 # Open via dsh-bgjobs-gui.bat or a desktop shortcut.
@@ -76,30 +76,34 @@ function Show-GuiDetail {
 }
 
 # ── 示例：倒计时（每 1 秒打印剩余时间，15 秒后发 Toast 系统通知）─────────
+# Toast 经 dsh-bgjobs-toast.ps1（5.1 WinRT 帮助脚本）发出：pwsh 7/.NET Core 无法加载
+# WinRT 类型（实测 TYPE LOAD FAIL），示例在 pwsh 7 下委托 powershell.exe 执行；路径由
+# Set-GuiCountdownExample 用 __TOAST_HELPER__ 占位符替换为插件 tools 目录绝对路径。
 $script:CountdownExampleName = '倒计时演示'
 $script:CountdownExampleWorkdir = [Environment]::GetFolderPath('MyDocuments')
 $script:CountdownExample = @'
-$n = 15
+$n = 3
 for ($i = $n; $i -ge 1; $i--) {
     '{0,3} 秒后结束...' -f $i
     Start-Sleep -Seconds 1
 }
 '倒计时结束！'
+$toastHelper = '__TOAST_HELPER__'
 try {
-    [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
-    [Windows.UI.Notifications.ToastNotification, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
-    [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
-    $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
-    $xml.LoadXml('<toast><visual><binding template="ToastGeneric"><text>bgjobs 提醒</text><text>倒计时结束（15 秒）</text></binding></visual></toast>')
-    $toast = New-Object Windows.UI.Notifications.ToastNotification($xml)
-    [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('bgjobs').Show($toast)
-} catch { '（Toast 通知失败，已写入日志）' }
+    if ($PSVersionTable.PSEdition -eq 'Core') {
+        # pwsh 7：WinRT 类型不可用，委托给 Windows PowerShell 5.1
+        & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File $toastHelper -Title 'bgjobs 提醒' -Message "倒计时结束（$n 秒）"
+        if ($LASTEXITCODE -ne 0) { throw "toast helper exit code $LASTEXITCODE" }
+    } else {
+        & $toastHelper -Title 'bgjobs 提醒' -Message "倒计时结束（$n 秒）"
+    }
+} catch { '（Toast 通知失败：' + $_.Exception.Message + '）' }
 '@
 
 function Set-GuiCountdownExample {
     # 填充三个输入框 + 自动选 pwsh 引擎（命令是 PowerShell 语法，bat 引擎无法运行）
     $script:submitInputs[0].Text = $script:CountdownExampleName
-    $script:submitInputs[1].Text = $script:CountdownExample
+    $script:submitInputs[1].Text = $script:CountdownExample.Replace('__TOAST_HELPER__', (Join-Path $PSScriptRoot 'dsh-bgjobs-toast.ps1'))
     $script:submitInputs[2].Text = $script:CountdownExampleWorkdir
     $script:submitRadioPwsh.Checked = $true
 }
