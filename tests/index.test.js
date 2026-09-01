@@ -269,19 +269,27 @@ test('tick: 日志增量读 + exitcode 未出现时保持 running', async () => 
   dispose()
 })
 
-test('tick: exitcode 出现 → done、落盘、兜底删除任务计划', async () => {
+test('tick: exitcode 出现 → done、落盘、兜底删除任务计划；tail 含最后写入的行', async () => {
   const calls = []
   setSchtasksRunner(makeFakeRunner(calls))
   const workdir = await makeWorkdir()
-  const { dispose, res, tick } = await runningPlugin(workdir)
+  const { ctx, dispose, res, tick, injectCallbacks } = await runningPlugin(workdir)
   const jobDir = workdir + '\\.dsh\\bgjobs\\' + res.jobId
-  await fsp.writeFile(path.join(jobDir, 'stdout.log'), 'output\n', 'utf8')
+  await fsp.writeFile(path.join(jobDir, 'stdout.log'), 'final-line\n', 'utf8')
   await fsp.writeFile(path.join(jobDir, 'exitcode.txt'), '0', 'utf8')
   await tick()
   const meta = JSON.parse(await fsp.readFile(path.join(jobDir, 'job.json'), 'utf8'))
   assert.equal(meta.status, 'done')
   assert.equal(meta.exitCode, 0)
   assert.ok(calls.some((argv) => argv.includes('/Delete')), 'done 后应 fire-and-forget /Delete')
+  // 完成检测（含 checkCompletion 内的补读）后，tail 应包含日志最后写入的行。
+  const getJobs = attachWebServer(ctx, injectCallbacks)
+  let body = ''
+  getJobs().handler({ url: '/bgjobs/state' }, { writeHead: () => {}, end: (b) => { body = b } })
+  const jobs = JSON.parse(body).jobs
+  assert.equal(jobs.length, 1)
+  assert.equal(jobs[0].status, 'done')
+  assert.ok(jobs[0].tail.includes('final-line'), '完成时 tail 应包含日志最后一行')
   await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
 })

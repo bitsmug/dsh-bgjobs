@@ -127,18 +127,25 @@ function Get-BgjobsJob([string]$Id) {
     return $null
 }
 
-# ── bat generation (MUST mirror buildBat() in lib/index.js) ───────────────
+# ── bat generation (MUST mirror buildBat() in lib/index.js; v0.1.8: cmd.bat + call + chcp 65001) ──
 function New-BgjobsBat([object]$Job) {
+    $cmdPath = if ($Job.meta.cmdPath) { $Job.meta.cmdPath } else { Join-Path (Split-Path $Job.meta.jsonPath -Parent) 'cmd.bat' }
     $lines = New-Object System.Collections.Generic.List[string]
     $lines.Add('@echo off')
+    $lines.Add('>nul chcp 65001')
     $lines.Add('cd /d "' + $Job.meta.workdir + '"')
-    $cmds = ([string]$Job.meta.command -split "\r?\n" | ForEach-Object { $_.Trim() } | Where-Object { $_.Length -gt 0 })
-    foreach ($c in $cmds) { $lines.Add($c + ' >> "' + $Job.meta.logPath + '" 2>&1') }
+    $lines.Add('call "' + $cmdPath + '" >> "' + $Job.meta.logPath + '" 2>&1')
     $lines.Add('set "bgrc=%errorlevel%"')
     $lines.Add('>> "' + $Job.meta.logPath + '" echo [BGJOB] exit code: %bgrc%')
     $lines.Add('> "' + $Job.meta.exitcodePath + '" echo %bgrc%')
     $lines.Add('schtasks /Delete /TN ' + $Job.meta.taskName + ' /F >nul 2>&1')
     return (($lines -join "`r`n") + "`r`n")
+}
+
+# ── user command sub-bat (MUST mirror buildCmdBat() in lib/index.js; v0.1.8) ──
+# 命令原样保留（含空行/缩进），保证 for/if 块结构正常解析。
+function New-BgjobsCmdBat([object]$Job) {
+    return (([string]$Job.meta.command -split "\r?\n") -join "`r`n") + "`r`n"
 }
 
 # ── exit code (mirror parseExitCode() in lib/index.js) ────────────────────
@@ -183,17 +190,20 @@ function Submit-BgjobsJob([string]$Name, [string]$Command, [string]$WorkdirRaw, 
     $exitcodePath = Join-Path $jobDir 'exitcode.txt'
     $jsonPath = Join-Path $jobDir 'job.json'
     $batPath = Join-Path $jobDir 'run.bat'
+    $cmdPath = Join-Path $jobDir 'cmd.bat'
 
     try { New-Item -ItemType Directory -Force -Path $jobDir | Out-Null }
     catch { return @{ ok = $false; error = 'create job dir failed: ' + $_.Exception.Message } }
 
     $meta = [pscustomobject]@{
         id = $jobId; name = [string]$Name; workdir = $workdir; taskName = $taskName; jobDir = $jobDir
-        logPath = $logPath; exitcodePath = $exitcodePath; jsonPath = $jsonPath; command = [string]$Command
+        logPath = $logPath; exitcodePath = $exitcodePath; jsonPath = $jsonPath; cmdPath = $cmdPath
+        command = [string]$Command
         createdBySession = [string]$CreatedBySession; createdAt = (Get-BgjobsNowMs); status = 'running'
     }
     $job = [pscustomobject]@{ id = $jobId; meta = $meta }
     try {
+        [System.IO.File]::WriteAllText($cmdPath, (New-BgjobsCmdBat $job), (New-Object System.Text.UTF8Encoding($false)))
         [System.IO.File]::WriteAllText($batPath, (New-BgjobsBat $job), (New-Object System.Text.UTF8Encoding($false)))
         $json = $meta | ConvertTo-Json -Depth 5
         [System.IO.File]::WriteAllText($jsonPath, $json, (New-Object System.Text.UTF8Encoding($false)))
@@ -213,6 +223,9 @@ function Submit-BgjobsJob([string]$Name, [string]$Command, [string]$WorkdirRaw, 
         Remove-Item -LiteralPath $jobDir -Recurse -Force -ErrorAction SilentlyContinue
         return @{ ok = $false; error = 'schtasks run failed: ' + $run.stderr + $run.stdout }
     }
+    # /Run 已触发执行：立即删任务计划，防 /ST（now+1min）整分再触发导致任务双跑
+    # （与插件 JS 侧 submitJob 一致；bat 末尾自删与 done 兜底 /Delete 变 no-op）。
+    [void](Invoke-BgjobsSchtasks @('/Delete', '/TN', $taskName, '/F') $workdir)
     # update central index (append entry)
     $idx = Get-BgjobsIndex
     $entry = [pscustomobject]@{
