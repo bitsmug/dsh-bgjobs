@@ -1,4 +1,4 @@
-# dsh-bgjobs-lib.ps1 - shared logic for the bgjobs offline management CLI.
+﻿# dsh-bgjobs-lib.ps1 - shared logic for the bgjobs offline management CLI.
 # Dot-source this from dsh-bgjobs.ps1 (CLI). Works WITHOUT DSH running:
 # reads/writes the same job.json / stdout.log / exitcode.txt files and the
 # same central index ($DSH_HOME/bgjobs/index.json) as the bgjobs DSH plugin.

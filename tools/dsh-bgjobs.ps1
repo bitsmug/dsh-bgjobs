@@ -1,4 +1,4 @@
-# dsh-bgjobs.ps1 - offline bgjobs management CLI (works WITHOUT DSH running).
+﻿# dsh-bgjobs.ps1 - offline bgjobs management CLI (works WITHOUT DSH running).
 #
 # Usage:
 #   .\dsh-bgjobs.ps1 list                              # all jobs (id/name/status/exit/time/workdir)

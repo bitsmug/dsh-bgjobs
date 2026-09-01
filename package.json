@@ -1,6 +1,6 @@
 {
   "name": "bgjobs",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "独立于 DSH 进程的后台任务（schtasks 托管）：bgjob_submit/bgjob_status 工具、网页「后台任务监控」实时面板、任务退出自动通知创建者 agent。关 DSH/关终端不影响任务运行。",
   "type": "module",
   "license": "MIT",

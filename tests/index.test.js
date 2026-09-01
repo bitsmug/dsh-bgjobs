@@ -294,34 +294,37 @@ test('tick: exitcode 出现 → done、落盘、兜底删除任务计划；tail 
   dispose()
 })
 
-test('完成通知：有 createdBySession 且 agent 可达时 followup', async () => {
+test('完成迁移：不再注入会话消息（v0.1.8 起改 UI toast，host 侧不调 agents）', async () => {
   const calls = []
-  const followups = []
+  let agentsCalled = 0
   setSchtasksRunner(makeFakeRunner(calls))
   const workdir = await makeWorkdir()
   const exec = { agent: { session: { id: 'sess-1' } } }
   const { ctx, dispose, res, tick, services } = await runningPlugin(workdir, exec)
   services.set('agents', {
-    get: (sid) => ({ session: { id: sid }, followup: (msg) => followups.push(msg) }),
+    get: () => { agentsCalled++ ; return { session: { id: 'sess-1' }, followup: () => { agentsCalled++ } } },
   })
   const jobDir = workdir + '\\.dsh\\bgjobs\\' + res.jobId
   await fsp.writeFile(path.join(jobDir, 'exitcode.txt'), '3', 'utf8')
   await tick()
-  assert.equal(followups.length, 1)
-  assert.match(followups[0].content[0].text, /已结束（exit=3）/)
-  assert.deepEqual(followups[0].source, { kind: 'plugin', plugin: 'bgjobs' })
+  assert.equal(agentsCalled, 0, 'host 侧完成迁移不应调 agents（通知改由 client 轮询弹 toast）')
+  const meta = JSON.parse(await fsp.readFile(path.join(jobDir, 'job.json'), 'utf8'))
+  assert.equal(meta.status, 'done', '完成迁移仍正常落盘 job.json')
+  assert.equal(meta.exitCode, 3)
   await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
 })
 
-test('完成通知：无创建会话时不通知；agent 不可达时静默不抛错', async () => {
+test('完成迁移：无 agents 服务时静默不抛错', async () => {
   setSchtasksRunner(makeFakeRunner([]))
   const workdir = await makeWorkdir()
   const { ctx, dispose, res, tick, services } = await runningPlugin(workdir) // exec 缺省 → 无 session
-  services.set('agents', { get: () => undefined })
+  // 不设置 agents 服务：host 侧完全不触碰，完成迁移不受影响。
   const jobDir = workdir + '\\.dsh\\bgjobs\\' + res.jobId
   await fsp.writeFile(path.join(jobDir, 'exitcode.txt'), '0', 'utf8')
   await assert.doesNotReject(tick())
+  const meta = JSON.parse(await fsp.readFile(path.join(jobDir, 'job.json'), 'utf8'))
+  assert.equal(meta.status, 'done')
   await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
 })
