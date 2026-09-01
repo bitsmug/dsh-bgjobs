@@ -75,11 +75,11 @@ function Show-GuiDetail {
     $script:detail.Text = $sb.ToString()
 }
 
-# ── submit dialog (name / command / workdir) ──────────────────────────────
+# ── submit dialog (name / command / workdir / engine radio) ───────────────
 function Show-GuiSubmitDialog {
     $dlg = New-Object System.Windows.Forms.Form
     $dlg.Text = '提交后台任务'
-    $dlg.Size = New-Object System.Drawing.Size(560, 260)
+    $dlg.Size = New-Object System.Drawing.Size(560, 300)
     $dlg.StartPosition = 'CenterParent'
     $dlg.FormBorderStyle = 'FixedDialog'
     $dlg.MaximizeBox = $false
@@ -103,6 +103,24 @@ function Show-GuiSubmitDialog {
         $inputs += $txt
         $y += $(if ($text -eq '命令（可多行）：') { 90 } else { 34 })
     }
+    # 引擎单选列表：bat（cmd，默认） / pwsh（PowerShell，pwsh 优先）
+    $lblEngine = New-Object System.Windows.Forms.Label
+    $lblEngine.Text = '引擎：'
+    $lblEngine.Location = New-Object System.Drawing.Point(14, $y + 3)
+    $lblEngine.Size = New-Object System.Drawing.Size(110, 20)
+    $dlg.Controls.Add($lblEngine)
+    $radioBat = New-Object System.Windows.Forms.RadioButton
+    $radioBat.Text = 'bat（cmd）'
+    $radioBat.Location = New-Object System.Drawing.Point(130, $y)
+    $radioBat.Size = New-Object System.Drawing.Size(100, 22)
+    $radioBat.Checked = $true
+    $dlg.Controls.Add($radioBat)
+    $radioPwsh = New-Object System.Windows.Forms.RadioButton
+    $radioPwsh.Text = 'pwsh（PowerShell）'
+    $radioPwsh.Location = New-Object System.Drawing.Point(240, $y)
+    $radioPwsh.Size = New-Object System.Drawing.Size(170, 22)
+    $dlg.Controls.Add($radioPwsh)
+    $y += 34
     $btnOk = New-Object System.Windows.Forms.Button
     $btnOk.Text = '提交'
     $btnOk.Location = New-Object System.Drawing.Point(330, $y + 8)
@@ -126,7 +144,8 @@ function Show-GuiSubmitDialog {
         [System.Windows.Forms.MessageBox]::Show('任务名、命令、工作目录都不能为空。', 'bgjobs', 'OK', 'Warning')
         return
     }
-    $r = Submit-BgjobsJob $name $command $workdir ''
+    $engine = if ($radioPwsh.Checked) { 'pwsh' } else { 'bat' }
+    $r = Submit-BgjobsJob $name $command $workdir '' -Engine $engine
     if (-not $r.ok) {
         [System.Windows.Forms.MessageBox]::Show("提交失败：$($r.error)", 'bgjobs', 'OK', 'Error')
         return

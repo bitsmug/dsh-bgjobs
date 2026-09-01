@@ -148,6 +148,54 @@ function New-BgjobsCmdBat([object]$Job) {
     return (([string]$Job.meta.command -split "\r?\n") -join "`r`n") + "`r`n"
 }
 
+# ── pwsh engine: run.bat (MUST mirror buildPwshBat() in lib/index.js) ─────────
+# 直接以 PowerShell 解释器（提交时解析的绝对路径）执行 job.ps1，输出整体重定向。
+function New-BgjobsPwshBat([object]$Job) {
+    $scriptPath = if ($Job.meta.scriptPath) { $Job.meta.scriptPath } else { Join-Path (Split-Path $Job.meta.jsonPath -Parent) 'job.ps1' }
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add('@echo off')
+    $lines.Add('>nul chcp 65001')
+    $lines.Add('cd /d "' + $Job.meta.workdir + '"')
+    $lines.Add('"' + $Job.meta.interpreter + '" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $scriptPath + '" >> "' + $Job.meta.logPath + '" 2>&1')
+    $lines.Add('set "bgrc=%errorlevel%"')
+    $lines.Add('>> "' + $Job.meta.logPath + '" echo [BGJOB] exit code: %bgrc%')
+    $lines.Add('> "' + $Job.meta.exitcodePath + '" echo %bgrc%')
+    $lines.Add('schtasks /Delete /TN ' + $Job.meta.taskName + ' /F >nul 2>&1')
+    return (($lines -join "`r`n") + "`r`n")
+}
+
+# ── pwsh engine: job.ps1 (MUST mirror buildPs1() in lib/index.js) ────────────
+# 编码 preamble + 用户命令原样（CRLF 归一）。注意：写入文件时必须加 UTF-8 BOM
+# （Windows PowerShell 5.1 解析无 BOM 文件按 ANSI/GBK 读，中文会乱）。
+function New-BgjobsPs1([object]$Job) {
+    $preamble = @(
+        '# bgjobs: 强制 UTF-8 输出（Windows PowerShell 5.1 重定向默认 UTF-16 会乱码）',
+        'try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch { }',
+        '$OutputEncoding = [System.Text.UTF8Encoding]::new($false)'
+    ) -join "`r`n"
+    return $preamble + "`r`n" + (([string]$Job.meta.command -split "\r?\n") -join "`r`n") + "`r`n"
+}
+
+# ── PowerShell interpreter resolution (mirror resolveShell() in lib/index.js) ─
+# 顺序：pwsh 常见安装路径 → PATH 里的 pwsh → Windows PowerShell 5.1 默认路径 →
+# PATH 里的 powershell。返回 @{ exe; engine } 或 $null。
+function Resolve-BgjobsShell {
+    $candidates = @(
+        (Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'),
+        (Join-Path ${env:ProgramFiles(x86)} 'PowerShell\7\pwsh.exe')
+    )
+    foreach ($p in $candidates) {
+        if (Test-Path -LiteralPath $p) { return @{ exe = $p; engine = 'pwsh' } }
+    }
+    foreach ($name in @('pwsh', 'powershell')) {
+        $cmd = Get-Command $name -ErrorAction SilentlyContinue
+        if ($cmd -and $cmd.Source) { return @{ exe = $cmd.Source; engine = $(if ($name -eq 'pwsh') { 'pwsh' } else { 'powershell' }) } }
+    }
+    $ps51 = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (Test-Path -LiteralPath $ps51) { return @{ exe = $ps51; engine = 'powershell' } }
+    return $null
+}
+
 # ── exit code (mirror parseExitCode() in lib/index.js) ────────────────────
 function ConvertFrom-BgjobsExitCode([string]$Text) {
     $m = [regex]::Match([string]$Text, '(-?\d+)')
@@ -180,8 +228,9 @@ function Invoke-BgjobsSchtasks([string[]]$Args, [string]$Cwd) {
 }
 
 # ── submit (mirror submitJob in lib/index.js) ─────────────────────────────
-# Returns @{ ok; jobId; taskName; logPath; error }.
-function Submit-BgjobsJob([string]$Name, [string]$Command, [string]$WorkdirRaw, [string]$CreatedBySession) {
+# Returns @{ ok; jobId; taskName; logPath; error }. -Engine: 'bat'（cmd，默认）
+# 或 'pwsh'（PowerShell 执行，pwsh 7 优先、Windows PowerShell 5.1 兜底）。
+function Submit-BgjobsJob([string]$Name, [string]$Command, [string]$WorkdirRaw, [string]$CreatedBySession, [ValidateSet('bat', 'pwsh')][string]$Engine = 'bat') {
     $workdir = Convert-BgjobsPathStrip $WorkdirRaw
     $jobId = 'bg-' + (Get-Date).ToFileTime().ToString('x') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 6)
     $taskName = 'dsh-bgj-' + $jobId
@@ -190,21 +239,45 @@ function Submit-BgjobsJob([string]$Name, [string]$Command, [string]$WorkdirRaw, 
     $exitcodePath = Join-Path $jobDir 'exitcode.txt'
     $jsonPath = Join-Path $jobDir 'job.json'
     $batPath = Join-Path $jobDir 'run.bat'
-    $cmdPath = Join-Path $jobDir 'cmd.bat'
+    $isPwsh = ($Engine -eq 'pwsh')
 
     try { New-Item -ItemType Directory -Force -Path $jobDir | Out-Null }
     catch { return @{ ok = $false; error = 'create job dir failed: ' + $_.Exception.Message } }
 
-    $meta = [pscustomobject]@{
+    # pwsh 引擎：先解析 PowerShell 解释器（提交时烘焙绝对路径进 run.bat）。
+    $shell = $null
+    if ($isPwsh) {
+        $shell = Resolve-BgjobsShell
+        if ($null -eq $shell) {
+            Remove-Item -LiteralPath $jobDir -Recurse -Force -ErrorAction SilentlyContinue
+            return @{ ok = $false; error = 'PowerShell not found: install pwsh (7+) or Windows PowerShell' }
+        }
+    }
+
+    $meta = @{
         id = $jobId; name = [string]$Name; workdir = $workdir; taskName = $taskName; jobDir = $jobDir
-        logPath = $logPath; exitcodePath = $exitcodePath; jsonPath = $jsonPath; cmdPath = $cmdPath
+        logPath = $logPath; exitcodePath = $exitcodePath; jsonPath = $jsonPath
         command = [string]$Command
         createdBySession = [string]$CreatedBySession; createdAt = (Get-BgjobsNowMs); status = 'running'
     }
-    $job = [pscustomobject]@{ id = $jobId; meta = $meta }
+    if ($isPwsh) {
+        $scriptPath = Join-Path $jobDir 'job.ps1'
+        $meta.engine = 'pwsh'
+        $meta.scriptPath = $scriptPath
+        $meta.interpreter = $shell.exe
+    } else {
+        $meta.cmdPath = Join-Path $jobDir 'cmd.bat'
+    }
+    $job = [pscustomobject]@{ id = $jobId; meta = [pscustomobject]$meta }
     try {
-        [System.IO.File]::WriteAllText($cmdPath, (New-BgjobsCmdBat $job), (New-Object System.Text.UTF8Encoding($false)))
-        [System.IO.File]::WriteAllText($batPath, (New-BgjobsBat $job), (New-Object System.Text.UTF8Encoding($false)))
+        if ($isPwsh) {
+            # job.ps1 必须 UTF-8 with BOM：Windows PowerShell 5.1 解析无 BOM 文件按 ANSI/GBK 读，中文会乱。
+            [System.IO.File]::WriteAllText($meta.scriptPath, (New-BgjobsPs1 $job), (New-Object System.Text.UTF8Encoding($true)))
+            [System.IO.File]::WriteAllText($batPath, (New-BgjobsPwshBat $job), (New-Object System.Text.UTF8Encoding($false)))
+        } else {
+            [System.IO.File]::WriteAllText($meta.cmdPath, (New-BgjobsCmdBat $job), (New-Object System.Text.UTF8Encoding($false)))
+            [System.IO.File]::WriteAllText($batPath, (New-BgjobsBat $job), (New-Object System.Text.UTF8Encoding($false)))
+        }
         $json = $meta | ConvertTo-Json -Depth 5
         [System.IO.File]::WriteAllText($jsonPath, $json, (New-Object System.Text.UTF8Encoding($false)))
     } catch {

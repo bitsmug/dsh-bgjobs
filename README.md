@@ -12,7 +12,7 @@
 | **实时输出面板** | 网页右下角「后台任务监控」浮动面板每秒刷新打印输出，可拖拽移动（自动吸附在窗口内）、`—` 最小化为悬浮球、▾/▸ 折叠、随主题换肤 |
 | **清理已完成** | 一键清理所有已完成任务（🧹 按钮）；单条已完成/异常退出任务可拖到面板底部"垃圾篓"快速删除 |
 | **完成通知** | 任务退出瞬间网页顶部弹出 Toast 提示（退出码 + 任务名，UI toast 不污染会话消息；fs.watch 事件驱动，亚秒级） |
-| **agent 可识别** | 工具自动进 system prompt + 注入使用指引（何时用 bgjob_submit、bat 语法注意事项），新会话 agent 开箱即用 |
+| **agent 可识别** | 工具自动进 system prompt + 注入使用指引（何时用 bgjob_submit / bgjob_submit_pwsh、bat/PowerShell 语法注意事项），新会话 agent 开箱即用 |
 | **断线续跟** | DSH 重启后自动扫描工作区恢复跟踪之前留下的任务（含运行中任务，done 不重复通知） |
 | **离线管理** | DSH 不运行时，`tools/` 下的 CLI 与 GUI 直接读写任务磁盘文件，照常 list / status / log / submit / kill |
 | **零残留** | 任务跑完 bat 自动删除 schtasks 定义（插件侧另有兜底删除）；done 任务保留 24h 后清理，job.json 落盘不丢历史 |
@@ -33,7 +33,7 @@
 dsh plugin --profile web add bgjobs
 ```
 
-安装完成后重启 DSH 即生效（网页右下角出现「后台任务监控」面板，agent 获得 `bgjob_submit` / `bgjob_status` 工具）。
+安装完成后重启 DSH 即生效（网页右下角出现「后台任务监控」面板，agent 获得 `bgjob_submit` / `bgjob_submit_pwsh` / `bgjob_status` 工具）。
 
 **方式 B（本地源码/免发布）** — 尚未发布或想直接用本地代码时：
 
@@ -64,9 +64,10 @@ dsh plugin --profile web remove bgjobs
 
 ## 使用（agent 工具）
 
-agent 通过两个工具使用 bgjobs：
+agent 通过三个工具使用 bgjobs：
 
-- `bgjob_submit(name, command, workdir)` — 提交后台任务；
+- `bgjob_submit(name, command, workdir)` — 提交后台任务（command 为 **bat** 语法）；
+- `bgjob_submit_pwsh(name, command, workdir)` — 提交后台任务（command 为 **PowerShell** 语法，PowerShell 执行：pwsh 7 优先、Windows PowerShell 兜底，输出日志 UTF-8 无 cmd GBK/UTF-8 乱码问题；`exit <code>` 语义安全）；
 - `bgjob_status(jobId)` — 查询状态 / 退出码 / 日志尾部。
 
 直接对 AI 说一句话即可，例如：
@@ -88,7 +89,7 @@ agent 会调用 `bgjob_submit` 提交，随后：
 .\dsh-bgjobs.ps1 list                                  # 全部任务
 .\dsh-bgjobs.ps1 status -Id <id>                       # 单任务详情 + 日志尾部
 .\dsh-bgjobs.ps1 log -Id <id> [-Tail 100]              # 查看日志末尾 N 行
-.\dsh-bgjobs.ps1 submit -Name <n> -Command <c> -Workdir <dir>   # 离线提交新任务
+.\dsh-bgjobs.ps1 submit -Name <n> -Command <c> -Workdir <dir> [-Pwsh]   # 离线提交新任务（-Pwsh 用 PowerShell 引擎，pwsh 优先）
 .\dsh-bgjobs.ps1 kill -Id <id> [-NoDeleteDir]          # 终止任务（默认删除任务目录）
 .\dsh-bgjobs.ps1 cleanup [-OlderThanHours 24]          # 清理过期任务目录
 .\dsh-bgjobs.ps1 index -Workdir <dir>                  # 重建任务索引（可传多个目录）
@@ -98,7 +99,7 @@ agent 会调用 `bgjob_submit` 提交，随后：
 
 ## 图形面板（GUI）
 
-双击 `tools\dsh-bgjobs-gui.bat`（或为其建桌面快捷方式）即可启动独立窗口，不依赖 DSH：任务列表 + 详情/日志、提交、终止、清理、重建索引，每 2s 自动刷新。
+双击 `tools\dsh-bgjobs-gui.bat`（或为其建桌面快捷方式）即可启动独立窗口，不依赖 DSH：任务列表 + 详情/日志、提交（引擎单选：bat（cmd）/ pwsh（PowerShell））、终止、清理、重建索引，每 2s 自动刷新。
 
 ## 数据与存储
 
@@ -117,13 +118,14 @@ agent 会调用 `bgjob_submit` 提交，随后：
 
 - `workdir` 必须是 DSH 工作区内的绝对路径（任务文件与日志写在 `<workdir>/.dsh/bgjobs/<id>/`）；
 - 任务默认「仅用户登录时运行」：关 DSH/关终端不影响，但**注销 Windows 会终止任务**；
-- 命令使用 **bat 语法**，支持多行与 `for` / `if` 块结构；`for` 循环变量写成 `%%i`；
-- 命令原样写入子 bat（`cmd.bat`），输出整体重定向到日志（UTF-8，中文不乱码），**命令里不要自带 `> log` 类重定向**；
+- 命令使用 **bat 语法**（`bgjob_submit`）或 **PowerShell 语法**（`bgjob_submit_pwsh`）；bat 支持多行与 `for` / `if` 块结构、`for` 循环变量写成 `%%i`；PowerShell 用 `foreach` / 管道，`exit <code>` 语义安全（不像 cmd 的 `exit` 提前终止导致 exitcode 不写入）；
+- 命令原样写入子 bat（`cmd.bat`）/ 子脚本（`job.ps1`，UTF-8 with BOM），输出整体重定向到日志（UTF-8，中文不乱码），**命令里不要自带 `> log` 类重定向**；
+- `bgjob_submit_pwsh` 需机器装有 PowerShell（pwsh 7 优先，找不到时回退 Windows PowerShell 5.1）；解释器在提交时解析并烘焙进 run.bat；
 - 任务由 DSH 插件自动跟踪，`done` 任务保留 24h 后清理。
 
 ## 设计要点
 
-- **托管机制**：插件在 DSH 进程内直接 `spawn schtasks`（不经过 pwsh 沙箱）；用户命令原样写入子 bat（`cmd.bat`），run.bat 用 `call cmd.bat >> log 2>&1` 整体重定向（逐行重定向会破坏 `for ... do (` 等块结构导致 cmd 语法错误）、开头 `chcp 65001` 保证日志 UTF-8、`/Run` 成功后立即删任务计划防 `/ST` 整分双跑、末尾写 exitcode 并自删任务；
+- **托管机制**：插件在 DSH 进程内直接 `spawn schtasks`（不经过 pwsh 沙箱）；用户命令原样写入子 bat（`cmd.bat`），run.bat 用 `call cmd.bat >> log 2>&1` 整体重定向（逐行重定向会破坏 `for ... do (` 等块结构导致 cmd 语法错误）、开头 `chcp 65001` 保证日志 UTF-8、`/Run` 成功后立即删任务计划防 `/ST` 整分双跑、末尾写 exitcode 并自删任务；**pwsh 引擎**（`bgjob_submit_pwsh`）同机制，但命令写入 `job.ps1`（UTF-8 with BOM + 编码 preamble 强制 UTF-8 输出）由 PowerShell（pwsh 7 优先、5.1 兜底）执行，规避 cmd 代码页 GBK/UTF-8 不稳定问题；
 - **亚秒级完成检测**：fs.watch 监视任务目录，`exitcode.txt` 出现即触发状态迁移 → 通知创建者；tick 每 5s 兜底补查，防 Windows watch 丢事件；
 - **增量日志读取**：按字节位置只读新增部分，TextDecoder 流式解码，避免块边界截断多字节 UTF-8；
 - **断线续跟**：启动后扫描工作区 `.dsh/bgjobs/*/job.json` 重新挂接：running 继续跟踪，done 直接显示终态（不重复通知）；

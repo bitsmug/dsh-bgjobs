@@ -1,10 +1,10 @@
-﻿# dsh-bgjobs.ps1 - offline bgjobs management CLI (works WITHOUT DSH running).
+# dsh-bgjobs.ps1 - offline bgjobs management CLI (works WITHOUT DSH running).
 #
 # Usage:
 #   .\dsh-bgjobs.ps1 list                              # all jobs (id/name/status/exit/time/workdir)
 #   .\dsh-bgjobs.ps1 status -Id <id>                   # one job: details + log tail
 #   .\dsh-bgjobs.ps1 log -Id <id> [-Tail 100]          # job log (last N lines)
-#   .\dsh-bgjobs.ps1 submit -Name <n> -Command <c> -Workdir <dir>   # submit a new task offline
+#   .\dsh-bgjobs.ps1 submit -Name <n> -Command <c> -Workdir <dir> [-Pwsh]   # submit a new task offline (-Pwsh: 用 PowerShell 引擎，pwsh 优先)
 #   .\dsh-bgjobs.ps1 kill -Id <id> [-NoDeleteDir]      # stop a task (+ delete job dir unless -NoDeleteDir)
 #   .\dsh-bgjobs.ps1 cleanup [-OlderThanHours 24]      # remove done job dirs beyond retention
 #   .\dsh-bgjobs.ps1 index -Workdir <dir>            # rebuild the central index from disk (repeatable)
@@ -24,7 +24,8 @@ param(
     [string[]]$Workdir = @(),
     [int]$Tail = 100,
     [int]$OlderThanHours = 24,
-    [switch]$NoDeleteDir
+    [switch]$NoDeleteDir,
+    [switch]$Pwsh
 )
 
 $ErrorActionPreference = 'Stop'
@@ -85,11 +86,12 @@ switch ($Command) {
     }
     'submit' {
         if (-not $Name -or -not $CommandText -or -not $Workdir) {
-            throw 'submit requires -Name <n> -Command <c> -Workdir <dir>'
+            throw 'submit requires -Name <n> -Command <c> -Workdir <dir> [-Pwsh]'
         }
-        $r = Submit-BgjobsJob $Name $CommandText $Workdir ''
+        $engine = if ($Pwsh) { 'pwsh' } else { 'bat' }
+        $r = Submit-BgjobsJob $Name $CommandText $Workdir '' -Engine $engine
         if (-not $r.ok) { Write-Host "submit failed: $($r.error)"; exit 1 }
-        Write-Host "Submitted: $($r.jobId) (task $($r.taskName))"
+        Write-Host "Submitted: $($r.jobId) (task $($r.taskName), engine $engine)"
         Write-Host "Log: $($r.logPath)"
         Write-Host 'Note: the task runs under Windows Task Scheduler; DSH will pick it up (recover) once online and notify the creator if a session is present.'
     }

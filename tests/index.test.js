@@ -9,7 +9,8 @@ import os from 'node:os'
 import path from 'node:path'
 
 import {
-  apply, strip, buildBat, buildCmdBat, parseExitCode, setSchtasksRunner,
+  apply, strip, buildBat, buildCmdBat, buildPwshBat, buildPs1, parseExitCode,
+  setSchtasksRunner, setShellResolver,
   resolveBgjobsHome, bgjobsIndexPath, readBgjobsIndex, writeBgjobsIndex,
   updateBgjobsIndex, rebuildBgjobsIndex, buildBgjobsGuidance,
 } from '../lib/index.js'
@@ -137,19 +138,60 @@ test('buildBat: cmdPath 显式指定时优先使用；exitcode 写入顺序符�
   assert.ok(selfDelete > exitWrite, '自删任务应在写 exitcode 之后')
 })
 
+test('buildPwshBat: 用 interpreter 绝对路径 + -File 调 job.ps1 整体重定向；exitcode 顺序与自删同 buildBat', () => {
+  const job = {
+    meta: {
+      workdir: 'C:\\work', jsonPath: 'C:\\work\\job.json',
+      interpreter: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe', scriptPath: 'C:\\work\\job.ps1',
+      logPath: 'C:\\work\\log.txt', exitcodePath: 'C:\\work\\exit.txt', taskName: 'dsh-bgj-x',
+    },
+  }
+  const bat = buildPwshBat(job)
+  assert.ok(bat.startsWith('@echo off\r\n'))
+  assert.ok(bat.includes('>nul chcp 65001'))
+  assert.ok(bat.includes('cd /d "C:\\work"'))
+  assert.ok(bat.includes('"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "C:\\work\\job.ps1" >> "C:\\work\\log.txt" 2>&1'))
+  const logMarker = bat.indexOf('>> "C:\\work\\log.txt" echo [BGJOB] exit code: %bgrc%')
+  const exitWrite = bat.indexOf('> "C:\\work\\exit.txt" echo %bgrc%')
+  const selfDelete = bat.indexOf('schtasks /Delete /TN dsh-bgj-x /F >nul 2>&1')
+  assert.ok(logMarker >= 0 && exitWrite >= 0 && selfDelete >= 0)
+  assert.ok(exitWrite > logMarker, 'exitcode 写入应在日志 marker 之后')
+  assert.ok(selfDelete > exitWrite, '自删任务应在写 exitcode 之后')
+})
+
+test('buildPwshBat: scriptPath 缺省时由 jsonPath 推导 job.ps1', () => {
+  const job = {
+    meta: {
+      workdir: 'C:\\work', jsonPath: 'C:\\work\\job.json', interpreter: 'C:\\pwsh.exe',
+      logPath: 'C:\\work\\log.txt', exitcodePath: 'C:\\work\\exit.txt', taskName: 'dsh-bgj-x',
+    },
+  }
+  assert.ok(buildPwshBat(job).includes('-File "C:\\work\\job.ps1"'))
+})
+
+test('buildPs1: 编码 preamble + 用户命令原样保留（含空行）', () => {
+  const job = { meta: { workdir: 'C:\\work', command: 'Write-Output "中文"\n\n1..3 | ForEach-Object { "step $_" }' } }
+  const ps1 = buildPs1(job)
+  assert.ok(ps1.startsWith('# bgjobs: 强制 UTF-8 输出'))
+  assert.ok(ps1.includes('[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)'))
+  assert.ok(ps1.includes('$OutputEncoding = [System.Text.UTF8Encoding]::new($false)'))
+  // 命令原样（CRLF 归一，含空行）
+  assert.ok(ps1.includes('Write-Output "中文"\r\n\r\n1..3 | ForEach-Object { "step $_" }\r\n'))
+})
+
 // ── 工具注册契约 ──
 
-test('apply: 注册两个工具，output 结构合法', () => {
+test('apply: 注册三个工具，output 结构合法', () => {
   const { ctx, tools } = makeCtx()
   const dispose = apply(ctx)
-  assert.equal(tools.length, 2)
+  assert.equal(tools.length, 3)
   for (const tool of tools) {
     assert.ok(tool.output, `${tool.name} 必须声明 output`)
     assert.equal(typeof tool.output.render, 'function')
     assert.equal(typeof tool.output.schema, 'object')
     assert.equal(typeof tool.execute, 'function')
   }
-  assert.deepEqual(tools.map((t) => t.name).sort(), ['bgjob_status', 'bgjob_submit'])
+  assert.deepEqual(tools.map((t) => t.name).sort(), ['bgjob_status', 'bgjob_submit', 'bgjob_submit_pwsh'])
   dispose()
 })
 
@@ -163,11 +205,13 @@ test('apply: presentCall 返回 generic 卡片', () => {
   dispose()
 })
 
-test('guidance: buildBgjobsGuidance 提及两个工具与关键注意事项', () => {
+test('guidance: buildBgjobsGuidance 提及三个工具与关键注意事项', () => {
   const text = buildBgjobsGuidance()
   assert.ok(text.includes('bgjob_submit'))
+  assert.ok(text.includes('bgjob_submit_pwsh'))
   assert.ok(text.includes('bgjob_status'))
   assert.ok(text.includes('bat 语法'))
+  assert.ok(text.includes('PowerShell'))
   assert.ok(text.includes('workdir'))
   assert.ok(text.includes('Toast'))
 })
@@ -179,6 +223,7 @@ test('guidance: apply 注册 tool:bgjobs system prompt section', () => {
   assert.ok(sec, 'apply 应注册 tool:bgjobs section')
   assert.equal(sec.order, 150)
   assert.ok(sec.text.includes('bgjob_submit'))
+  assert.ok(sec.text.includes('bgjob_submit_pwsh'))
   dispose()
 })
 
@@ -253,6 +298,61 @@ test('submitJob: /Run 失败时删除残留任务计划并清理目录', async (
   const leftovers = await fsp.readdir(jobsRoot).catch(() => [])
   assert.equal(leftovers.length, 0, '失败后 job 目录应被清理')
   assert.ok(calls.some((argv) => argv.includes('/Delete')), '/Run 失败应删除残留任务计划')
+  await fsp.rm(workdir, { recursive: true, force: true })
+  dispose()
+})
+
+test('submitJob(pwsh): 写 job.ps1（UTF-8 BOM）+ run.bat 调 interpreter，meta 记录 engine/scriptPath/interpreter', async () => {
+  const calls = []
+  setSchtasksRunner(makeFakeRunner(calls))
+  setShellResolver(async () => ({ exe: 'C:\\fake\\pwsh.exe', engine: 'pwsh' }))
+  const workdir = await makeWorkdir()
+  const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
+  const dispose = apply(ctx)
+  const submit = tools.find((t) => t.name === 'bgjob_submit_pwsh')
+  const res = await submit.execute({ name: 'pwsh-job', command: "Write-Output '中文'\nexit 2", workdir }, { agent: undefined })
+  assert.equal(res.ok, true)
+  const jobDir = workdir + '\\.dsh\\bgjobs\\' + res.jobId
+  // job.ps1：以 UTF-8 BOM 开头（5.1 无 BOM 按 GBK 读会乱），preamble + 命令原样
+  const ps1Buf = await fsp.readFile(path.join(jobDir, 'job.ps1'))
+  assert.deepEqual([ps1Buf[0], ps1Buf[1], ps1Buf[2]], [0xef, 0xbb, 0xbf], 'job.ps1 应为 UTF-8 with BOM')
+  const ps1 = ps1Buf.toString('utf8')
+  assert.ok(ps1.startsWith('\ufeff# bgjobs: 强制 UTF-8 输出'))
+  assert.ok(ps1.includes("Write-Output '中文'"))
+  assert.ok(ps1.includes('exit 2'))
+  // 无 cmd.bat
+  assert.equal(await fsp.stat(path.join(jobDir, 'cmd.bat')).catch(() => null), null, 'pwsh 任务不应生成 cmd.bat')
+  // run.bat 调用 fake interpreter
+  const bat = await fsp.readFile(path.join(jobDir, 'run.bat'), 'utf8')
+  assert.ok(bat.includes('"C:\\fake\\pwsh.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + jobDir + '\\job.ps1" >>'))
+  // meta
+  const meta = JSON.parse(await fsp.readFile(path.join(jobDir, 'job.json'), 'utf8'))
+  assert.equal(meta.engine, 'pwsh')
+  assert.equal(meta.interpreter, 'C:\\fake\\pwsh.exe')
+  assert.equal(meta.status, 'running')
+  // schtasks 流程与 bat 一致
+  assert.ok(calls.some((argv) => argv.includes('/Create')))
+  assert.ok(calls.some((argv) => argv.includes('/Run')))
+  const runIdx = calls.findIndex((argv) => argv.includes('/Run'))
+  const delIdx = calls.findIndex((argv) => argv.includes('/Delete'))
+  assert.ok(runIdx >= 0 && delIdx > runIdx, '/Run 成功后应立即 /Delete 任务计划')
+  await fsp.rm(workdir, { recursive: true, force: true })
+  dispose()
+})
+
+test('submitJob(pwsh): PowerShell 未找到时返回错误并清理目录', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  setShellResolver(async () => null)
+  const workdir = await makeWorkdir()
+  const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
+  const dispose = apply(ctx)
+  const submit = tools.find((t) => t.name === 'bgjob_submit_pwsh')
+  const res = await submit.execute({ name: 't', command: 'echo x', workdir }, { agent: undefined })
+  assert.equal(res.ok, false)
+  assert.match(res.error, /PowerShell not found/)
+  const jobsRoot = workdir + '\\.dsh\\bgjobs'
+  const leftovers = await fsp.readdir(jobsRoot).catch(() => [])
+  assert.equal(leftovers.length, 0, '失败后 job 目录应被清理')
   await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
 })

@@ -61,6 +61,24 @@ Assert-True ((ConvertFrom-BgjobsExitCode '0') -eq 0) 'parse exit 0'
 Assert-True ((ConvertFrom-BgjobsExitCode '-1') -eq -1) 'parse exit -1'
 Assert-True ($null -eq (ConvertFrom-BgjobsExitCode 'abc')) 'parse non-numeric -> null'
 
+# ── pwsh engine: bat / ps1 generation (mirror check; no real schtasks) ────
+$pwshJob = [pscustomobject]@{
+    meta = [pscustomobject]@{
+        workdir = $workdir; jsonPath = (Join-Path $jobDir 'job.json')
+        interpreter = 'C:\fake\pwsh.exe'; scriptPath = (Join-Path $jobDir 'job.ps1')
+        logPath = (Join-Path $jobDir 'stdout.log'); exitcodePath = (Join-Path $jobDir 'exitcode.txt')
+        taskName = 'dsh-bgj-smoke-pwsh'; command = "Write-Output 'hello pwsh'`r`n1..3 | ForEach-Object { `"step `$_`" }"
+    }
+}
+$pwshBat = New-BgjobsPwshBat $pwshJob
+Assert-True ($pwshBat -match 'C:\\fake\\pwsh\.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ".*job\.ps1" >>') 'pwsh run.bat invokes interpreter -File job.ps1 with redirect'
+Assert-True ($pwshBat.IndexOf('echo [BGJOB] exit code') -lt $pwshBat.IndexOf('exitcode.txt" echo')) 'pwsh run.bat writes exitcode after log marker'
+Assert-True ($pwshBat.IndexOf('schtasks /Delete /TN dsh-bgj-smoke-pwsh /F') -gt $pwshBat.IndexOf('exitcode.txt" echo')) 'pwsh run.bat self-deletes last'
+$ps1 = New-BgjobsPs1 $pwshJob
+Assert-True ($ps1.StartsWith('# bgjobs:')) 'job.ps1 has UTF-8 preamble (first line)'
+Assert-True ($ps1.Contains('[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)')) 'job.ps1 sets Console.OutputEncoding to UTF-8'
+Assert-True ($ps1.Contains("Write-Output 'hello pwsh'")) 'job.ps1 keeps user command as-is'
+
 Write-Host ''
 if ($failed -gt 0) { Write-Host "SMOKE FAILED: $failed failure(s)"; exit 1 }
 Write-Host 'SMOKE PASSED'
