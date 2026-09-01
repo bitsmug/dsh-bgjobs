@@ -9,7 +9,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 import {
-  apply, strip, buildBat, buildCmdBat, buildPwshBat, buildPs1, parseExitCode,
+  apply, strip, buildBat, buildCmdBat, buildPwshRunner, buildPs1, parseExitCode,
   setSchtasksRunner, setShellResolver,
   resolveBgjobsHome, bgjobsIndexPath, readBgjobsIndex, writeBgjobsIndex,
   updateBgjobsIndex, rebuildBgjobsIndex, buildBgjobsGuidance,
@@ -138,35 +138,38 @@ test('buildBat: cmdPath 显式指定时优先使用；exitcode 写入顺序符�
   assert.ok(selfDelete > exitWrite, '自删任务应在写 exitcode 之后')
 })
 
-test('buildPwshBat: 用 interpreter 绝对路径 + -File 调 job.ps1 整体重定向；exitcode 顺序与自删同 buildBat', () => {
+test('buildPwshRunner: run.ps1 用 & job.ps1 *> 重定向；exitcode 顺序与自删同 buildBat（无 cmd 语法）', () => {
   const job = {
     meta: {
       workdir: 'C:\\work', jsonPath: 'C:\\work\\job.json',
-      interpreter: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe', scriptPath: 'C:\\work\\job.ps1',
+      scriptPath: 'C:\\work\\job.ps1',
       logPath: 'C:\\work\\log.txt', exitcodePath: 'C:\\work\\exit.txt', taskName: 'dsh-bgj-x',
     },
   }
-  const bat = buildPwshBat(job)
-  assert.ok(bat.startsWith('@echo off\r\n'))
-  assert.ok(bat.includes('>nul chcp 65001'))
-  assert.ok(bat.includes('cd /d "C:\\work"'))
-  assert.ok(bat.includes('"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "C:\\work\\job.ps1" >> "C:\\work\\log.txt" 2>&1'))
-  const logMarker = bat.indexOf('>> "C:\\work\\log.txt" echo [BGJOB] exit code: %bgrc%')
-  const exitWrite = bat.indexOf('> "C:\\work\\exit.txt" echo %bgrc%')
-  const selfDelete = bat.indexOf('schtasks /Delete /TN dsh-bgj-x /F >nul 2>&1')
+  const ps1 = buildPwshRunner(job)
+  assert.ok(ps1.startsWith('# bgjobs pwsh runner'))
+  assert.ok(!ps1.includes('@echo off'), '不应再有 cmd bat 语法')
+  assert.ok(ps1.includes("Set-Location -LiteralPath 'C:\\work'"))
+  assert.ok(ps1.includes("& 'C:\\work\\job.ps1' *> $logPath"), '应以 & 调用 job.ps1 并 *> 重定向全部流')
+  assert.ok(ps1.includes("$logPath = 'C:\\work\\log.txt'"))
+  const logMarker = ps1.indexOf("[System.IO.File]::AppendAllText($logPath, '[BGJOB] exit code: ' + $code + [Environment]::NewLine, $utf8)")
+  const exitWrite = ps1.indexOf("[System.IO.File]::WriteAllText('C:\\work\\exit.txt', [string]$code, $utf8)")
+  const selfDelete = ps1.indexOf("& schtasks /Delete /TN 'dsh-bgj-x' /F *> $null")
   assert.ok(logMarker >= 0 && exitWrite >= 0 && selfDelete >= 0)
   assert.ok(exitWrite > logMarker, 'exitcode 写入应在日志 marker 之后')
   assert.ok(selfDelete > exitWrite, '自删任务应在写 exitcode 之后')
+  assert.ok(ps1.includes("try {") && ps1.includes('} catch {'), 'try/catch 兜底保证 exitcode 必写')
+  assert.ok(ps1.includes('0xFF -and $logBytes[1] -eq 0xFE'), '5.1 UTF-16LE 日志转 UTF-8 兜底')
 })
 
-test('buildPwshBat: scriptPath 缺省时由 jsonPath 推导 job.ps1', () => {
+test('buildPwshRunner: scriptPath 缺省时由 jsonPath 推导 job.ps1', () => {
   const job = {
     meta: {
-      workdir: 'C:\\work', jsonPath: 'C:\\work\\job.json', interpreter: 'C:\\pwsh.exe',
+      workdir: 'C:\\work', jsonPath: 'C:\\work\\job.json',
       logPath: 'C:\\work\\log.txt', exitcodePath: 'C:\\work\\exit.txt', taskName: 'dsh-bgj-x',
     },
   }
-  assert.ok(buildPwshBat(job).includes('-File "C:\\work\\job.ps1"'))
+  assert.ok(buildPwshRunner(job).includes("& 'C:\\work\\job.ps1' *> $logPath"))
 })
 
 test('buildPs1: 编码 preamble + 用户命令原样保留（含空行）', () => {
@@ -302,7 +305,7 @@ test('submitJob: /Run 失败时删除残留任务计划并清理目录', async (
   dispose()
 })
 
-test('submitJob(pwsh): 写 job.ps1（UTF-8 BOM）+ run.bat 调 interpreter，meta 记录 engine/scriptPath/interpreter', async () => {
+test('submitJob(pwsh): 写 job.ps1 + run.ps1（UTF-8 BOM，无 run.bat），/TR 直接调 interpreter -File run.ps1', async () => {
   const calls = []
   setSchtasksRunner(makeFakeRunner(calls))
   setShellResolver(async () => ({ exe: 'C:\\fake\\pwsh.exe', engine: 'pwsh' }))
@@ -320,18 +323,28 @@ test('submitJob(pwsh): 写 job.ps1（UTF-8 BOM）+ run.bat 调 interpreter，met
   assert.ok(ps1.startsWith('\ufeff# bgjobs: 强制 UTF-8 输出'))
   assert.ok(ps1.includes("Write-Output '中文'"))
   assert.ok(ps1.includes('exit 2'))
-  // 无 cmd.bat
+  // 无 cmd.bat、无 run.bat（pwsh 引擎不再生成 cmd 中间层）
   assert.equal(await fsp.stat(path.join(jobDir, 'cmd.bat')).catch(() => null), null, 'pwsh 任务不应生成 cmd.bat')
-  // run.bat 调用 fake interpreter
-  const bat = await fsp.readFile(path.join(jobDir, 'run.bat'), 'utf8')
-  assert.ok(bat.includes('"C:\\fake\\pwsh.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + jobDir + '\\job.ps1" >>'))
+  assert.equal(await fsp.stat(path.join(jobDir, 'run.bat')).catch(() => null), null, 'pwsh 任务不应生成 run.bat')
+  // run.ps1：UTF-8 BOM + 包装脚本（& job.ps1 *> 重定向）
+  const runnerBuf = await fsp.readFile(path.join(jobDir, 'run.ps1'))
+  assert.deepEqual([runnerBuf[0], runnerBuf[1], runnerBuf[2]], [0xef, 0xbb, 0xbf], 'run.ps1 应为 UTF-8 with BOM')
+  const runner = runnerBuf.toString('utf8')
+  assert.ok(runner.includes("& '" + jobDir + "\\job.ps1' *> $logPath"))
+  assert.ok(runner.includes("WriteAllText('" + jobDir + "\\exitcode.txt'"))
   // meta
   const meta = JSON.parse(await fsp.readFile(path.join(jobDir, 'job.json'), 'utf8'))
   assert.equal(meta.engine, 'pwsh')
   assert.equal(meta.interpreter, 'C:\\fake\\pwsh.exe')
   assert.equal(meta.status, 'running')
-  // schtasks 流程与 bat 一致
-  assert.ok(calls.some((argv) => argv.includes('/Create')))
+  // schtasks：/Create 的 /TR 直接调 interpreter -File run.ps1（普通引号形式，Node 自会转义）；/Run 后 /DISABLE
+  const createCall = calls.find((argv) => argv.includes('/Create'))
+  const trIdx = createCall.indexOf('/TR')
+  assert.equal(
+    createCall[trIdx + 1],
+    '"C:\\fake\\pwsh.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + jobDir + '\\run.ps1"',
+    '/TR 应直接指向 pwsh -File run.ps1'
+  )
   assert.ok(calls.some((argv) => argv.includes('/Run')))
   const runIdx = calls.findIndex((argv) => argv.includes('/Run'))
   const disableIdx = calls.findIndex((argv) => argv.includes('/DISABLE'))

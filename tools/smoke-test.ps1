@@ -61,7 +61,7 @@ Assert-True ((ConvertFrom-BgjobsExitCode '0') -eq 0) 'parse exit 0'
 Assert-True ((ConvertFrom-BgjobsExitCode '-1') -eq -1) 'parse exit -1'
 Assert-True ($null -eq (ConvertFrom-BgjobsExitCode 'abc')) 'parse non-numeric -> null'
 
-# ── pwsh engine: bat / ps1 generation (mirror check; no real schtasks) ────
+# ── pwsh engine: run.ps1 / job.ps1 generation (mirror check; no real schtasks) ──
 $pwshJob = [pscustomobject]@{
     meta = [pscustomobject]@{
         workdir = $workdir; jsonPath = (Join-Path $jobDir 'job.json')
@@ -70,10 +70,11 @@ $pwshJob = [pscustomobject]@{
         taskName = 'dsh-bgj-smoke-pwsh'; command = "Write-Output 'hello pwsh'`r`n1..3 | ForEach-Object { `"step `$_`" }"
     }
 }
-$pwshBat = New-BgjobsPwshBat $pwshJob
-Assert-True ($pwshBat -match 'C:\\fake\\pwsh\.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ".*job\.ps1" >>') 'pwsh run.bat invokes interpreter -File job.ps1 with redirect'
-Assert-True ($pwshBat.IndexOf('echo [BGJOB] exit code') -lt $pwshBat.IndexOf('exitcode.txt" echo')) 'pwsh run.bat writes exitcode after log marker'
-Assert-True ($pwshBat.IndexOf('schtasks /Delete /TN dsh-bgj-smoke-pwsh /F') -gt $pwshBat.IndexOf('exitcode.txt" echo')) 'pwsh run.bat self-deletes last'
+$pwshRunner = New-BgjobsPwshRunner $pwshJob
+Assert-True ($pwshRunner.Contains("& 'C:") -and $pwshRunner.Contains(" *> `$logPath")) 'pwsh run.ps1 redirects job output via & ... *>'
+Assert-True ($pwshRunner.IndexOf('[BGJOB] exit code') -gt $pwshRunner.IndexOf('*>')) 'pwsh run.ps1 writes exitcode after redirect'
+Assert-True ($pwshRunner.IndexOf("schtasks /Delete /TN 'dsh-bgj-smoke-pwsh' /F") -gt $pwshRunner.IndexOf('WriteAllText')) 'pwsh run.ps1 self-deletes after exitcode write'
+Assert-True ($pwshRunner.Contains('0xFF') -and $pwshRunner.Contains('0xFE')) 'pwsh run.ps1 converts UTF-16LE log on PS 5.1'
 $ps1 = New-BgjobsPs1 $pwshJob
 Assert-True ($ps1.StartsWith('# bgjobs:')) 'job.ps1 has UTF-8 preamble (first line)'
 Assert-True ($ps1.Contains('[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)')) 'job.ps1 sets Console.OutputEncoding to UTF-8'

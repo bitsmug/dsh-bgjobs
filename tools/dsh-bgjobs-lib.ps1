@@ -159,20 +159,39 @@ function New-BgjobsCmdBat([object]$Job) {
     return (([string]$Job.meta.command -split "\r?\n") -join "`r`n") + "`r`n"
 }
 
-# ── pwsh engine: run.bat (MUST mirror buildPwshBat() in lib/index.js) ─────────
-# 直接以 PowerShell 解释器（提交时解析的绝对路径）执行 job.ps1，输出整体重定向。
-function New-BgjobsPwshBat([object]$Job) {
+# ── pwsh engine: run.ps1 (MUST mirror buildPwshRunner() in lib/index.js) ──────
+# schtasks /TR 直接调解释器执行本包装脚本：& job.ps1 *> 重定向、写 exitcode.txt、
+# 自删任务计划——pwsh 路径不再经过 cmd。退出码取 $LASTEXITCODE；try/catch 兜底保证
+# exitcode.txt 必写；5.1 的 *> 输出 UTF-16LE（BOM FF FE），检测到即转 UTF-8。
+# 模板用单引号 here-string：$ 与 ' 全为字面量，路径经占位符替换（避免双引号插值陷阱）。
+function New-BgjobsPwshRunner([object]$Job) {
     $scriptPath = if ($Job.meta.scriptPath) { $Job.meta.scriptPath } else { Join-Path (Split-Path $Job.meta.jsonPath -Parent) 'job.ps1' }
-    $lines = New-Object System.Collections.Generic.List[string]
-    $lines.Add('@echo off')
-    $lines.Add('>nul chcp 65001')
-    $lines.Add('cd /d "' + $Job.meta.workdir + '"')
-    $lines.Add('"' + $Job.meta.interpreter + '" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $scriptPath + '" >> "' + $Job.meta.logPath + '" 2>&1')
-    $lines.Add('set "bgrc=%errorlevel%"')
-    $lines.Add('>> "' + $Job.meta.logPath + '" echo [BGJOB] exit code: %bgrc%')
-    $lines.Add('> "' + $Job.meta.exitcodePath + '" echo %bgrc%')
-    $lines.Add('schtasks /Delete /TN ' + $Job.meta.taskName + ' /F >nul 2>&1')
-    return (($lines -join "`r`n") + "`r`n")
+    $tpl = @'
+# bgjobs pwsh runner: 重定向 + exitcode + 自删任务计划
+try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch { }
+$utf8 = New-Object System.Text.UTF8Encoding($false)
+Set-Location -LiteralPath '__WORKDIR__'
+$logPath = '__LOGPATH__'
+$code = 0
+try {
+    & '__SCRIPTPATH__' *> $logPath
+    if ($null -ne $LASTEXITCODE) { $code = $LASTEXITCODE }
+} catch {
+    $code = 1
+    [System.IO.File]::AppendAllText($logPath, '[BGJOB] error: ' + $_.Exception.Message + [Environment]::NewLine, $utf8)
+}
+if (Test-Path -LiteralPath $logPath) {
+    $logBytes = [System.IO.File]::ReadAllBytes($logPath)
+    if ($logBytes.Length -ge 2 -and $logBytes[0] -eq 0xFF -and $logBytes[1] -eq 0xFE) {
+        [System.IO.File]::WriteAllText($logPath, [System.IO.File]::ReadAllText($logPath, [System.Text.Encoding]::Unicode), $utf8)
+    }
+}
+[System.IO.File]::AppendAllText($logPath, '[BGJOB] exit code: ' + $code + [Environment]::NewLine, $utf8)
+[System.IO.File]::WriteAllText('__EXITCODEPATH__', [string]$code, $utf8)
+& schtasks /Delete /TN '__TASKNAME__' /F *> $null
+'@
+    $out = $tpl.Replace('__WORKDIR__', $Job.meta.workdir).Replace('__LOGPATH__', $Job.meta.logPath).Replace('__SCRIPTPATH__', $scriptPath).Replace('__EXITCODEPATH__', $Job.meta.exitcodePath).Replace('__TASKNAME__', $Job.meta.taskName)
+    return (($out -replace "`r?`n", "`r`n") + "`r`n")
 }
 
 # ── pwsh engine: job.ps1 (MUST mirror buildPs1() in lib/index.js) ────────────
@@ -285,11 +304,12 @@ function Submit-BgjobsJob([string]$Name, [string]$Command, [string]$WorkdirRaw, 
         $meta.cmdPath = Join-Path $jobDir 'cmd.bat'
     }
     $job = [pscustomobject]@{ id = $jobId; meta = [pscustomobject]$meta }
+    $runnerPath = Join-Path $jobDir 'run.ps1'
     try {
         if ($isPwsh) {
-            # job.ps1 必须 UTF-8 with BOM：Windows PowerShell 5.1 解析无 BOM 文件按 ANSI/GBK 读，中文会乱。
+            # job.ps1 / run.ps1 必须 UTF-8 with BOM：Windows PowerShell 5.1 解析无 BOM 文件按 ANSI/GBK 读，中文会乱。
             [System.IO.File]::WriteAllText($meta.scriptPath, (New-BgjobsPs1 $job), (New-Object System.Text.UTF8Encoding($true)))
-            [System.IO.File]::WriteAllText($batPath, (New-BgjobsPwshBat $job), (New-Object System.Text.UTF8Encoding($false)))
+            [System.IO.File]::WriteAllText($runnerPath, (New-BgjobsPwshRunner $job), (New-Object System.Text.UTF8Encoding($true)))
         } else {
             [System.IO.File]::WriteAllText($meta.cmdPath, (New-BgjobsCmdBat $job), (New-Object System.Text.UTF8Encoding($false)))
             [System.IO.File]::WriteAllText($batPath, (New-BgjobsBat $job), (New-Object System.Text.UTF8Encoding($false)))
@@ -301,7 +321,11 @@ function Submit-BgjobsJob([string]$Name, [string]$Command, [string]$WorkdirRaw, 
         return @{ ok = $false; error = 'write job files failed: ' + $_.Exception.Message }
     }
     $st = (Get-Date).AddMinutes(1).ToString('HH:mm')
-    $create = Invoke-BgjobsSchtasks @('/Create', '/TN', $taskName, '/TR', ('"' + $batPath + '"'), '/SC', 'ONCE', '/ST', $st, '/F') $workdir
+    # /TR 目标：bat 引擎跑 run.bat；pwsh 引擎直接调解释器执行 run.ps1（不再经 cmd 中间层）。
+    # schtasks /TR 多 token 值需整体加引号并转义内部引号（"\"prog\" -arg ..."），否则
+    # schtasks 会把 -NoProfile 等误判为自身选项。
+    $trValue = if ($isPwsh) { ('"\"' + $shell.exe + '\" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"' + $runnerPath + '\""') } else { ('"' + $batPath + '"') }
+    $create = Invoke-BgjobsSchtasks @('/Create', '/TN', $taskName, '/TR', $trValue, '/SC', 'ONCE', '/ST', $st, '/F') $workdir
     if ($create.exitCode -ne 0) {
         [void](Remove-Item -LiteralPath $jobDir -Recurse -Force -ErrorAction SilentlyContinue)
         return @{ ok = $false; error = 'schtasks create failed: ' + $create.stderr + $create.stdout }
