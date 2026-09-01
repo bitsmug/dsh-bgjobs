@@ -454,6 +454,86 @@ test('webServer: /bgjobs/state 返回 jobs 列表，其他路径 404', async () 
   dispose()
 })
 
+test('webServer: /bgjobs/delete 删除单个任务（目录+任务计划+索引）', async () => {
+  const calls = []
+  setSchtasksRunner(makeFakeRunner(calls))
+  const home = await makeDshHome()
+  try {
+    const workdir = await makeWorkdir()
+    const { ctx, tools, intervals, injectCallbacks } = makeCtx({
+      services: { workspaceRegistry: { list: () => [] } },
+    })
+    const dispose = apply(ctx)
+    const getJobs = attachWebServer(ctx, injectCallbacks)
+    const submit = tools.find((t) => t.name === 'bgjob_submit')
+    const res = await submit.execute({ name: 't', command: 'echo x', workdir }, { agent: undefined })
+    await waitFor(async () => (await readBgjobsIndex(home)).jobs.length === 1)
+    const jobDir = workdir + '\\.dsh\\bgjobs\\' + res.jobId
+    const call = (url) => new Promise((resolve) => {
+      let body = ''
+      getJobs().handler({ url }, { writeHead: () => {}, end: (b) => { resolve(JSON.parse(b || '{}')) } })
+    })
+    const r = await call('/bgjobs/delete?id=' + res.jobId)
+    assert.equal(r.ok, true)
+    assert.equal(r.removed, res.jobId)
+    // 目录删除
+    assert.ok(!(await fsp.stat(jobDir).catch(() => null)), 'job 目录应被删除')
+    // running 任务：/End + /Delete 都调过
+    assert.ok(calls.some((argv) => argv.includes('/End')))
+    assert.ok(calls.some((argv) => argv.includes('/Delete')))
+    // 索引移除（fire-and-forget，等待）
+    await waitFor(async () => (await readBgjobsIndex(home)).jobs.length === 0)
+    // 再次删除 → not found
+    const again = await call('/bgjobs/delete?id=' + res.jobId)
+    assert.equal(again.ok, false)
+    await fsp.rm(workdir, { recursive: true, force: true })
+    dispose()
+  } finally {
+    delete process.env.DSH_HOME
+    await fsp.rm(home, { recursive: true, force: true })
+  }
+})
+
+test('webServer: /bgjobs/cleanup 一键清理 done 任务（含异常退出），保留 running', async () => {
+  const calls = []
+  setSchtasksRunner(makeFakeRunner(calls))
+  const home = await makeDshHome()
+  try {
+    const workdir = await makeWorkdir()
+    const { ctx, tools, intervals, injectCallbacks } = makeCtx({
+      services: { workspaceRegistry: { list: () => [] } },
+    })
+    const dispose = apply(ctx)
+    const getJobs = attachWebServer(ctx, injectCallbacks)
+    const submit = tools.find((t) => t.name === 'bgjob_submit')
+    // 提交 3 个任务
+    const a = await submit.execute({ name: 'a', command: 'echo a', workdir }, { agent: undefined })
+    const b = await submit.execute({ name: 'b', command: 'echo b', workdir }, { agent: undefined })
+    const c = await submit.execute({ name: 'c', command: 'echo c', workdir }, { agent: undefined })
+    const tick = intervals.find((i) => i.ms === 1000).fn
+    // a,b 完成（a 正常、b 异常）；c 保持 running
+    await fsp.writeFile(workdir + '\\.dsh\\bgjobs\\' + a.jobId + '\\exitcode.txt', '0', 'utf8')
+    await fsp.writeFile(workdir + '\\.dsh\\bgjobs\\' + b.jobId + '\\exitcode.txt', '5', 'utf8')
+    await tick()
+    const call = (url) => new Promise((resolve) => {
+      let body = ''
+      getJobs().handler({ url }, { writeHead: () => {}, end: (b) => { resolve(JSON.parse(b || '{}')) } })
+    })
+    const r = await call('/bgjobs/cleanup')
+    assert.equal(r.ok, true)
+    assert.deepEqual(r.removed.sort(), [a.jobId, b.jobId].sort())
+    // c 仍在
+    const state = await call('/bgjobs/state')
+    assert.equal(state.jobs.length, 1)
+    assert.equal(state.jobs[0].id, c.jobId)
+    await fsp.rm(workdir, { recursive: true, force: true })
+    dispose()
+  } finally {
+    delete process.env.DSH_HOME
+    await fsp.rm(home, { recursive: true, force: true })
+  }
+})
+
 /** 等待条件成立（轮询，最多 ~500ms），用于 fire-and-forget 的索引写入。 */
 async function waitFor(cond, ms = 500) {
   const deadline = Date.now() + ms
