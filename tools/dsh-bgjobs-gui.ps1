@@ -68,7 +68,7 @@ function Show-GuiDetail {
     [void]$sb.AppendLine('')
     [void]$sb.AppendLine('-- 最近日志 --')
     if (Test-Path -LiteralPath $j.logPath) {
-        foreach ($l in (Get-Content -LiteralPath $j.logPath -Tail 200)) { [void]$sb.AppendLine($l) }
+        foreach ($l in (Get-Content -LiteralPath $j.logPath -Tail 200 -Encoding UTF8)) { [void]$sb.AppendLine($l) }
     } else {
         [void]$sb.AppendLine('(no log yet)')
     }
