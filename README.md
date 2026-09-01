@@ -115,13 +115,13 @@ agent 会调用 `bgjob_submit` 提交，随后：
 
 - `workdir` 必须是 DSH 工作区内的绝对路径（任务文件与日志写在 `<workdir>/.dsh/bgjobs/<id>/`）；
 - 任务默认「仅用户登录时运行」：关 DSH/关终端不影响，但**注销 Windows 会终止任务**；
-- 命令使用 **bat 语法**，多行逐行执行；`for` 循环变量写成 `%%i`；
-- 每条命令的输出自动重定向到日志，**命令里不要自带 `> log` 类重定向**；
+- 命令使用 **bat 语法**，支持多行与 `for` / `if` 块结构；`for` 循环变量写成 `%%i`；
+- 命令原样写入子 bat（`cmd.bat`），输出整体重定向到日志（UTF-8，中文不乱码），**命令里不要自带 `> log` 类重定向**；
 - 任务由 DSH 插件自动跟踪，`done` 任务保留 24h 后清理。
 
 ## 设计要点
 
-- **托管机制**：插件在 DSH 进程内直接 `spawn schtasks`（不经过 pwsh 沙箱）；任务 bat 逐条把命令输出重定向到日志，末尾写 exitcode 并自删任务计划；
+- **托管机制**：插件在 DSH 进程内直接 `spawn schtasks`（不经过 pwsh 沙箱）；用户命令原样写入子 bat（`cmd.bat`），run.bat 用 `call cmd.bat >> log 2>&1` 整体重定向（逐行重定向会破坏 `for ... do (` 等块结构导致 cmd 语法错误）、开头 `chcp 65001` 保证日志 UTF-8、`/Run` 成功后立即删任务计划防 `/ST` 整分双跑、末尾写 exitcode 并自删任务；
 - **亚秒级完成检测**：fs.watch 监视任务目录，`exitcode.txt` 出现即触发状态迁移 → 通知创建者；tick 每 5s 兜底补查，防 Windows watch 丢事件；
 - **增量日志读取**：按字节位置只读新增部分，TextDecoder 流式解码，避免块边界截断多字节 UTF-8；
 - **断线续跟**：启动后扫描工作区 `.dsh/bgjobs/*/job.json` 重新挂接：running 继续跟踪，done 直接显示终态（不重复通知）；

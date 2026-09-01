@@ -9,7 +9,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 import {
-  apply, strip, buildBat, parseExitCode, setSchtasksRunner,
+  apply, strip, buildBat, buildCmdBat, parseExitCode, setSchtasksRunner,
   resolveBgjobsHome, bgjobsIndexPath, readBgjobsIndex, writeBgjobsIndex,
   updateBgjobsIndex, rebuildBgjobsIndex,
 } from '../lib/index.js'
@@ -87,30 +87,46 @@ test('parseExitCode: 正常/负数/无数字', () => {
   assert.equal(parseExitCode(''), null)
 })
 
-test('buildBat: 命令逐行重定向到日志、空行被过滤', () => {
+test('buildBat: run.bat 用 call 包裹子 bat 整体重定向，含 chcp 65001，无逐行重定向', () => {
   const job = {
     meta: {
-      workdir: 'C:\\work', command: 'echo hi\n\necho bye',
+      workdir: 'C:\\work', command: 'echo hi\n\necho bye', jsonPath: 'C:\\work\\job.json',
       logPath: 'C:\\work\\log.txt', exitcodePath: 'C:\\work\\exit.txt', taskName: 'dsh-bgj-x',
     },
   }
   const bat = buildBat(job)
   assert.ok(bat.startsWith('@echo off\r\n'))
+  assert.ok(bat.includes('>nul chcp 65001'))
   assert.ok(bat.includes('cd /d "C:\\work"'))
-  assert.ok(bat.includes('echo hi >> "C:\\work\\log.txt" 2>&1'))
-  assert.ok(bat.includes('echo bye >> "C:\\work\\log.txt" 2>&1'))
-  // 空行被过滤：不存在连续两条重定向行。
-  assert.ok(!bat.includes('>> "C:\\work\\log.txt" 2>&1\r\n>> "C:\\work\\log.txt" 2>&1'))
+  // 命令被 call 包裹整体重定向到 cmd.bat（由 jsonPath 推导），不逐行重定向。
+  assert.ok(bat.includes('call "C:\\work\\cmd.bat" >> "C:\\work\\log.txt" 2>&1'))
+  assert.ok(!bat.includes('echo hi >> "C:\\work\\log.txt" 2>&1'))
+  assert.ok(!bat.includes('echo bye >> "C:\\work\\log.txt" 2>&1'))
 })
 
-test('buildBat: exitcode 写入顺序符合 cmd 陷阱（`> file echo` 在日志 marker 之后，自删最后）', () => {
+test('buildCmdBat: 用户命令原样保留（含空行与 for/if 块行）', () => {
   const job = {
     meta: {
-      workdir: 'C:\\work', command: 'exit 3',
+      workdir: 'C:\\work',
+      command: 'for /L %%i in (1,1,3) do (\n  echo step %%i\n)\necho done',
+    },
+  }
+  assert.equal(buildCmdBat(job), 'for /L %%i in (1,1,3) do (\r\n  echo step %%i\r\n)\r\necho done\r\n')
+  // 空行保留，不出现逐行重定向破坏块结构。
+  const job2 = { meta: { workdir: 'C:\\work', command: 'echo a\n\necho b' } }
+  assert.equal(buildCmdBat(job2), 'echo a\r\n\r\necho b\r\n')
+})
+
+test('buildBat: cmdPath 显式指定时优先使用；exitcode 写入顺序符合 cmd 陷阱（`> file echo` 在日志 marker 之后，自删最后）', () => {
+  const job = {
+    meta: {
+      workdir: 'C:\\work', command: 'exit 3', jsonPath: 'C:\\work\\job.json',
+      cmdPath: 'C:\\work\\my-cmd.bat',
       logPath: 'C:\\work\\log.txt', exitcodePath: 'C:\\work\\exit.txt', taskName: 'dsh-bgj-x',
     },
   }
   const bat = buildBat(job)
+  assert.ok(bat.includes('call "C:\\work\\my-cmd.bat" >> "C:\\work\\log.txt" 2>&1'))
   const logMarker = bat.indexOf('>> "C:\\work\\log.txt" echo [BGJOB] exit code: %bgrc%')
   const exitWrite = bat.indexOf('> "C:\\work\\exit.txt" echo %bgrc%')
   const selfDelete = bat.indexOf('schtasks /Delete /TN dsh-bgj-x /F >nul 2>&1')
@@ -147,7 +163,7 @@ test('apply: presentCall 返回 generic 卡片', () => {
 
 // ── 提交路径 ──
 
-test('submitJob: 成功路径完整落盘 + /Create /Run 调用', async () => {
+test('submitJob: 成功路径完整落盘（run.bat+cmd.bat+job.json）+ /Create /Run /Delete 调用', async () => {
   const calls = []
   setSchtasksRunner(makeFakeRunner(calls))
   const workdir = await makeWorkdir()
@@ -161,9 +177,15 @@ test('submitJob: 成功路径完整落盘 + /Create /Run 调用', async () => {
   assert.equal(meta.status, 'running')
   assert.equal(meta.name, 't')
   const bat = await fsp.readFile(path.join(jobDir, 'run.bat'), 'utf8')
-  assert.ok(bat.includes('echo ok >>'))
+  assert.ok(bat.includes('call "' + meta.cmdPath + '" >>'))
+  const cmd = await fsp.readFile(path.join(jobDir, 'cmd.bat'), 'utf8')
+  assert.equal(cmd, 'echo ok\r\n')
   assert.ok(calls.some((argv) => argv.includes('/Create')))
   assert.ok(calls.some((argv) => argv.includes('/Run')))
+  // /Run 成功后立即 /Delete（防 /ST 整分双跑）
+  const runIdx = calls.findIndex((argv) => argv.includes('/Run'))
+  const delIdx = calls.findIndex((argv) => argv.includes('/Delete'))
+  assert.ok(runIdx >= 0 && delIdx > runIdx, '/Run 成功后应立即 /Delete 任务计划')
   await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
 })
