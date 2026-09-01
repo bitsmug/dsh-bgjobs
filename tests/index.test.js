@@ -11,7 +11,7 @@ import path from 'node:path'
 import {
   apply, strip, buildBat, buildCmdBat, parseExitCode, setSchtasksRunner,
   resolveBgjobsHome, bgjobsIndexPath, readBgjobsIndex, writeBgjobsIndex,
-  updateBgjobsIndex, rebuildBgjobsIndex,
+  updateBgjobsIndex, rebuildBgjobsIndex, buildBgjobsGuidance,
 } from '../lib/index.js'
 
 // ── 测试工具 ──
@@ -34,6 +34,7 @@ function makeCtx(overrides = {}) {
   const tools = []
   const intervals = []
   const injectCallbacks = new Map()
+  const sections = []
   const ctx = {
     get(name) { return services.get(name) },
     interval(fn, ms) {
@@ -46,8 +47,9 @@ function makeCtx(overrides = {}) {
       return () => {}
     },
     tools: { register(def) { tools.push(def); return () => {} } },
+    systemPrompt: { section(def) { sections.push(def); return () => {} } },
   }
-  return { ctx, tools, intervals, services, injectCallbacks }
+  return { ctx, tools, intervals, services, injectCallbacks, sections }
 }
 
 /** 默认 fake schtasks：全部成功，记录调用。 */
@@ -158,6 +160,25 @@ test('apply: presentCall 返回 generic 卡片', () => {
   assert.deepEqual(submit.presentCall({ name: 'sim' }), {
     card: 'generic', title: '提交后台任务', kind: 'execute', rawInput: 'sim',
   })
+  dispose()
+})
+
+test('guidance: buildBgjobsGuidance 提及两个工具与关键注意事项', () => {
+  const text = buildBgjobsGuidance()
+  assert.ok(text.includes('bgjob_submit'))
+  assert.ok(text.includes('bgjob_status'))
+  assert.ok(text.includes('bat 语法'))
+  assert.ok(text.includes('workdir'))
+  assert.ok(text.includes('Toast'))
+})
+
+test('guidance: apply 注册 tool:bgjobs system prompt section', () => {
+  const { ctx, sections } = makeCtx()
+  const dispose = apply(ctx)
+  const sec = sections.find((s) => s.name === 'tool:bgjobs')
+  assert.ok(sec, 'apply 应注册 tool:bgjobs section')
+  assert.equal(sec.order, 150)
+  assert.ok(sec.text.includes('bgjob_submit'))
   dispose()
 })
 
