@@ -215,11 +215,16 @@ function ConvertFrom-BgjobsExitCode([string]$Text) {
 }
 
 # ── schtasks runner (mirror spawnRun in lib/index.js; synchronous) ────────
-function Invoke-BgjobsSchtasks([string[]]$Args, [string]$Cwd) {
+function Invoke-BgjobsSchtasks([string[]]$Arguments, [string]$Cwd) {
     try {
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = $script:BgjobsSchtasks
-        foreach ($a in $Args) { [void]$psi.ArgumentList.Add($a) }
+        # 不用 $psi.ArgumentList：Windows PowerShell 5.1（.NET Framework）下该属性为 null。
+        # 用 Arguments 字符串：含空格且未自带引号的参数补引号（如 /TR "path" 已带引号则原样保留）。
+        $parts = foreach ($a in $Arguments) {
+            if ($a -match '[ "]' -and -not ($a.StartsWith('"') -and $a.EndsWith('"'))) { '"' + $a + '"' } else { $a }
+        }
+        $psi.Arguments = ($parts -join ' ')
         $psi.WorkingDirectory = $Cwd
         $psi.UseShellExecute = $false
         $psi.CreateNoWindow = $true
