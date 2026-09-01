@@ -1,0 +1,5 @@
+node_modules
+*.log
+_*/
+.trae/
+pnpm-lock.yaml
