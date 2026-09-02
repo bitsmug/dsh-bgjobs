@@ -159,6 +159,18 @@ function New-BgjobsCmdBat([object]$Job) {
     return (([string]$Job.meta.command -split "\r?\n") -join "`r`n") + "`r`n"
 }
 
+# ── bat engine hidden launcher (MUST mirror buildLaunchVbs() in lib/index.js) ──
+# 纯 ASCII 模板：/TR 经 wscript.exe 执行本脚本，SW_HIDE（0）隐藏启动同目录 run.bat 并等待。
+# 路径运行时由 FSO 从自身目录（jobDir）推导，不内嵌路径/中文（.vbs 无 BOM 按 ANSI 读）。
+function New-BgjobsLaunchVbs {
+    return ((
+        'Set fso = CreateObject("Scripting.FileSystemObject")',
+        'Set sh = CreateObject("WScript.Shell")',
+        'dir = fso.GetParentFolderName(WScript.ScriptFullName)',
+        'sh.Run """" & dir & "\run.bat""", 0, True'
+    ) -join "`r`n") + "`r`n"
+}
+
 # ── pwsh engine: run.ps1 (MUST mirror buildPwshRunner() in lib/index.js) ──────
 # schtasks /TR 直接调解释器执行本包装脚本：& job.ps1 *> 重定向、写 exitcode.txt、
 # 自删任务计划——pwsh 路径不再经过 cmd。退出码取 $LASTEXITCODE；try/catch 兜底保证
@@ -274,6 +286,8 @@ function Submit-BgjobsJob([string]$Name, [string]$Command, [string]$WorkdirRaw, 
     $exitcodePath = Join-Path $jobDir 'exitcode.txt'
     $jsonPath = Join-Path $jobDir 'job.json'
     $batPath = Join-Path $jobDir 'run.bat'
+    $launchVbsPath = Join-Path $jobDir 'launch.vbs'
+    $WSCRIPT = (Join-Path $env:SystemRoot 'System32\wscript.exe')
     $isPwsh = ($Engine -eq 'pwsh')
 
     try { New-Item -ItemType Directory -Force -Path $jobDir | Out-Null }
@@ -313,6 +327,8 @@ function Submit-BgjobsJob([string]$Name, [string]$Command, [string]$WorkdirRaw, 
         } else {
             [System.IO.File]::WriteAllText($meta.cmdPath, (New-BgjobsCmdBat $job), (New-Object System.Text.UTF8Encoding($false)))
             [System.IO.File]::WriteAllText($batPath, (New-BgjobsBat $job), (New-Object System.Text.UTF8Encoding($false)))
+            # 隐藏窗口启动器：wscript 以 SW_HIDE 运行 run.bat（bat 引擎零 PowerShell 依赖）
+            [System.IO.File]::WriteAllText($launchVbsPath, (New-BgjobsLaunchVbs), (New-Object System.Text.UTF8Encoding($false)))
         }
         $json = $meta | ConvertTo-Json -Depth 5
         [System.IO.File]::WriteAllText($jsonPath, $json, (New-Object System.Text.UTF8Encoding($false)))
@@ -321,10 +337,11 @@ function Submit-BgjobsJob([string]$Name, [string]$Command, [string]$WorkdirRaw, 
         return @{ ok = $false; error = 'write job files failed: ' + $_.Exception.Message }
     }
     $st = (Get-Date).AddMinutes(1).ToString('HH:mm')
-    # /TR 目标：bat 引擎跑 run.bat；pwsh 引擎直接调解释器执行 run.ps1（不再经 cmd 中间层）。
+    # /TR 目标：pwsh 引擎直接调解释器执行 run.ps1（-WindowStyle Hidden 隐藏控制台窗口）；
+    # bat 引擎经 wscript.exe 执行 launch.vbs（SW_HIDE 隐藏启动 run.bat，零 PowerShell 依赖）。
     # schtasks /TR 多 token 值需整体加引号并转义内部引号（"\"prog\" -arg ..."），否则
     # schtasks 会把 -NoProfile 等误判为自身选项。
-    $trValue = if ($isPwsh) { ('"\"' + $shell.exe + '\" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"' + $runnerPath + '\""') } else { ('"' + $batPath + '"') }
+    $trValue = if ($isPwsh) { ('"\"' + $shell.exe + '\" -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File \"' + $runnerPath + '\""') } else { ('"\"' + $WSCRIPT + '\" \"' + $launchVbsPath + '\""') }
     $create = Invoke-BgjobsSchtasks @('/Create', '/TN', $taskName, '/TR', $trValue, '/SC', 'ONCE', '/ST', $st, '/F') $workdir
     if ($create.exitCode -ne 0) {
         [void](Remove-Item -LiteralPath $jobDir -Recurse -Force -ErrorAction SilentlyContinue)

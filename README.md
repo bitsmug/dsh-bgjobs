@@ -125,7 +125,7 @@ agent 会调用 `bgjob_submit` 提交，随后：
 
 ## 设计要点
 
-- **托管机制**：插件在 DSH 进程内直接 `spawn schtasks`（不经过 pwsh 沙箱）；bat 引擎的用户命令原样写入子 bat（`cmd.bat`），run.bat 用 `call cmd.bat >> log 2>&1` 整体重定向（逐行重定向会破坏 `for ... do (` 等块结构导致 cmd 语法错误）、开头 `chcp 65001` 保证日志 UTF-8、`/Run` 成功后立即删任务计划防 `/ST` 整分双跑、末尾写 exitcode 并自删任务；**pwsh 引擎**（`bgjob_submit_pwsh`）`/TR` 直接调 PowerShell（pwsh 7 优先、5.1 兜底）执行 **run.ps1 包装脚本**（不再经 cmd），由它在 PowerShell 内完成 `& job.ps1 *> stdout.log` 重定向（5.1 的 UTF-16LE 输出自动转 UTF-8）、写 exitcode.txt、自删任务计划；命令写入 `job.ps1`（UTF-8 with BOM + 编码 preamble），规避 cmd 代码页 GBK/UTF-8 不稳定问题；
+- **托管机制**：插件在 DSH 进程内直接 `spawn schtasks`（不经过 pwsh 沙箱）；bat 引擎的用户命令原样写入子 bat（`cmd.bat`），run.bat 用 `call cmd.bat >> log 2>&1` 整体重定向（逐行重定向会破坏 `for ... do (` 等块结构导致 cmd 语法错误）、开头 `chcp 65001` 保证日志 UTF-8、`/Run` 成功后立即删任务计划防 `/ST` 整分双跑、末尾写 exitcode 并自删任务；**任务以隐藏窗口运行**（pwsh 引擎 `/TR` 加 `-WindowStyle Hidden`；bat 引擎经 `wscript.exe` + 纯 ASCII `launch.vbs` 以 SW_HIDE 启动 run.bat，保持零 PowerShell 依赖），不弹 conhost 黑窗；**pwsh 引擎**（`bgjob_submit_pwsh`）`/TR` 直接调 PowerShell（pwsh 7 优先、5.1 兜底）执行 **run.ps1 包装脚本**（不再经 cmd），由它在 PowerShell 内完成 `& job.ps1 *> stdout.log` 重定向（5.1 的 UTF-16LE 输出自动转 UTF-8）、写 exitcode.txt、自删任务计划；命令写入 `job.ps1`（UTF-8 with BOM + 编码 preamble），规避 cmd 代码页 GBK/UTF-8 不稳定问题；
 - **亚秒级完成检测**：fs.watch 监视任务目录，`exitcode.txt` 出现即触发状态迁移 → 通知创建者；tick 每 5s 兜底补查，防 Windows watch 丢事件；
 - **增量日志读取**：按字节位置只读新增部分，TextDecoder 流式解码，避免块边界截断多字节 UTF-8；
 - **断线续跟**：启动后扫描工作区 `.dsh/bgjobs/*/job.json` 重新挂接：running 继续跟踪，done 直接显示终态（不重复通知）；

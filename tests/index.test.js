@@ -9,7 +9,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 import {
-  apply, strip, buildBat, buildCmdBat, buildPwshRunner, buildPs1, parseExitCode,
+  apply, strip, buildBat, buildCmdBat, buildPwshRunner, buildPs1, buildLaunchVbs, parseExitCode,
   setSchtasksRunner, setShellResolver,
   resolveBgjobsHome, bgjobsIndexPath, readBgjobsIndex, writeBgjobsIndex,
   updateBgjobsIndex, rebuildBgjobsIndex, buildBgjobsGuidance,
@@ -172,6 +172,15 @@ test('buildPwshRunner: scriptPath 缺省时由 jsonPath 推导 job.ps1', () => {
   assert.ok(buildPwshRunner(job).includes("& 'C:\\work\\job.ps1' *> $logPath"))
 })
 
+test('buildLaunchVbs: 纯 ASCII 模板，FSO 自推导目录启动同目录 run.bat（SW_HIDE=0，等待）', () => {
+  const vbs = buildLaunchVbs()
+  assert.match(vbs, /^[\x00-\x7F]*\r\n$/, 'launch.vbs 应为纯 ASCII')
+  assert.ok(vbs.includes('CreateObject("Scripting.FileSystemObject")'))
+  assert.ok(vbs.includes('GetParentFolderName(WScript.ScriptFullName)'))
+  assert.ok(vbs.includes('sh.Run """" & dir & "\\run.bat""", 0, True'), '应以 SW_HIDE(0) 隐藏启动并等待(True)')
+  assert.ok(!vbs.includes('powershell'), 'bat 引擎启动器不得依赖 PowerShell')
+})
+
 test('buildPs1: 编码 preamble + 用户命令原样保留（含空行）', () => {
   const job = { meta: { workdir: 'C:\\work', command: 'Write-Output "中文"\n\n1..3 | ForEach-Object { "step $_" }' } }
   const ps1 = buildPs1(job)
@@ -249,6 +258,18 @@ test('submitJob: 成功路径完整落盘（run.bat+cmd.bat+job.json）+ /Create
   assert.ok(bat.includes('call "' + meta.cmdPath + '" >>'))
   const cmd = await fsp.readFile(path.join(jobDir, 'cmd.bat'), 'utf8')
   assert.equal(cmd, 'echo ok\r\n')
+  // 隐藏窗口启动器：launch.vbs（纯 ASCII）+ /TR 经 wscript.exe 执行
+  const vbs = await fsp.readFile(path.join(jobDir, 'launch.vbs'), 'utf8')
+  assert.match(vbs, /^[\x00-\x7F]*$/, 'launch.vbs 应为纯 ASCII')
+  assert.ok(vbs.includes('GetParentFolderName(WScript.ScriptFullName)'))
+  assert.ok(vbs.includes('"\\run.bat""", 0, True'))
+  const createCall = calls.find((argv) => argv.includes('/Create'))
+  const trIdx = createCall.indexOf('/TR')
+  assert.equal(
+    createCall[trIdx + 1],
+    '"' + (process.env.SystemRoot || 'C:\\Windows') + '\\System32\\wscript.exe" "' + jobDir + '\\launch.vbs"',
+    '/TR 应经 wscript.exe 隐藏启动 run.bat'
+  )
   assert.ok(calls.some((argv) => argv.includes('/Create')))
   assert.ok(calls.some((argv) => argv.includes('/Run')))
   // /Run 成功后立即 /Change /DISABLE（防 /ST 整分双跑；禁用而非删除，防排队实例被丢弃）
@@ -337,13 +358,13 @@ test('submitJob(pwsh): 写 job.ps1 + run.ps1（UTF-8 BOM，无 run.bat），/TR 
   assert.equal(meta.engine, 'pwsh')
   assert.equal(meta.interpreter, 'C:\\fake\\pwsh.exe')
   assert.equal(meta.status, 'running')
-  // schtasks：/Create 的 /TR 直接调 interpreter -File run.ps1（普通引号形式，Node 自会转义）；/Run 后 /DISABLE
+  // schtasks：/Create 的 /TR 直接调 interpreter -File run.ps1（-WindowStyle Hidden 隐藏窗口，普通引号形式，Node 自会转义）；/Run 后 /DISABLE
   const createCall = calls.find((argv) => argv.includes('/Create'))
   const trIdx = createCall.indexOf('/TR')
   assert.equal(
     createCall[trIdx + 1],
-    '"C:\\fake\\pwsh.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + jobDir + '\\run.ps1"',
-    '/TR 应直接指向 pwsh -File run.ps1'
+    '"C:\\fake\\pwsh.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + jobDir + '\\run.ps1"',
+    '/TR 应直接指向 pwsh -File run.ps1（带 -WindowStyle Hidden）'
   )
   assert.ok(calls.some((argv) => argv.includes('/Run')))
   const runIdx = calls.findIndex((argv) => argv.includes('/Run'))
