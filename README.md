@@ -132,7 +132,7 @@ agent 会调用 `bgjob_submit` 提交，随后：
 - **权限不高于会话**：后台任务权限不会高于当前会话访问模式。受限会话（dsh 沙箱策略生效）里请求更宽权限（含 off=全权限）且面板「full access」开关关 → 网页弹窗请用户批准（agent 应提供 `justification`）；开关开 → 视为用户预批准，不再逐次弹窗。
 - **无沙箱服务部署**：未组合 dsh 沙箱策略服务（sandbox-policy 等）时无法确认会话访问模式 → 提交会被拒绝，需在面板打开「full access」开关（= 原模式）或部署沙箱服务。
 - **runner 依赖**：沙箱任务需要一个独立 runner 进程（`@deepseek-ai/dsh-sandbox-windows-acl`）。插件已声明该 npm 依赖，**在插件目录执行 `pnpm install`** 即可（见下）；或设置环境变量 `BGJOBS_SANDBOX_RUNNER` 指向 runner 绝对路径。未就绪时提交沙箱任务会报错，普通任务不受影响。
-- **注意**：Windows ACL 沙箱是"尽力而为"而非数学边界——任务工作目录若落在 Everyone 可写的位置（如系统临时目录）沙箱约束会失效；沙箱任务会把任务目录授 Everyone 只读（受限子进程要读脚本），即 `job.ps1`（用户命令文本）对本地其他用户可读；bat 引擎任务（`bgjob_submit`）恒为全权限、不支持沙箱。
+- **注意**：Windows ACL 沙箱是"尽力而为"而非数学边界——任务工作目录若落在 Everyone 可写的位置（如系统临时目录）沙箱约束会失效；沙箱任务会把任务目录授 Everyone 只读（受限子进程要读脚本），即 `job.ps1`（用户命令文本）对本地其他用户可读；bat 引擎任务（`bgjob_submit`）恒为全权限、无法沙箱化，受限会话下**仅当 full access 开关开启才可用**（关闭时提交被拒绝），需要受限后台任务请用 `bgjob_submit_pwsh` 的 `sandbox` 参数。
 
 安装方式 B（本地源码）时，runner 依赖需在插件目录内安装（Node 从插件真实路径向上解析依赖，宿主 profile 的 link 装不进插件目录）：
 

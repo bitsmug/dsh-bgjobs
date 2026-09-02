@@ -1200,8 +1200,9 @@ test('jobSandboxDecision: 受限会话缺省继承；更宽请求才 escalate（
   assert.deepEqual(jobSandboxDecision('workspace-write', 'off', 'pwsh', false), { mode: 'off', escalate: true })
   assert.deepEqual(jobSandboxDecision('workspace-write', 'off', 'pwsh', true), { mode: 'off', escalate: false })
   assert.deepEqual(jobSandboxDecision('read-only', 'workspace-write', 'pwsh', false), { mode: 'workspace-write', escalate: true })
-  // bat 引擎恒全权限：受限会话里每次请求都属更宽（full access 关 → escalate）
-  assert.deepEqual(jobSandboxDecision('workspace-write', undefined, 'bat', false), { mode: 'off', escalate: true })
+  // bat 引擎恒全权限、无法沙箱化 → 受限会话仅 full access 模式支持（关则拒绝，不走逐次审批）
+  assert.throws(() => jobSandboxDecision('workspace-write', undefined, 'bat', false), /full access/)
+  assert.throws(() => jobSandboxDecision('read-only', undefined, 'bat', false), /full access/)
   assert.deepEqual(jobSandboxDecision('workspace-write', undefined, 'bat', true), { mode: 'off', escalate: false })
 })
 
@@ -1336,6 +1337,51 @@ test('bgjob_submit: 未挂载沙箱服务 + full access 关 → 拒绝提交（f
     /no dsh sandbox policy service/,
   )
   assert.deepEqual(calls, [], '拒绝后不得有任何 schtasks 调用')
+  await fsp.rm(workdir, { recursive: true, force: true })
+  dispose()
+})
+
+test('bgjob_submit: 受限会话 + full access 关 → 直接拒绝（bat 恒全权限，不弹审批）', async () => {
+  await setFullAccessEnabled(false)
+  const calls = []
+  setSchtasksRunner(makeFakeRunner(calls))
+  let approvalAsked = 0
+  const workdir = await makeWorkdir()
+  const { ctx, tools } = makeCtx({
+    services: Object.assign(restrictedPolicy(workdir), {
+      approval: { request: async () => { approvalAsked++; return 'allowed-once' } },
+    }),
+  })
+  const dispose = apply(ctx)
+  const submit = tools.find((t) => t.name === 'bgjob_submit')
+  const exec = { agent: { session: { id: 's1' } } }
+  await assert.rejects(
+    submit.execute({ name: 't', command: 'echo x', workdir }, exec),
+    /full access/,
+  )
+  assert.equal(approvalAsked, 0, 'bat 恒全权限不再逐次弹审批')
+  assert.deepEqual(calls, [], '拒绝后不得有任何 schtasks 调用')
+  await fsp.rm(workdir, { recursive: true, force: true })
+  dispose()
+})
+
+test('bgjob_submit: 受限会话 + full access 开 → 原模式放行', async () => {
+  await setFullAccessEnabled(true)
+  const calls = []
+  setSchtasksRunner(makeFakeRunner(calls))
+  const workdir = await makeWorkdir()
+  const { ctx, tools } = makeCtx({
+    services: Object.assign(restrictedPolicy(workdir), {
+      approval: { request: async () => { throw new Error('full access 开不应触发审批') } },
+    }),
+  })
+  const dispose = apply(ctx)
+  const submit = tools.find((t) => t.name === 'bgjob_submit')
+  const exec = { agent: { session: { id: 's1' } } }
+  const res = await submit.execute({ name: 't', command: 'echo x', workdir }, exec)
+  assert.equal(res.ok, true)
+  const meta = JSON.parse(await fsp.readFile(path.join(workdir, '.dsh', 'bgjobs', res.jobId, 'job.json'), 'utf8'))
+  assert.equal(meta.sandbox, 'off', 'full access 放行的 bat 任务落盘 off')
   await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
 })
