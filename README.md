@@ -67,9 +67,11 @@ dsh plugin --profile web remove bgjobs
 
 agent 通过三个工具使用 bgjobs：
 
-- `bgjob_submit(name, command, workdir)` — 提交后台任务（command 为 **bat** 语法）；
-- `bgjob_submit_pwsh(name, command, workdir, [sandbox], [justification])` — 提交后台任务（command 为 **PowerShell** 语法，PowerShell 执行：pwsh 7 优先、Windows PowerShell 兜底，输出日志 UTF-8 无 cmd GBK/UTF-8 乱码问题；`exit <code>` 语义安全；`sandbox` 可选：read-only / workspace-write / off，`justification` 为请求更宽权限时的审批说明）；
+- `bgjob_submit(name, command, workdir, [notify], [notify_mode])` — 提交后台任务（command 为 **bat** 语法）；
+- `bgjob_submit_pwsh(name, command, workdir, [sandbox], [justification], [notify], [notify_mode])` — 提交后台任务（command 为 **PowerShell** 语法，PowerShell 执行：pwsh 7 优先、Windows PowerShell 兜底，输出日志 UTF-8 无 cmd GBK/UTF-8 乱码问题；`exit <code>` 语义安全；`sandbox` 可选：read-only / workspace-write / off，`justification` 为请求更宽权限时的审批说明）；
 - `bgjob_status(jobId)` — 查询状态 / 退出码 / 日志尾部。
+
+> **完成通知（可选）**：任务结束默认只弹网页 Toast，不打扰会话。两个提交工具都支持可选 `notify`：`on-completion`（仅成功 exit 0）/ `on-fail`（仅异常退出）/ `on-exit`（任何退出）——结束后向创建它的 agent 会话发一条「后台任务『name』已完成/已结束」消息（不含日志全文，详情查 `bgjob_status`）；`notify_mode` 控制送达：`wakeup`（默认，会话空闲会唤醒一轮、忙碌排入下一步收件箱，连续唤醒有预算）/ `quiet`（仅排入收件箱，等用户下一条消息才被模型看到）/ `always`（空闲恒唤醒）。
 
 直接对 AI 说一句话即可，例如：
 
@@ -107,7 +109,7 @@ agent 会调用 `bgjob_submit` 提交，随后：
 | 项目 | 位置 |
 |---|---|
 | 任务目录 | `<workdir>\.dsh\bgjobs\<jobId>\` |
-| 任务元数据 | `job.json`（id / name / command / status / exitCode / finishedAt / **sandbox**（resolved 模式）；沙箱任务另含 sandboxRunnerPath / sandboxTempPath / nodeExe） |
+| 任务元数据 | `job.json`（id / name / command / status / exitCode / finishedAt / **sandbox**（resolved 模式）/ notify+notifyMode+notifiedAt（开启完成通知时）；沙箱任务另含 sandboxRunnerPath / sandboxTempPath / nodeExe） |
 | 输出日志 | `stdout.log`（命令输出实时追加，末尾 `[BGJOB] exit code: N`） |
 | 退出码 | `exitcode.txt`（bat 最后写入，出现即触发完成检测） |
 | 任务计划 | `dsh-bgj-<jobId>`（schtasks ONCE 任务，跑完自删） |

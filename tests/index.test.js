@@ -10,7 +10,7 @@ import path from 'node:path'
 
 import {
   apply, strip, buildBat, buildCmdBat, buildPwshRunner, buildPs1, buildLaunchVbs, parseExitCode,
-  jobSandboxDecision,
+  jobSandboxDecision, shouldNotifyForExit,
   setSchtasksRunner, setShellResolver, setSandboxRunnerResolver,
   resolveBgjobsHome, bgjobsIndexPath, readBgjobsIndex, writeBgjobsIndex,
   updateBgjobsIndex, rebuildBgjobsIndex, buildBgjobsGuidance,
@@ -60,12 +60,17 @@ function makeCtx(overrides = {}) {
   const intervals = []
   const injectCallbacks = new Map()
   const sections = []
+  const onCallbacks = [] // ctx.on 事件监听（{ event, fn }）；测试可手动触发
   const ctx = {
     get(name) { return services.get(name) },
     interval(fn, ms) {
       const entry = { fn, ms, disposed: false }
       intervals.push(entry)
       return () => { entry.disposed = true }
+    },
+    on(event, fn) {
+      onCallbacks.push({ event, fn })
+      return () => {}
     },
     inject(names, cb) {
       injectCallbacks.set(names[0], cb)
@@ -74,7 +79,7 @@ function makeCtx(overrides = {}) {
     tools: { register(def) { tools.push(def); return () => {} } },
     systemPrompt: { section(def) { sections.push(def); return () => {} } },
   }
-  return { ctx, tools, intervals, services, injectCallbacks, sections }
+  return { ctx, tools, intervals, services, injectCallbacks, sections, onCallbacks }
 }
 
 /** 默认 fake schtasks：全部成功，记录调用。 */
@@ -1458,4 +1463,243 @@ test('bgjob_submit_pwsh: 请求沙箱但 runner 不可得 → fail loud + 清理
   assert.equal(leftovers.length, 0, 'runner 不可得时应清理 job 目录')
   await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
+})
+
+// ── 完成通知创建者（v0.1.31，可选 notify 参数）──
+
+/** 构造记录调用的 mock agent handle（createdBySession 解析目标）。 */
+function agentHandle(sid, status) {
+  const calls = { followup: [], inject: [] }
+  return {
+    id: sid,
+    status,
+    followup: (m) => { calls.followup.push(m) },
+    inject: (m) => { calls.inject.push(m) },
+    calls,
+  }
+}
+
+/** 提交并让任务完成：写 exitcode 后跑一次 tick，返回 job 目录。 */
+async function submitAndFinish(tool, args, exec, workdir, exitCode, tick) {
+  const res = await tool.execute(args, exec)
+  assert.equal(res.ok, true)
+  const jobDir = workdir + '\\.dsh\\bgjobs\\' + res.jobId
+  await fsp.writeFile(path.join(jobDir, 'exitcode.txt'), String(exitCode), 'utf8')
+  await tick()
+  return jobDir
+}
+
+test('shouldNotifyForExit: off/on-completion/on-fail/on-exit 矩阵', () => {
+  assert.equal(shouldNotifyForExit(undefined, 0), false)
+  assert.equal(shouldNotifyForExit('off', 0), false)
+  assert.equal(shouldNotifyForExit('off', 5), false)
+  assert.equal(shouldNotifyForExit('on-completion', 0), true)
+  assert.equal(shouldNotifyForExit('on-completion', 5), false)
+  assert.equal(shouldNotifyForExit('on-completion', null), false)
+  assert.equal(shouldNotifyForExit('on-fail', 0), false)
+  assert.equal(shouldNotifyForExit('on-fail', 5), true)
+  assert.equal(shouldNotifyForExit('on-exit', 0), true)
+  assert.equal(shouldNotifyForExit('on-exit', 5), true)
+  assert.equal(shouldNotifyForExit('on-exit', null), false)
+})
+
+test('tools schema: bgjob_submit/bgjob_submit_pwsh 含 notify/notify_mode 枚举，缺省 off/wakeup', () => {
+  const { ctx, tools } = makeCtx({ services: {} })
+  const dispose = apply(ctx)
+  for (const name of ['bgjob_submit', 'bgjob_submit_pwsh']) {
+    const tool = tools.find((t) => t.name === name)
+    const props = tool.parameters.properties
+    assert.deepEqual(props.notify.enum, ['off', 'on-completion', 'on-fail', 'on-exit'])
+    assert.equal(props.notify.default, 'off')
+    assert.deepEqual(props.notify_mode.enum, ['wakeup', 'quiet', 'always'])
+    assert.equal(props.notify_mode.default, 'wakeup')
+    assert.deepEqual(tool.parameters.required, ['name', 'command', 'workdir'])
+  }
+  dispose()
+})
+
+test('notify 缺省 off：任务完成不注入会话、job.json 无 notify/notifiedAt', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  const handle = agentHandle('s1', 'idle')
+  const workdir = await makeWorkdir()
+  const { ctx, tools, intervals } = makeCtx({ services: { agents: { get: () => handle } } })
+  const dispose = apply(ctx)
+  const submit = tools.find((t) => t.name === 'bgjob_submit')
+  const exec = { agent: { session: { id: 's1' } } }
+  const tick = intervals.find((i) => i.ms === 1000).fn
+  const jobDir = await submitAndFinish(submit, { name: 't', command: 'echo x', workdir }, exec, workdir, 0, tick)
+  assert.equal(handle.calls.followup.length, 0)
+  assert.equal(handle.calls.inject.length, 0)
+  const meta = JSON.parse(await fsp.readFile(path.join(jobDir, 'job.json'), 'utf8'))
+  assert.equal(meta.notify, undefined)
+  assert.equal(meta.notifiedAt, undefined)
+  await fsp.rm(workdir, { recursive: true, force: true })
+  dispose()
+})
+
+test('notify=on-exit + wakeup + 空闲 → followup 唤醒，消息含任务名与退出码，notifiedAt 落盘', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  const handle = agentHandle('s1', 'idle')
+  const workdir = await makeWorkdir()
+  const { ctx, tools, intervals } = makeCtx({ services: { agents: { get: () => handle } } })
+  const dispose = apply(ctx)
+  const submit = tools.find((t) => t.name === 'bgjob_submit')
+  const exec = { agent: { session: { id: 's1' } } }
+  const tick = intervals.find((i) => i.ms === 1000).fn
+  const jobDir = await submitAndFinish(submit, { name: 't', command: 'echo x', workdir, notify: 'on-exit' }, exec, workdir, 3, tick)
+  assert.equal(handle.calls.followup.length, 1)
+  assert.equal(handle.calls.inject.length, 0)
+  const msg = handle.calls.followup[0]
+  assert.equal(msg.role, 'user')
+  assert.equal(msg.source.kind, 'plugin')
+  assert.equal(msg.source.plugin, 'bgjobs')
+  assert.ok(msg.content[0].text.includes('后台任务「t」已结束（exit code 3）'))
+  const meta = JSON.parse(await fsp.readFile(path.join(jobDir, 'job.json'), 'utf8'))
+  assert.equal(meta.notify, 'on-exit')
+  assert.equal(meta.notifiedAt !== undefined, true, '通知后应落盘 notifiedAt')
+  await fsp.rm(workdir, { recursive: true, force: true })
+  dispose()
+})
+
+test('notify=on-exit + wakeup + 忙碌 → inject 排入收件箱（不唤醒）', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  const handle = agentHandle('s1', 'running')
+  const workdir = await makeWorkdir()
+  const { ctx, tools, intervals } = makeCtx({ services: { agents: { get: () => handle } } })
+  const dispose = apply(ctx)
+  const submit = tools.find((t) => t.name === 'bgjob_submit_pwsh')
+  setShellResolver(async () => ({ exe: 'C:\\pwsh\\pwsh.exe', engine: 'pwsh' }))
+  const exec = { agent: { session: { id: 's1' } } }
+  const tick = intervals.find((i) => i.ms === 1000).fn
+  await submitAndFinish(submit, { name: 't', command: 'Write-Output ok', workdir, notify: 'on-exit' }, exec, workdir, 0, tick)
+  assert.equal(handle.calls.followup.length, 0, '忙碌会话不得唤醒')
+  assert.equal(handle.calls.inject.length, 1)
+  await fsp.rm(workdir, { recursive: true, force: true })
+  dispose()
+})
+
+test('notify_mode=quiet + 空闲 → 仅 inject，不唤醒', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  const handle = agentHandle('s1', 'idle')
+  const workdir = await makeWorkdir()
+  const { ctx, tools, intervals } = makeCtx({ services: { agents: { get: () => handle } } })
+  const dispose = apply(ctx)
+  const submit = tools.find((t) => t.name === 'bgjob_submit')
+  const exec = { agent: { session: { id: 's1' } } }
+  const tick = intervals.find((i) => i.ms === 1000).fn
+  await submitAndFinish(submit, { name: 't', command: 'echo x', workdir, notify: 'on-exit', notify_mode: 'quiet' }, exec, workdir, 0, tick)
+  assert.equal(handle.calls.followup.length, 0)
+  assert.equal(handle.calls.inject.length, 1)
+  await fsp.rm(workdir, { recursive: true, force: true })
+  dispose()
+})
+
+test('notify_mode=always + 空闲 → 无视预算恒 followup', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  const handle = agentHandle('s1', 'idle')
+  const workdir = await makeWorkdir()
+  const { ctx, tools, intervals } = makeCtx({ services: { agents: { get: () => handle } } })
+  const dispose = apply(ctx)
+  const submit = tools.find((t) => t.name === 'bgjob_submit')
+  const exec = { agent: { session: { id: 's1' } } }
+  const tick = intervals.find((i) => i.ms === 1000).fn
+  for (let i = 0; i < 4; i++) {
+    await submitAndFinish(submit, { name: 'n' + i, command: 'echo x', workdir, notify: 'on-exit', notify_mode: 'always' }, exec, workdir, 0, tick)
+  }
+  assert.equal(handle.calls.followup.length, 4)
+  assert.equal(handle.calls.inject.length, 0)
+  await fsp.rm(workdir, { recursive: true, force: true })
+  dispose()
+})
+
+test('wakeup 预算：连续 2 次唤醒后降级 inject；用户领走消息后重置', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  const handle = agentHandle('s1', 'idle')
+  const workdir = await makeWorkdir()
+  const { ctx, tools, intervals, onCallbacks } = makeCtx({ services: { agents: { get: () => handle } } })
+  const dispose = apply(ctx)
+  const submit = tools.find((t) => t.name === 'bgjob_submit')
+  const exec = { agent: { session: { id: 's1' } } }
+  const tick = intervals.find((i) => i.ms === 1000).fn
+  const finish = (name) => submitAndFinish(submit, { name, command: 'echo x', workdir, notify: 'on-exit' }, exec, workdir, 0, tick)
+  await finish('a')
+  await finish('b')
+  assert.equal(handle.calls.followup.length, 2, '预算内应唤醒')
+  assert.equal(handle.calls.inject.length, 0)
+  await finish('c')
+  assert.equal(handle.calls.followup.length, 2, '超预算应停止唤醒')
+  assert.equal(handle.calls.inject.length, 1)
+  // 用户领走收件箱消息 → 重置预算
+  const claimed = onCallbacks.find((c) => c.event === 'agent/inbox/claimed')
+  assert.ok(claimed, 'apply 应注册 agent/inbox/claimed 监听')
+  claimed.fn({ agent: { id: 's1' }, message: { source: { kind: 'user' } } })
+  await finish('d')
+  assert.equal(handle.calls.followup.length, 3, '用户消息后应恢复唤醒')
+  await fsp.rm(workdir, { recursive: true, force: true })
+  dispose()
+})
+
+test('notify=on-completion + 非零退出 → 不通知；on-fail + 非零 → 通知', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  const handle = agentHandle('s1', 'idle')
+  const workdir = await makeWorkdir()
+  const { ctx, tools, intervals } = makeCtx({ services: { agents: { get: () => handle } } })
+  const dispose = apply(ctx)
+  const submit = tools.find((t) => t.name === 'bgjob_submit')
+  const exec = { agent: { session: { id: 's1' } } }
+  const tick = intervals.find((i) => i.ms === 1000).fn
+  await submitAndFinish(submit, { name: 'ok', command: 'echo x', workdir, notify: 'on-completion' }, exec, workdir, 5, tick)
+  assert.equal(handle.calls.followup.length, 0, 'on-completion + exit≠0 不通知')
+  await submitAndFinish(submit, { name: 'fail', command: 'echo x', workdir, notify: 'on-fail' }, exec, workdir, 5, tick)
+  assert.equal(handle.calls.followup.length, 1, 'on-fail + exit≠0 通知')
+  assert.ok(handle.calls.followup[0].content[0].text.includes('已结束（exit code 5）'))
+  await fsp.rm(workdir, { recursive: true, force: true })
+  dispose()
+})
+
+test('notify: 无 agents 服务 → 静默不抛错（toast 兜底）', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  const workdir = await makeWorkdir()
+  const { ctx, tools, intervals } = makeCtx({ services: {} }) // 无 agents
+  const dispose = apply(ctx)
+  const submit = tools.find((t) => t.name === 'bgjob_submit')
+  const exec = { agent: { session: { id: 's1' } } }
+  const tick = intervals.find((i) => i.ms === 1000).fn
+  const jobDir = await submitAndFinish(submit, { name: 't', command: 'echo x', workdir, notify: 'on-exit' }, exec, workdir, 0, tick)
+  const meta = JSON.parse(await fsp.readFile(path.join(jobDir, 'job.json'), 'utf8'))
+  assert.equal(meta.status, 'done', '通知尽力而为，不得破坏完成迁移')
+  await fsp.rm(workdir, { recursive: true, force: true })
+  dispose()
+})
+
+test('notify: 重启恢复已通知（notifiedAt）的 done 任务 → 不重复通知', async () => {
+  const home = await makeDshHome()
+  try {
+    setSchtasksRunner(makeFakeRunner([]))
+    const handle = agentHandle('s1', 'idle')
+    const workdir = await makeWorkdir()
+    const jobId = 'bg-notified'
+    const jobDir = workdir + '\\.dsh\\bgjobs\\' + jobId
+    await fsp.mkdir(jobDir, { recursive: true })
+    const notifiedAt = Date.now()
+    await fsp.writeFile(path.join(jobDir, 'job.json'), JSON.stringify({
+      id: jobId, name: 'n', workdir, jobDir,
+      logPath: jobDir + '\\stdout.log', exitcodePath: jobDir + '\\exitcode.txt',
+      jsonPath: jobDir + '\\job.json', taskName: 'dsh-bgj-n', command: 'echo x',
+      status: 'done', exitCode: 0, finishedAt: notifiedAt, notifiedAt, createdAt: notifiedAt - 1000,
+      notify: 'on-exit', createdBySession: 's1',
+    }), 'utf8')
+    await writeBgjobsIndex({ version: 1, updatedAt: Date.now(), jobs: [{ id: jobId, jobDir, workdir, name: 'n', createdAt: notifiedAt - 1000 }] }, home)
+    const { ctx, intervals } = makeCtx({ services: { agents: { get: () => handle } } })
+    const dispose = apply(ctx)
+    const tick = intervals.find((i) => i.ms === 1000).fn
+    await tick()
+    assert.equal(handle.calls.followup.length, 0, '已通知任务重启后不得重复通知')
+    assert.equal(handle.calls.inject.length, 0)
+    await fsp.rm(workdir, { recursive: true, force: true })
+    dispose()
+  } finally {
+    delete process.env.DSH_HOME
+    await fsp.rm(home, { recursive: true, force: true })
+  }
 })
