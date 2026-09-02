@@ -15,6 +15,7 @@
 | **agent 可识别** | 工具自动进 system prompt + 注入使用指引（何时用 bgjob_submit / bgjob_submit_pwsh、bat/PowerShell 语法注意事项），新会话 agent 开箱即用 |
 | **断线续跟** | DSH 重启后自动扫描工作区恢复跟踪之前留下的任务（含运行中任务，done 不重复通知）；`bgjob_status` 对重启前的旧任务 id 也能从磁盘实时查询（running/done/退出码/日志尾部），不会误报 not found |
 | **离线管理** | DSH 不运行时，`tools/` 下的 CLI 与 GUI 直接读写任务磁盘文件，照常 list / status / log / submit / kill |
+| **可选沙箱** | `bgjob_submit_pwsh` 支持可选 `sandbox`（read-only / workspace-write / off）复用 dsh Windows ACL 沙箱约束后台任务的**文件效果**；后台任务权限不高于当前会话访问模式（受限会话请求更宽权限会弹窗请用户批准）；面板「full access」开关预批准全权限任务（默认关，兼容无沙箱部署的原模式） |
 | **零残留** | 任务跑完 bat 自动删除 schtasks 定义（插件侧另有兜底删除）；done 任务保留 24h 后清理，job.json 落盘不丢历史 |
 
 ## 适用场景
@@ -67,7 +68,7 @@ dsh plugin --profile web remove bgjobs
 agent 通过三个工具使用 bgjobs：
 
 - `bgjob_submit(name, command, workdir)` — 提交后台任务（command 为 **bat** 语法）；
-- `bgjob_submit_pwsh(name, command, workdir)` — 提交后台任务（command 为 **PowerShell** 语法，PowerShell 执行：pwsh 7 优先、Windows PowerShell 兜底，输出日志 UTF-8 无 cmd GBK/UTF-8 乱码问题；`exit <code>` 语义安全）；
+- `bgjob_submit_pwsh(name, command, workdir, [sandbox], [justification])` — 提交后台任务（command 为 **PowerShell** 语法，PowerShell 执行：pwsh 7 优先、Windows PowerShell 兜底，输出日志 UTF-8 无 cmd GBK/UTF-8 乱码问题；`exit <code>` 语义安全；`sandbox` 可选：read-only / workspace-write / off，`justification` 为请求更宽权限时的审批说明）；
 - `bgjob_status(jobId)` — 查询状态 / 退出码 / 日志尾部。
 
 直接对 AI 说一句话即可，例如：
@@ -106,11 +107,12 @@ agent 会调用 `bgjob_submit` 提交，随后：
 | 项目 | 位置 |
 |---|---|
 | 任务目录 | `<workdir>\.dsh\bgjobs\<jobId>\` |
-| 任务元数据 | `job.json`（id / name / command / status / exitCode / finishedAt） |
+| 任务元数据 | `job.json`（id / name / command / status / exitCode / finishedAt / **sandbox**（resolved 模式）；沙箱任务另含 sandboxRunnerPath / sandboxTempPath / nodeExe） |
 | 输出日志 | `stdout.log`（命令输出实时追加，末尾 `[BGJOB] exit code: N`） |
 | 退出码 | `exitcode.txt`（bat 最后写入，出现即触发完成检测） |
 | 任务计划 | `dsh-bgj-<jobId>`（schtasks ONCE 任务，跑完自删） |
 | 中央索引 | `$DSH_HOME\bgjobs\index.json`（仅存 jobDir 当"地图"，状态实时读 job.json） |
+| full access 开关 | `$DSH_HOME\bgjobs\fullaccess.json`（面板 toggle 持久化，默认关） |
 
 生命周期：`done` 任务在插件内存注册表保留 24h 后剪枝（同时从中央索引移除）；job.json 已落盘终态，剪枝不丢历史。
 
@@ -122,6 +124,22 @@ agent 会调用 `bgjob_submit` 提交，随后：
 - 命令原样写入子 bat（`cmd.bat`）/ 子脚本（`job.ps1`，UTF-8 with BOM），输出整体重定向到日志（UTF-8，中文不乱码），**命令里不要自带 `> log` 类重定向**；
 - `bgjob_submit_pwsh` 需机器装有 PowerShell（pwsh 7 优先，找不到时回退 Windows PowerShell 5.1）；解释器在提交时解析并烘焙进 run.bat；
 - 任务由 DSH 插件自动跟踪，`done` 任务保留 24h 后清理。
+
+## 可选沙箱（bgjob_submit_pwsh）
+
+`bgjob_submit_pwsh` 可选 `sandbox` 参数（read-only / workspace-write / off，缺省继承当前会话受限模式，会话全权限则为 off=全权限），复用 dsh 的 Windows ACL 沙箱把**用户命令**包进受限 token，只约束**文件效果**（写工作目录/私有临时区之外会被拒绝；网络不受限）。
+
+- **权限不高于会话**：后台任务权限不会高于当前会话访问模式。受限会话（dsh 沙箱策略生效）里请求更宽权限（含 off=全权限）且面板「full access」开关关 → 网页弹窗请用户批准（agent 应提供 `justification`）；开关开 → 视为用户预批准，不再逐次弹窗。
+- **无沙箱服务部署**：未组合 dsh 沙箱策略服务（sandbox-policy 等）时无法确认会话访问模式 → 提交会被拒绝，需在面板打开「full access」开关（= 原模式）或部署沙箱服务。
+- **runner 依赖**：沙箱任务需要一个独立 runner 进程（`@deepseek-ai/dsh-sandbox-windows-acl`）。插件已声明该 npm 依赖，**在插件目录执行 `pnpm install`** 即可（见下）；或设置环境变量 `BGJOBS_SANDBOX_RUNNER` 指向 runner 绝对路径。未就绪时提交沙箱任务会报错，普通任务不受影响。
+- **注意**：Windows ACL 沙箱是"尽力而为"而非数学边界——任务工作目录若落在 Everyone 可写的位置（如系统临时目录）沙箱约束会失效；沙箱任务会把任务目录授 Everyone 只读（受限子进程要读脚本），即 `job.ps1`（用户命令文本）对本地其他用户可读；bat 引擎任务（`bgjob_submit`）恒为全权限、不支持沙箱。
+
+安装方式 B（本地源码）时，runner 依赖需在插件目录内安装（Node 从插件真实路径向上解析依赖，宿主 profile 的 link 装不进插件目录）：
+
+```bat
+cd D:\dsh\plugins\bgjobs
+pnpm install
+```
 
 ## 设计要点
 
