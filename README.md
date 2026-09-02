@@ -1,53 +1,39 @@
 # bgjobs — DSH 独立后台任务插件
 
-**让 DSH 提交的命令脱离 DSH 进程独立运行：任务由 Windows 任务计划程序服务托管，关掉 DSH、关掉网页、甚至关掉终端窗口都不影响任务执行。任务退出时网页弹出 Toast 提示，随时看实时输出，DSH 离线也能用独立 CLI/GUI 管理。**
+**让 DSH 提交的命令脱离 DSH 进程独立运行**：任务交给 Windows 任务计划程序服务托管，关掉 DSH、关掉网页、甚至关掉终端窗口都不影响执行；网页弹 Toast 提醒完成，随时看实时输出；DSH 离线时还能用独立 CLI/GUI 管理。
 
-还在为大文件下载、批量脚本、数据同步、编译这类长任务守着 DSH 会话？DSH 自带的后台任务会随 DSH 结束一起终止；而用本插件提交的任务交由 Windows 任务计划程序服务托管，关掉 DSH、甚至 DSH 崩溃，任务照常跑完，随时回来查结果就行。
+适合大文件下载、批量脚本、编译、数据同步/导出这类长任务——提交后不用守着 DSH，随时回来看结果。
 
 ## 特性一览
 
 | 能力 | 说明 |
 |---|---|
-| **进程外独立运行** | 任务经 `schtasks` 交给 Windows 任务计划程序服务托管，关掉 DSH、关掉网页，甚至 DSH 崩溃，都不影响已提交任务的运行 |
-| **实时输出面板** | 网页右下角「后台任务监控」浮动面板每秒刷新打印输出，可拖拽移动（自动吸附在窗口内）、`—` 最小化为悬浮球、▾/▸ 折叠、随主题换肤；列表按工作区分组（组头可点击折叠）、超长自动滚动、右下角手柄可调节面板大小；顶部勾选「仅当前会话工作区」可按当前 active 会话自动过滤任务；垃圾篓默认隐藏（拖拽已完成任务时才出现） |
-| **清理已完成** | 面板 🧹 按钮手动选择清理范围：仅超过 24h（24h 内默认保留）或全部已完成任务（与视图过滤一致）；单条已完成/异常退出任务可拖到面板底部"垃圾篓"快速删除 |
-| **完成通知** | 任务退出瞬间网页顶部弹出 Toast 提示（退出码 + 任务名，UI toast 不污染会话消息；fs.watch 事件驱动，亚秒级） |
-| **agent 可识别** | 工具自动进 system prompt + 注入使用指引（何时用 bgjob_submit / bgjob_submit_pwsh、bat/PowerShell 语法注意事项），新会话 agent 开箱即用 |
-| **断线续跟** | DSH 重启后自动扫描工作区恢复跟踪之前留下的任务（含运行中任务，done 不重复通知）；`bgjob_status` 对重启前的旧任务 id 也能从磁盘实时查询（running/done/退出码/日志尾部），不会误报 not found |
-| **离线管理** | DSH 不运行时，`tools/` 下的 CLI 与 GUI 直接读写任务磁盘文件，照常 list / status / log / submit / kill |
-| **可选沙箱** | `bgjob_submit_pwsh` 支持可选 `sandbox`（read-only / workspace-write / off）复用 dsh Windows ACL 沙箱约束后台任务的**文件效果**；后台任务权限不高于当前会话访问模式（受限会话请求更宽权限会弹窗请用户批准）；面板「full access」开关预批准全权限任务（默认关，兼容无沙箱部署的原模式） |
-| **零残留** | 任务跑完 bat 自动删除 schtasks 定义（插件侧另有兜底删除）；done 任务持续保留展示，用户可一键清理，job.json 落盘不丢历史 |
-
-## 适用场景
-
-- **长耗时任务**：大文件下载、批量脚本、数据同步、编译、数据导出；
-- **提交后不想守着 DSH 会话**：关掉网页/终端，任务照常跑完；
-- **随时回来看结果**：网页面板、离线 CLI、GUI 三处都能查状态与日志。
+| 进程外独立运行 | 任务经 `schtasks` 托管，DSH 崩溃/关闭不影响 |
+| 实时输出面板 | 网页右下角浮动面板每秒刷新输出：可拖拽、最小化为悬浮球、折叠为仅任务列表、随主题换肤；按工作区分组、可调大小 |
+| 清理已完成 | 🧹 手动选择清理范围：仅超过 24h（默认保留 24h 内）或全部；单条任务可拖到垃圾篓删除 |
+| 完成通知 | 任务退出即弹 Toast（不打扰会话）；可选把通知发回创建它的 agent（`notify` 参数） |
+| 断线续跟 | DSH 重启自动恢复跟踪；旧任务 id 也能从磁盘查询状态 |
+| 离线管理 | 不依赖 DSH 的 CLI / GUI：list / status / log / submit / kill / cleanup |
+| 可选沙箱 | `bgjob_submit_pwsh` 可选 `sandbox` 约束后台任务文件权限，权限不高于当前会话模式 |
+| 零残留 | 任务跑完自删任务计划；done 任务默认保留展示，用户手动清理 |
 
 ## 安装 / 卸载
 
 前置：已安装 DSH（`@deepseek-ai/dsh`）与 Node.js（≥18），Windows 系统。
 
-**方式 A（推荐，bundle 发布版）** — 一条命令安装，`cordis.patch.yml` 自动挂载：
+**方式 A（推荐，发布版）**
 
 ```bat
-dsh plugin --profile web add bgjobs
+dsh plugin --profile <profile> add bgjobs
 ```
 
-安装完成后重启 DSH 即生效（网页右下角出现「后台任务监控」面板，agent 获得 `bgjob_submit` / `bgjob_submit_pwsh` / `bgjob_status` 工具）。
+重启 DSH 后生效：网页右下角出现「后台任务监控」面板，agent 获得 `bgjob_submit` / `bgjob_submit_pwsh` / `bgjob_status` 工具。
 
-**方式 B（本地源码/免发布）** — 尚未发布或想直接用本地代码时：
+**方式 B（本地源码）**
 
-1. 把仓库放到本地插件目录（无中文路径更稳妥），例如 `D:\dsh\plugins\bgjobs`；
-2. 建立 junction，让 DSH 的模块解析器通过包名 `bgjobs` 找到本地源码：
-
-```bat
-mklink /J "<你的DSH安装>\node_modules\bgjobs" "D:\dsh\plugins\bgjobs"
-```
-
-> 说明：DSH 从它自己的 `node_modules` 向上解析包名。默认安装位置是 `C:\Users\<用户名>\node_modules`（npm 安装在用户目录时）；若用 npx 缓存运行，则对 npx 缓存目录下的 `node_modules` 建 junction。执行 `npm root -g` 或查看 DSH 启动报错路径即可确认。
-
-3. 挂载到 profile 补丁层：编辑 `<DSH_HOME>\profiles\web\cordis.patch.yml`，追加：
+1. 把仓库放到本地插件目录（路径不要含中文），如 `D:\dsh\plugins\bgjobs`；
+2. 让 DSH 的模块解析器能找到它（把插件目录 junction 到 DSH 的 `node_modules\bgjobs`，或把目录加到 DSH 的插件扫描路径）；本地开发还需在插件目录执行一次 `pnpm install`（沙箱 runner 依赖，见下）；
+3. 编辑 `<DSH_HOME>\profiles\<profile>\cordis.patch.yml` 追加挂载：
 
 ```yaml
 - insert:
@@ -55,106 +41,57 @@ mklink /J "<你的DSH安装>\node_modules\bgjobs" "D:\dsh\plugins\bgjobs"
       name: bgjobs
 ```
 
-4. 生效：保存即热加载（host 部分），刷新页面出现监控面板。
-
-**卸载：**
-
-```bat
-dsh plugin --profile web remove bgjobs
-```
+**卸载：** `dsh plugin --profile <profile> remove bgjobs`
 
 ## 使用（agent 工具）
 
-agent 通过三个工具使用 bgjobs：
-
 - `bgjob_submit(name, command, workdir, [notify], [notify_mode])` — 提交后台任务（command 为 **bat** 语法）；
-- `bgjob_submit_pwsh(name, command, workdir, [sandbox], [justification], [notify], [notify_mode])` — 提交后台任务（command 为 **PowerShell** 语法，PowerShell 执行：pwsh 7 优先、Windows PowerShell 兜底，输出日志 UTF-8 无 cmd GBK/UTF-8 乱码问题；`exit <code>` 语义安全；`sandbox` 可选：read-only / workspace-write / off，`justification` 为请求更宽权限时的审批说明）；
+- `bgjob_submit_pwsh(name, command, workdir, [sandbox], [justification], [notify], [notify_mode])` — 提交后台任务（command 为 **PowerShell** 语法，UTF-8 日志、`exit <code>` 语义安全）；
 - `bgjob_status(jobId)` — 查询状态 / 退出码 / 日志尾部。
 
-> **完成通知（可选）**：任务结束默认只弹网页 Toast，不打扰会话。两个提交工具都支持可选 `notify`：`on-completion`（仅成功 exit 0）/ `on-fail`（仅异常退出）/ `on-exit`（任何退出）——结束后向创建它的 agent 会话发一条「后台任务『name』已完成/已结束」消息（不含日志全文，详情查 `bgjob_status`）；`notify_mode` 控制送达：`wakeup`（默认，会话空闲会唤醒一轮、忙碌排入下一步收件箱，连续唤醒有预算）/ `quiet`（仅排入收件箱，等用户下一条消息才被模型看到）/ `always`（空闲恒唤醒）。
-
-直接对 AI 说一句话即可，例如：
+直接对 AI 说一句即可：
 
 > 把「下载 https://example.com/large.zip 到 D:\data」提交成后台任务，任务名叫「下载大文件」。
 
-agent 会调用 `bgjob_submit` 提交，随后：
+- 任务输出实时写入 `<workdir>\.dsh\bgjobs\<jobId>\stdout.log`；
+- 退出后 `<workdir>\.dsh\bgjobs\<jobId>\exitcode.txt` 写入退出码，网页弹 Toast；
+- 完成后**默认不打扰会话**；需要让 agent 主动得知并收尾时，传 `notify: on-exit`（或 `on-completion` 仅成功 / `on-fail` 仅失败），并可选 `notify_mode`（`wakeup` 空闲唤醒 / `quiet` 仅入收件箱 / `always`）。
 
-- 输出实时写入 `<workdir>\.dsh\bgjobs\<jobId>\stdout.log`；
-- 任务退出后 `<workdir>\.dsh\bgjobs\<jobId>\exitcode.txt` 写入退出码，网页顶部弹出 Toast 提示（任务名 + 退出码）；
-- 网页右下角「后台任务监控」面板实时显示全部任务与输出：点任务行展开日志尾部，标题栏可拖拽（拖出窗口范围会自动拉回），`—` 最小化为悬浮球（点击恢复），`▾` / `▸` 折叠面板。
+## 网页面板
 
-## 离线管理 CLI（DSH 不运行时也可用）
+面板顶部依次是：清理（选 24h 前/全部）、折叠（收成仅任务列表）、最小化（悬浮球落在按钮位置）。工具栏两个开关：「仅当前会话」（只显示当前会话工作区任务）与「全权限」（预批准全权限任务，默认关）。点击任务行展开实时日志。
 
-任务由系统服务托管，DSH 离线期间照常运行。`tools/` 下提供独立 CLI，直接读写任务磁盘文件，不依赖 DSH 进程：
+## 离线管理 CLI（DSH 不运行也能用）
 
 ```powershell
 # 在 tools/ 目录下执行
-.\dsh-bgjobs.ps1 list                                  # 全部任务
-.\dsh-bgjobs.ps1 status -Id <id>                       # 单任务详情 + 日志尾部
-.\dsh-bgjobs.ps1 log -Id <id> [-Tail 100]              # 查看日志末尾 N 行
-.\dsh-bgjobs.ps1 submit -Name <n> -Command <c> -Workdir <dir> [-Pwsh]   # 离线提交新任务（-Pwsh 用 PowerShell 引擎，pwsh 优先）
-.\dsh-bgjobs.ps1 kill -Id <id> [-NoDeleteDir]          # 终止任务（默认删除任务目录）
-.\dsh-bgjobs.ps1 cleanup [-OlderThanHours 24]          # 手动清理已完成任务目录：默认超 24h；-OlderThanHours 0 = 全部
-.\dsh-bgjobs.ps1 index -Workdir <dir>                  # 重建任务索引（可传多个目录）
+.\dsh-bgjobs.ps1 list
+.\dsh-bgjobs.ps1 status -Id <id>
+.\dsh-bgjobs.ps1 log -Id <id> [-Tail 100]
+.\dsh-bgjobs.ps1 submit -Name <n> -Command <c> -Workdir <dir> [-Pwsh]
+.\dsh-bgjobs.ps1 kill -Id <id> [-NoDeleteDir]
+.\dsh-bgjobs.ps1 cleanup [-OlderThanHours 24]   # 0 = 清理全部
+.\dsh-bgjobs.ps1 index -Workdir <dir>
 ```
-
-> 离线提交的任务，DSH 恢复后会自动接管跟踪；任务完成时网页顶部弹出 Toast 提示。
 
 ## 图形面板（GUI）
 
-双击 `tools\dsh-bgjobs-gui.bat`（或为其建桌面快捷方式）即可启动独立窗口，不依赖 DSH：任务列表 + 详情/日志、提交（引擎单选：bat（cmd）/ pwsh（PowerShell））、终止、清理、重建索引，每 2s 自动刷新。
+双击 `tools\dsh-bgjobs-gui.bat` 即可启动独立窗口（不依赖 DSH）：任务列表/日志、提交（bat 或 pwsh）、终止、清理（可选 24h 前或全部）、重建索引。
 
 ## 数据与存储
 
-| 项目 | 位置 |
-|---|---|
-| 任务目录 | `<workdir>\.dsh\bgjobs\<jobId>\` |
-| 任务元数据 | `job.json`（id / name / command / status / exitCode / finishedAt / **sandbox**（resolved 模式）/ notify+notifyMode+notifiedAt（开启完成通知时）；沙箱任务另含 sandboxRunnerPath / sandboxTempPath / nodeExe） |
-| 输出日志 | `stdout.log`（命令输出实时追加，末尾 `[BGJOB] exit code: N`） |
-| 退出码 | `exitcode.txt`（bat 最后写入，出现即触发完成检测） |
-| 任务计划 | `dsh-bgj-<jobId>`（schtasks ONCE 任务，跑完自删） |
-| 中央索引 | `$DSH_HOME\bgjobs\index.json`（仅存 jobDir 当"地图"，状态实时读 job.json） |
-| full access 开关 | `$DSH_HOME\bgjobs\fullaccess.json`（面板 toggle 持久化，默认关） |
+- 任务数据：`<workdir>\.dsh\bgjobs\<jobId>\`（`job.json` 元数据、`stdout.log` 日志、`exitcode.txt` 退出码）；
+- 全局状态：`$DSH_HOME\bgjobs\index.json`（任务"地图"）、`$DSH_HOME\bgjobs\fullaccess.json`（全权限开关）；
+- `done` 任务默认持续保留，直到你手动清理（面板 🧹 / CLI cleanup / GUI）。
 
-生命周期：`done` 任务在插件内存注册表与中央索引持续保留（不按时间剪枝），面板一直显示，直到用户手动删除或「一键清理」；job.json 已落盘终态，清理不丢排程/终态信息。
+## 使用须知
 
-## 语义与边界
+- `workdir` 必须是 DSH 工作区内的绝对路径；
+- 任务默认「仅用户登录时运行」：关 DSH/终端不影响，但**注销 Windows 会终止任务**；
+- 命令不要自带 `> log` 类重定向（插件已整体重定向并保证 UTF-8）；
+- **沙箱**：`sandbox` 只约束文件效果（写工作区/临时区外会被拒），网络不受限；它是"尽力而为"而非数学边界——工作目录若落在 Everyone 可写的位置会失效；沙箱任务的任务目录会授 Everyone 只读（脚本文本对本地用户可见）；bat 引擎任务恒为全权限，受限会话需开启「全权限」才能提交；
+- 受限会话里请求超出会话模式的权限会弹窗审批，`justification` 说明理由即可。
 
-- `workdir` 必须是 DSH 工作区内的绝对路径（任务文件与日志写在 `<workdir>/.dsh/bgjobs/<id>/`）；
-- 任务默认「仅用户登录时运行」：关 DSH/关终端不影响，但**注销 Windows 会终止任务**；
-- 命令使用 **bat 语法**（`bgjob_submit`）或 **PowerShell 语法**（`bgjob_submit_pwsh`）；bat 支持多行与 `for` / `if` 块结构、`for` 循环变量写成 `%%i`；PowerShell 用 `foreach` / 管道，`exit <code>` 语义安全（不像 cmd 的 `exit` 提前终止导致 exitcode 不写入）；
-- 命令原样写入子 bat（`cmd.bat`）/ 子脚本（`job.ps1`，UTF-8 with BOM），输出整体重定向到日志（UTF-8，中文不乱码），**命令里不要自带 `> log` 类重定向**；
-- `bgjob_submit_pwsh` 需机器装有 PowerShell（pwsh 7 优先，找不到时回退 Windows PowerShell 5.1）；解释器在提交时解析并烘焙进 run.bat；
-- 任务由 DSH 插件自动跟踪，`done` 任务持续保留在面板与索引（不按时间清理），可用「一键清理」或单独删除。
+## 维护与开发
 
-## 可选沙箱（bgjob_submit_pwsh）
-
-`bgjob_submit_pwsh` 可选 `sandbox` 参数（read-only / workspace-write / off，缺省继承当前会话受限模式，会话全权限则为 off=全权限），复用 dsh 的 Windows ACL 沙箱把**用户命令**包进受限 token，只约束**文件效果**（写工作目录/私有临时区之外会被拒绝；网络不受限）。
-
-- **权限不高于会话**：后台任务权限不会高于当前会话访问模式。受限会话（dsh 沙箱策略生效）里请求更宽权限（含 off=全权限）且面板「full access」开关关 → 网页弹窗请用户批准（agent 应提供 `justification`）；开关开 → 视为用户预批准，不再逐次弹窗。
-- **无沙箱服务部署**：未组合 dsh 沙箱策略服务（sandbox-policy 等）时无法确认会话访问模式 → 提交会被拒绝，需在面板打开「full access」开关（= 原模式）或部署沙箱服务。
-- **runner 依赖**：沙箱任务需要一个独立 runner 进程（`@deepseek-ai/dsh-sandbox-windows-acl`）。插件已声明该 npm 依赖，**在插件目录执行 `pnpm install`** 即可（见下）；或设置环境变量 `BGJOBS_SANDBOX_RUNNER` 指向 runner 绝对路径。未就绪时提交沙箱任务会报错，普通任务不受影响。
-- **注意**：Windows ACL 沙箱是"尽力而为"而非数学边界——任务工作目录若落在 Everyone 可写的位置（如系统临时目录）沙箱约束会失效；沙箱任务会把任务目录授 Everyone 只读（受限子进程要读脚本），即 `job.ps1`（用户命令文本）对本地其他用户可读；bat 引擎任务（`bgjob_submit`）恒为全权限、无法沙箱化，受限会话下**仅当 full access 开关开启才可用**（关闭时提交被拒绝），需要受限后台任务请用 `bgjob_submit_pwsh` 的 `sandbox` 参数。
-
-安装方式 B（本地源码）时，runner 依赖需在插件目录内安装（Node 从插件真实路径向上解析依赖，宿主 profile 的 link 装不进插件目录）：
-
-```bat
-cd D:\dsh\plugins\bgjobs
-pnpm install
-```
-
-## 设计要点
-
-- **托管机制**：插件在 DSH 进程内直接 `spawn schtasks`（不经过 pwsh 沙箱）；bat 引擎的用户命令原样写入子 bat（`cmd.bat`），run.bat 用 `call cmd.bat >> log 2>&1` 整体重定向（逐行重定向会破坏 `for ... do (` 等块结构导致 cmd 语法错误）、开头 `chcp 65001` 保证日志 UTF-8、`/Run` 成功后立即删任务计划防 `/ST` 整分双跑、末尾写 exitcode 并自删任务；**任务以隐藏窗口运行**（pwsh 引擎 `/TR` 加 `-WindowStyle Hidden`；bat 引擎经 `wscript.exe` + 纯 ASCII `launch.vbs` 以 SW_HIDE 启动 run.bat，保持零 PowerShell 依赖），不弹 conhost 黑窗；**pwsh 引擎**（`bgjob_submit_pwsh`）`/TR` 直接调 PowerShell（pwsh 7 优先、5.1 兜底）执行 **run.ps1 包装脚本**（不再经 cmd），由它在 PowerShell 内完成 `& job.ps1 *> stdout.log` 重定向（5.1 的 UTF-16LE 输出自动转 UTF-8）、写 exitcode.txt、自删任务计划；命令写入 `job.ps1`（UTF-8 with BOM + 编码 preamble），规避 cmd 代码页 GBK/UTF-8 不稳定问题；
-- **亚秒级完成检测**：fs.watch 监视任务目录，`exitcode.txt` 出现即触发状态迁移 → 通知创建者；tick 每 5s 兜底补查，防 Windows watch 丢事件；
-- **增量日志读取**：按字节位置只读新增部分，TextDecoder 流式解码，避免块边界截断多字节 UTF-8；
-- **断线续跟**：启动后扫描工作区 `.dsh/bgjobs/*/job.json` 重新挂接：running 继续跟踪，done 直接显示终态（不重复通知）；
-- **索引即地图**：中央索引只存 jobDir，状态永远实时读 job.json，索引过期/缺失不影响正确性。
-
-## 开发
-
-- 测试（不需要 DSH 运行，在仓库目录执行）：
-
-```bat
-npm test
-```
+架构设计、机制细节、测试与发布流程见 [docs/developer.md](docs/developer.md)。
