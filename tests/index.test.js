@@ -2,7 +2,7 @@
 // 运行：node --test tests/
 // schtasks 通过 setSchtasksRunner 替换为可控 fake；ctx 用轻量 mock。
 
-import { test } from 'node:test'
+import { test, beforeEach, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { promises as fsp } from 'node:fs'
 import os from 'node:os'
@@ -23,6 +23,22 @@ async function makeDshHome() {
   process.env.DSH_HOME = dir
   return dir
 }
+
+// ── 套件级 DSH_HOME 隔离 ──
+// recover 现按中央索引恢复（全局地图）：未隔离 DSH_HOME 的用例会读到真实的 ~/.dsh 索引
+// （任务挂进注册表、计数断言被污染、剪枝还可能改动真实索引）。每个用例前重置一个全新
+// 临时 home；makeDshHome 用例用自己的 home 并在 finally 删除 env，beforeEach 会在下一
+// 个用例前重新铺好隔离 home。
+let suiteHome = null
+beforeEach(async () => {
+  if (suiteHome) await fsp.rm(suiteHome, { recursive: true, force: true }).catch(() => {})
+  suiteHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'bgjobs-suite-'))
+  process.env.DSH_HOME = suiteHome
+})
+after(async () => {
+  if (suiteHome) await fsp.rm(suiteHome, { recursive: true, force: true }).catch(() => {})
+  delete process.env.DSH_HOME
+})
 
 /** 建一个临时 workdir。 */
 async function makeWorkdir() {
@@ -521,6 +537,112 @@ test('recover: workspaceRegistry 未就绪时 tick 不抛错（持续重试）',
   await assert.doesNotReject(tick())
   dispose()
   await fsp.rm(workdir, { recursive: true, force: true })
+})
+
+test('recover: 任务 workdir 不在当前工作区也能恢复（中央索引）', async () => {
+  const home = await makeDshHome()
+  try {
+    const workdirA = await makeWorkdir() // 任务所在工作区
+    const workdirB = await makeWorkdir() // 当前会话工作区（不含任务）
+    const jobId = 'bg-cross-ws'
+    const jobDir = workdirA + '\\.dsh\\bgjobs\\' + jobId
+    await fsp.mkdir(jobDir, { recursive: true })
+    await fsp.writeFile(path.join(jobDir, 'job.json'), JSON.stringify({
+      id: jobId, name: 'cross', workdir: workdirA, jobDir,
+      logPath: jobDir + '\\stdout.log', exitcodePath: jobDir + '\\exitcode.txt',
+      jsonPath: jobDir + '\\job.json', taskName: 'dsh-bgj-cross',
+      command: 'echo x', status: 'running', createdAt: Date.now(),
+    }), 'utf8')
+    await writeBgjobsIndex({ version: 1, updatedAt: Date.now(), jobs: [{ id: jobId, jobDir, workdir: workdirA, name: 'cross', createdAt: Date.now() }] }, home)
+    // 当前会话的工作区是 workdirB，与任务 workdir 不同——只能经中央索引恢复。
+    const { ctx, intervals, injectCallbacks } = makeCtx({
+      services: { workspaceRegistry: { list: () => [{ path: workdirB }] } },
+    })
+    const dispose = apply(ctx)
+    const tick = intervals.find((i) => i.ms === 1000).fn
+    await tick()
+    const getJobs = attachWebServer(ctx, injectCallbacks)
+    let body = ''
+    getJobs().handler({ url: '/bgjobs/state' }, { writeHead: () => {}, end: (b) => { body = b } })
+    const jobs = JSON.parse(body).jobs
+    assert.equal(jobs.length, 1, '跨工作区任务应经中央索引恢复')
+    assert.equal(jobs[0].id, jobId)
+    assert.equal(jobs[0].status, 'running')
+    await fsp.rm(workdirA, { recursive: true, force: true })
+    await fsp.rm(workdirB, { recursive: true, force: true })
+    dispose()
+  } finally {
+    delete process.env.DSH_HOME
+    await fsp.rm(home, { recursive: true, force: true })
+  }
+})
+
+test('recover: 无 workspaceRegistry 时按中央索引恢复成功', async () => {
+  const home = await makeDshHome()
+  try {
+    const workdir = await makeWorkdir()
+    const jobId = 'bg-no-ws'
+    const jobDir = workdir + '\\.dsh\\bgjobs\\' + jobId
+    await fsp.mkdir(jobDir, { recursive: true })
+    await fsp.writeFile(path.join(jobDir, 'job.json'), JSON.stringify({
+      id: jobId, name: 'nows', workdir, jobDir,
+      logPath: jobDir + '\\stdout.log', exitcodePath: jobDir + '\\exitcode.txt',
+      jsonPath: jobDir + '\\job.json', taskName: 'dsh-bgj-nows',
+      command: 'echo x', status: 'done', exitCode: 0, finishedAt: Date.now(), createdAt: Date.now(),
+    }), 'utf8')
+    await writeBgjobsIndex({ version: 1, updatedAt: Date.now(), jobs: [{ id: jobId, jobDir, workdir, name: 'nows', createdAt: Date.now() }] }, home)
+    const { ctx, intervals, injectCallbacks } = makeCtx({ services: {} }) // 无 workspaceRegistry
+    const dispose = apply(ctx)
+    const tick = intervals.find((i) => i.ms === 1000).fn
+    await assert.doesNotReject(tick())
+    const getJobs = attachWebServer(ctx, injectCallbacks)
+    let body = ''
+    getJobs().handler({ url: '/bgjobs/state' }, { writeHead: () => {}, end: (b) => { body = b } })
+    const jobs = JSON.parse(body).jobs
+    assert.equal(jobs.length, 1, '无 workspaceRegistry 也应从索引恢复')
+    assert.equal(jobs[0].id, jobId)
+    assert.equal(jobs[0].status, 'done')
+    assert.equal(jobs[0].exitCode, 0)
+    await fsp.rm(workdir, { recursive: true, force: true })
+    dispose()
+  } finally {
+    delete process.env.DSH_HOME
+    await fsp.rm(home, { recursive: true, force: true })
+  }
+})
+
+test('recover: 索引缺失时工作区扫描兜底', async () => {
+  const home = await makeDshHome()
+  try {
+    const workdir = await makeWorkdir()
+    const jobId = 'bg-scan-fallback'
+    const jobDir = workdir + '\\.dsh\\bgjobs\\' + jobId
+    await fsp.mkdir(jobDir, { recursive: true })
+    await fsp.writeFile(path.join(jobDir, 'job.json'), JSON.stringify({
+      id: jobId, name: 'scan', workdir, jobDir,
+      logPath: jobDir + '\\stdout.log', exitcodePath: jobDir + '\\exitcode.txt',
+      jsonPath: jobDir + '\\job.json', taskName: 'dsh-bgj-scan',
+      command: 'echo x', status: 'running', createdAt: Date.now(),
+    }), 'utf8')
+    // 不写中央索引：仅靠工作区扫描兜底。
+    const { ctx, intervals, injectCallbacks } = makeCtx({
+      services: { workspaceRegistry: { list: () => [{ path: workdir }] } },
+    })
+    const dispose = apply(ctx)
+    const tick = intervals.find((i) => i.ms === 1000).fn
+    await tick()
+    const getJobs = attachWebServer(ctx, injectCallbacks)
+    let body = ''
+    getJobs().handler({ url: '/bgjobs/state' }, { writeHead: () => {}, end: (b) => { body = b } })
+    const jobs = JSON.parse(body).jobs
+    assert.equal(jobs.length, 1, '索引缺失时应由工作区扫描兜底')
+    assert.equal(jobs[0].id, jobId)
+    await fsp.rm(workdir, { recursive: true, force: true })
+    dispose()
+  } finally {
+    delete process.env.DSH_HOME
+    await fsp.rm(home, { recursive: true, force: true })
+  }
 })
 
 // ── 剪枝 ──
