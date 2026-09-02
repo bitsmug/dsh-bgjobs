@@ -1,4 +1,4 @@
-﻿# dsh-bgjobs-gui.ps1 - bgjobs standalone management window (works WITHOUT DSH).
+# dsh-bgjobs-gui.ps1 - bgjobs standalone management window (works WITHOUT DSH).
 # Mirrors dsh-undo-savepoint-gui.ps1: single-instance mutex, hidden console,
 # WinForms list with refresh/submit/kill/cleanup, live log tail panel.
 # Open via dsh-bgjobs-gui.bat or a desktop shortcut.
@@ -285,9 +285,13 @@ $script:btnKill.Add_Click({
     Update-GuiList
 })
 $script:btnCleanup.Add_Click({
-    $ask = [System.Windows.Forms.MessageBox]::Show('清理超过 24h 的已完成任务目录？', 'bgjobs', 'YesNo', 'Question')
-    if ($ask -ne 'Yes') { return }
-    $removed = @(Clear-BgjobsDone 24)
+    # 手动选择清理范围：是 = 仅超过 24h；否 = 全部（含 24h 内）；取消 = 不清理。
+    $ask = [System.Windows.Forms.MessageBox]::Show(
+        '清理已完成任务目录？`n`n是(Y) = 仅清理超过 24h 的（24h 内默认保留）`n否(N) = 清理全部已完成（含 24h 内）`n取消 = 不清理',
+        'bgjobs', 'YesNoCancel', 'Question')
+    if ($ask -eq 'Cancel') { return }
+    $hours = if ($ask -eq 'No') { 0 } else { 24 }
+    $removed = @(Clear-BgjobsDone $hours)
     [System.Windows.Forms.MessageBox]::Show("已清理 $(@($removed).Count) 个任务", 'bgjobs', 'OK', 'Information')
     Update-GuiList
 })

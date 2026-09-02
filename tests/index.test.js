@@ -658,9 +658,9 @@ test('recover: 索引缺失时工作区扫描兜底', async () => {
   }
 })
 
-// ── 剪枝 ──
+// ── 保留策略：已完成任务不按时间剪枝（面板与索引保留，直到手动删除/一键清理）──
 
-test('剪枝: 近期 done 保留、超过 24h 的 done 被移除', async () => {
+test('保留: 已完成任务不被时间剪枝（近期与超过24h都保留）', async () => {
   setSchtasksRunner(makeFakeRunner([]))
   const workdir = await makeWorkdir()
   const jobsRoot = workdir + '\\.dsh\\bgjobs'
@@ -689,8 +689,34 @@ test('剪枝: 近期 done 保留、超过 24h 的 done 被移除', async () => {
   let body = ''
   await getJobs().handler({ url: '/bgjobs/state' }, { writeHead: () => {}, end: (b) => { body = b } })
   const jobs = JSON.parse(body).jobs
-  assert.equal(jobs.length, 1, '超期 done 应被剪枝，近期 done 保留')
-  assert.equal(jobs[0].id, 'bg-fresh')
+  assert.equal(jobs.length, 2, '已完成任务应一直保留（不按时间剪枝）')
+  assert.ok(jobs.some((j) => j.id === 'bg-fresh') && jobs.some((j) => j.id === 'bg-old'), '近期与超期 done 均保留')
+  await fsp.rm(workdir, { recursive: true, force: true })
+  dispose()
+})
+
+test('state 视图含 finishedAt：面板可据此区分"超 24h 清理"范围', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  const workdir = await makeWorkdir()
+  const { ctx, tools, intervals, injectCallbacks } = makeCtx({
+    services: { workspaceRegistry: { list: () => [] } },
+  })
+  const dispose = apply(ctx)
+  const submit = tools.find((t) => t.name === 'bgjob_submit')
+  const res = await submit.execute({ name: 't', command: 'echo x', workdir }, { agent: undefined })
+  const jobDir = workdir + '\\.dsh\\bgjobs\\' + res.jobId
+  await fsp.writeFile(path.join(jobDir, 'exitcode.txt'), '0', 'utf8')
+  const tick = intervals.find((i) => i.ms === 1000).fn
+  await tick()
+  const getJobs = attachWebServer(ctx, injectCallbacks)
+  let body = ''
+  await getJobs().handler({ url: '/bgjobs/state' }, { writeHead: () => {}, end: (b) => { body = b } })
+  const jobs = JSON.parse(body).jobs
+  assert.equal(jobs.length, 1)
+  const done = jobs[0]
+  assert.equal(done.status, 'done')
+  assert.equal(typeof done.finishedAt, 'number', 'done 任务视图应携带 finishedAt（时间戳）')
+  assert.ok(done.finishedAt <= Date.now())
   await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
 })
@@ -935,7 +961,7 @@ test('索引: submitJob 成功写入索引；完成不删条目', async () => {
   }
 })
 
-test('索引: recover 补入近期任务；剪枝移除超期任务', async () => {
+test('索引: recover 兼收近期与超期任务（不按时间剪枝）', async () => {
   setSchtasksRunner(makeFakeRunner([]))
   const home = await makeDshHome()
   try {
@@ -955,17 +981,17 @@ test('索引: recover 补入近期任务；剪枝移除超期任务', async () =
     }
     const now = Date.now()
     await writeJob('bg-fresh', 'done', now - 60 * 60 * 1000) // 1h 前：保留 + 入索引
-    await writeJob('bg-old', 'done', now - 25 * 60 * 60 * 1000) // 25h 前：剪枝 + 移除
+    await writeJob('bg-old', 'done', now - 25 * 60 * 60 * 1000) // 25h 前：同样保留 + 入索引
     const { ctx, intervals } = makeCtx({
       services: { workspaceRegistry: { list: () => [{ path: workdir }] } },
     })
     const dispose = apply(ctx)
     const tick = intervals.find((i) => i.ms === 1000).fn
-    await tick() // recover 挂接；超期任务在同一次 tick 内被剪枝
-    await waitFor(async () => (await readBgjobsIndex(home)).jobs.length === 1)
+    await tick() // recover 挂接；所有任务是磁盘目录都入索引
+    await waitFor(async () => (await readBgjobsIndex(home)).jobs.length === 2)
     const idx = await readBgjobsIndex(home)
-    assert.equal(idx.jobs.length, 1, '近期任务入索引，超期任务被剪枝移除')
-    assert.equal(idx.jobs[0].id, 'bg-fresh')
+    assert.equal(idx.jobs.length, 2, '近期与超期任务均入索引（不按时间剪枝）')
+    assert.ok(idx.jobs.some((j) => j.id === 'bg-fresh') && idx.jobs.some((j) => j.id === 'bg-old'))
     await fsp.rm(workdir, { recursive: true, force: true })
     dispose()
   } finally {

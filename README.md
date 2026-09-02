@@ -10,13 +10,13 @@
 |---|---|
 | **进程外独立运行** | 任务经 `schtasks` 交给 Windows 任务计划程序服务托管，关掉 DSH、关掉网页，甚至 DSH 崩溃，都不影响已提交任务的运行 |
 | **实时输出面板** | 网页右下角「后台任务监控」浮动面板每秒刷新打印输出，可拖拽移动（自动吸附在窗口内）、`—` 最小化为悬浮球、▾/▸ 折叠、随主题换肤；列表按工作区分组（组头可点击折叠）、超长自动滚动、右下角手柄可调节面板大小；顶部勾选「仅当前会话工作区」可按当前 active 会话自动过滤任务；垃圾篓默认隐藏（拖拽已完成任务时才出现） |
-| **清理已完成** | 一键清理所有已完成任务（🧹 按钮）；单条已完成/异常退出任务可拖到面板底部"垃圾篓"快速删除 |
+| **清理已完成** | 面板 🧹 按钮手动选择清理范围：仅超过 24h（24h 内默认保留）或全部已完成任务（与视图过滤一致）；单条已完成/异常退出任务可拖到面板底部"垃圾篓"快速删除 |
 | **完成通知** | 任务退出瞬间网页顶部弹出 Toast 提示（退出码 + 任务名，UI toast 不污染会话消息；fs.watch 事件驱动，亚秒级） |
 | **agent 可识别** | 工具自动进 system prompt + 注入使用指引（何时用 bgjob_submit / bgjob_submit_pwsh、bat/PowerShell 语法注意事项），新会话 agent 开箱即用 |
 | **断线续跟** | DSH 重启后自动扫描工作区恢复跟踪之前留下的任务（含运行中任务，done 不重复通知）；`bgjob_status` 对重启前的旧任务 id 也能从磁盘实时查询（running/done/退出码/日志尾部），不会误报 not found |
 | **离线管理** | DSH 不运行时，`tools/` 下的 CLI 与 GUI 直接读写任务磁盘文件，照常 list / status / log / submit / kill |
 | **可选沙箱** | `bgjob_submit_pwsh` 支持可选 `sandbox`（read-only / workspace-write / off）复用 dsh Windows ACL 沙箱约束后台任务的**文件效果**；后台任务权限不高于当前会话访问模式（受限会话请求更宽权限会弹窗请用户批准）；面板「full access」开关预批准全权限任务（默认关，兼容无沙箱部署的原模式） |
-| **零残留** | 任务跑完 bat 自动删除 schtasks 定义（插件侧另有兜底删除）；done 任务保留 24h 后清理，job.json 落盘不丢历史 |
+| **零残留** | 任务跑完 bat 自动删除 schtasks 定义（插件侧另有兜底删除）；done 任务持续保留展示，用户可一键清理，job.json 落盘不丢历史 |
 
 ## 适用场景
 
@@ -94,7 +94,7 @@ agent 会调用 `bgjob_submit` 提交，随后：
 .\dsh-bgjobs.ps1 log -Id <id> [-Tail 100]              # 查看日志末尾 N 行
 .\dsh-bgjobs.ps1 submit -Name <n> -Command <c> -Workdir <dir> [-Pwsh]   # 离线提交新任务（-Pwsh 用 PowerShell 引擎，pwsh 优先）
 .\dsh-bgjobs.ps1 kill -Id <id> [-NoDeleteDir]          # 终止任务（默认删除任务目录）
-.\dsh-bgjobs.ps1 cleanup [-OlderThanHours 24]          # 清理过期任务目录
+.\dsh-bgjobs.ps1 cleanup [-OlderThanHours 24]          # 手动清理已完成任务目录：默认超 24h；-OlderThanHours 0 = 全部
 .\dsh-bgjobs.ps1 index -Workdir <dir>                  # 重建任务索引（可传多个目录）
 ```
 
@@ -116,7 +116,7 @@ agent 会调用 `bgjob_submit` 提交，随后：
 | 中央索引 | `$DSH_HOME\bgjobs\index.json`（仅存 jobDir 当"地图"，状态实时读 job.json） |
 | full access 开关 | `$DSH_HOME\bgjobs\fullaccess.json`（面板 toggle 持久化，默认关） |
 
-生命周期：`done` 任务在插件内存注册表保留 24h 后剪枝（同时从中央索引移除）；job.json 已落盘终态，剪枝不丢历史。
+生命周期：`done` 任务在插件内存注册表与中央索引持续保留（不按时间剪枝），面板一直显示，直到用户手动删除或「一键清理」；job.json 已落盘终态，清理不丢排程/终态信息。
 
 ## 语义与边界
 
@@ -125,7 +125,7 @@ agent 会调用 `bgjob_submit` 提交，随后：
 - 命令使用 **bat 语法**（`bgjob_submit`）或 **PowerShell 语法**（`bgjob_submit_pwsh`）；bat 支持多行与 `for` / `if` 块结构、`for` 循环变量写成 `%%i`；PowerShell 用 `foreach` / 管道，`exit <code>` 语义安全（不像 cmd 的 `exit` 提前终止导致 exitcode 不写入）；
 - 命令原样写入子 bat（`cmd.bat`）/ 子脚本（`job.ps1`，UTF-8 with BOM），输出整体重定向到日志（UTF-8，中文不乱码），**命令里不要自带 `> log` 类重定向**；
 - `bgjob_submit_pwsh` 需机器装有 PowerShell（pwsh 7 优先，找不到时回退 Windows PowerShell 5.1）；解释器在提交时解析并烘焙进 run.bat；
-- 任务由 DSH 插件自动跟踪，`done` 任务保留 24h 后清理。
+- 任务由 DSH 插件自动跟踪，`done` 任务持续保留在面板与索引（不按时间清理），可用「一键清理」或单独删除。
 
 ## 可选沙箱（bgjob_submit_pwsh）
 
