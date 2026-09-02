@@ -127,6 +127,7 @@ function Get-BgjobsJobs {
                 createdAt = if ($meta.createdAt) { $meta.createdAt } else { 0 }
                 finishedAt = if ($meta.finishedAt) { $meta.finishedAt } else { $null }
                 taskName = if ($meta.taskName) { $meta.taskName } else { '' }
+                createdBySession = if ($meta.createdBySession) { $meta.createdBySession } else { $entry.createdBySession }
             }
         } catch { }
     }
@@ -395,28 +396,34 @@ function Stop-BgjobsJob([string]$Id, [switch]$NoDeleteDir) {
 function Clear-BgjobsDone([int]$OlderThanHours) {
     $removed = @()
     $retention = [DateTime]::UtcNow.AddHours(-$OlderThanHours)
-    $idx = Get-BgjobsIndex
+    $jobs = Get-BgjobsJobs
     $kept = @()
-    foreach ($entry in $idx.jobs) {
-        $jobJson = Join-Path $entry.jobDir 'job.json'
+    foreach ($job in $jobs) {
         $delete = $false
-        if (Test-Path -LiteralPath $jobJson) {
-            try {
-                $meta = Get-Content -LiteralPath $jobJson -Raw -Encoding UTF8 | ConvertFrom-Json
-                $done = ($meta.status -eq 'done')
-                $finished = ConvertFrom-BgjobsTimeMs $meta.finishedAt
-                if ($done -and ($null -eq $finished -or $finished -lt $retention)) {
-                    [void](Remove-Item -LiteralPath $entry.jobDir -Recurse -Force -ErrorAction SilentlyContinue)
-                    $removed += $entry.id
-                    $delete = $true
-                }
-            } catch { }
-        } elseif (-not (Test-Path -LiteralPath $entry.jobDir)) {
-            $delete = $true # job dir gone: drop stale index entry
-        }
-        if (-not $delete) { $kept += $entry }
+        try {
+            $done = ($job.status -eq 'done')
+            $finished = ConvertFrom-BgjobsTimeMs $job.finishedAt
+            if ($done -and ($null -eq $finished -or $finished -lt $retention)) {
+                [void](Remove-Item -LiteralPath $job.jobDir -Recurse -Force -ErrorAction SilentlyContinue)
+                $removed += $job.id
+                $delete = $true
+            }
+        } catch { }    
+        if (-not $delete) { $kept += $job }
     }
-    $payload = @{ version = 1; updatedAt = (Get-Date).ToUniversalTime().ToString('o'); jobs = $kept }
+    # 索引是"地图"：写回前只保留定位/展示字段（id/jobDir/workdir/name/createdBySession/createdAt），
+    # 不把 job.json 的实时视图（status/logPath/finishedAt/...）复制进索引。
+    $map = @($kept | ForEach-Object {
+        [pscustomobject]@{
+            id = $_.id
+            jobDir = $_.jobDir
+            workdir = if ($_.workdir) { $_.workdir } else { '' }
+            name = if ($_.name) { $_.name } else { $_.id }
+            createdBySession = if ($_.createdBySession) { $_.createdBySession } else { '' }
+            createdAt = if ($null -ne $_.createdAt) { $_.createdAt } else { 0 }
+        }
+    })
+    $payload = @{ version = 1; updatedAt = (Get-Date).ToUniversalTime().ToString('o'); jobs = $map }
     [System.IO.File]::WriteAllText($script:BgjobsIndexPath, ($payload | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
     return $removed
 }
