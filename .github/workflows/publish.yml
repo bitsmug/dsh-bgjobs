@@ -1,0 +1,80 @@
+# bgjobs → npm 自动发布
+# 触发：① 手动（Actions 页面 Run workflow）② 推送 v* tag
+# 发布版本 = package.json 的 version；tag 触发时会校验 tag 与版本一致。
+# 仅「x.y.z 三段纯数字」版本号自动发布；含字母（如 0.1.36-alpha.1）一律跳过。
+# 前置：仓库 Secrets 需配置 NPM_TOKEN（npm 账号 Access Token，publish 权限）。
+
+name: publish
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      should_publish: ${{ steps.check.outputs.should_publish }}
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine version and gate on pure numeric x.y.z
+        id: check
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            version="${GITHUB_REF#refs/tags/v}"
+          else
+            version="$(node -p "require('./package.json').version")"
+          fi
+          if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "version=${version}" >> "$GITHUB_OUTPUT"
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+            echo "Pure numeric version ${version} -> will publish"
+          else
+            echo "version=${version}" >> "$GITHUB_OUTPUT"
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Version ${version} contains non-numeric segments; auto-publish skipped (tag/prerelease builds are manual only)."
+          fi
+
+  publish:
+    needs: check
+    if: needs.check.outputs.should_publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Install deps
+        run: pnpm install
+
+      - name: Run tests
+        run: pnpm test
+
+      - name: Verify tag matches package version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          tag="${GITHUB_REF#refs/tags/v}"
+          pkg="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::tag v${tag} != package version ${pkg}"
+            exit 1
+          fi
+          echo "Publishing bgjobs@${pkg}"
+
+      - name: Publish to npm
+        run: pnpm publish --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
