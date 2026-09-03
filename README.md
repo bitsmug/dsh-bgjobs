@@ -21,11 +21,15 @@
 
 前置：已安装 DSH（`@deepseek-ai/dsh`）与 Node.js（≥18），Windows 系统。
 
-**方式 A（推荐，发布版）**
+**方式 A（推荐，从 GitHub 安装，免 npm 发布）**
 
 ```bat
-dsh plugin --profile <profile> add bgjobs
+dsh plugin --profile <profile> add github:bitsmug/dsh-bgjobs
 ```
+
+> 从 GitHub 仓库默认分支安装（免 npm 发布）。仓库含 `dsh.bundle` 声明，装完自动加入 profile 层栈并启用工具。
+>
+> 若首次 `add` 报 pnpm 的 `allowBuilds` 提示（git 安装会跑 `prepare` 构建脚本，pnpm ≥10 默认阻止），把提示里的键复制进该 profile 的 `pnpm-workspace.yaml` 后重跑即可。
 
 重启 DSH 后生效：网页右下角出现「后台任务监控」面板，agent 获得 `bgjob_submit` / `bgjob_submit_pwsh` / `bgjob_status` 工具。
 
