@@ -392,7 +392,11 @@ function Stop-BgjobsJob([string]$Id, [switch]$NoDeleteDir) {
     return @{ ok = $true; removed = $Id }
 }
 
-# ── cleanup: remove done job dirs beyond retention, prune orphaned tasks ──
+# ── cleanup: remove done job dirs beyond retention ───────────────────────
+# -OlderThanHours > 0（仅清理超期）：只删能确定完成时间且严格早于 retention 的 done；
+#   finishedAt 缺失（如 DSH 离线期间完成、job.json 未回写）时以 exitcode.txt 落盘时间
+#   近似完成时间参与判定；finishedAt 与 exitcode.txt 皆无才保留。
+# -OlderThanHours <= 0（全部清理）：删除所有 done（含 finishedAt 缺失）。
 function Clear-BgjobsDone([int]$OlderThanHours) {
     $removed = @()
     $retention = [DateTime]::UtcNow.AddHours(-$OlderThanHours)
@@ -402,8 +406,14 @@ function Clear-BgjobsDone([int]$OlderThanHours) {
         $delete = $false
         try {
             $done = ($job.status -eq 'done')
+            $all = ($OlderThanHours -le 0)
             $finished = ConvertFrom-BgjobsTimeMs $job.finishedAt
-            if ($done -and ($null -eq $finished -or $finished -lt $retention)) {
+            if ($done -and -not $all -and $null -eq $finished -and $job.exitcodePath -and (Test-Path -LiteralPath $job.exitcodePath)) {
+                # finishedAt 缺失（典型：DSH 离线期间任务结束、job.json 未回写）：
+                # exitcode.txt 是任务收尾时写下的终态文件，其落盘时间 ≈ 完成时间。
+                $finished = [System.IO.File]::GetLastWriteTimeUtc($job.exitcodePath)
+            }
+            if ($done -and ($all -or ($null -ne $finished -and $finished -lt $retention))) {
                 [void](Remove-Item -LiteralPath $job.jobDir -Recurse -Force -ErrorAction SilentlyContinue)
                 $removed += $job.id
                 $delete = $true
@@ -470,7 +480,11 @@ $script:BgjobsText = @{
     'dlg.failed' = if ($script:BgjobsLangZh) { '提交失败：{0}' } else { 'Submit failed: {0}' }
     'msg.kill' = if ($script:BgjobsLangZh) { '终止任务 {0}（{1}）？' } else { 'Kill job {0} ({1})?' }
     'msg.kill.failed' = if ($script:BgjobsLangZh) { '终止失败：{0}' } else { 'Kill failed: {0}' }
-    'msg.cleanup' = if ($script:BgjobsLangZh) { "清理已完成任务目录？`n`n是(Y) = 仅清理超过 24h 的（24h 内默认保留）`n否(N) = 清理全部已完成（含 24h 内）`n取消 = 不清理" } else { "Clean up finished job dirs?`n`nYes = only >24h (default keeps <24h)`nNo = all finished (incl. <24h)`nCancel = abort" }
+    'dlg.cleanup.title' = if ($script:BgjobsLangZh) { '清理已完成任务' } else { 'Clean up finished jobs' }
+    'dlg.cleanup.older.pre' = if ($script:BgjobsLangZh) { '仅清理超过' } else { 'Only jobs older than' }
+    'dlg.cleanup.older.post' = if ($script:BgjobsLangZh) { '小时前完成的任务' } else { 'h' }
+    'dlg.cleanup.doOlder' = if ($script:BgjobsLangZh) { '清理超期任务' } else { 'Clean old jobs' }
+    'dlg.cleanup.doAll' = if ($script:BgjobsLangZh) { '清理全部已完成' } else { 'Clean all finished' }
     'msg.cleaned' = if ($script:BgjobsLangZh) { '已清理 {0} 个任务' } else { 'Cleaned {0} job(s)' }
     'msg.index.prompt' = if ($script:BgjobsLangZh) { '选择工作区根目录（扫描其 .dsh/bgjobs 下的任务）' } else { 'Choose a workspace root (scans its .dsh/bgjobs for jobs)' }
     'msg.index.done' = if ($script:BgjobsLangZh) { '索引重建完成：{0} 个任务' } else { 'Index rebuilt: {0} job(s)' }

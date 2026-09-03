@@ -116,7 +116,7 @@ Top bar, left to right: cleanup (choose >24h ago / all), collapse (to a compact 
 
 ## GUI
 
-Double-click `tools\dsh-bgjobs-gui.bat` to open a standalone window (no DSH needed): job list/log, submit (bat or pwsh), kill, cleanup (24h-or-older or all), rebuild index. GUI and Toast copy follow the Windows UI language (zh* → Simplified Chinese, otherwise English); the CLI prints English.
+Double-click `tools\dsh-bgjobs-gui.bat` to open a standalone window (no DSH needed): job list/log, submit (bat or pwsh), kill, cleanup (custom age cutoff or all), rebuild index. GUI and Toast copy follow the Windows UI language (zh* → Simplified Chinese, otherwise English); the CLI prints English.
 
 ## Data & storage
 

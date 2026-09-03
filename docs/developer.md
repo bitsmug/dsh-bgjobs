@@ -41,9 +41,10 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
 - **done 任务不按时间剪枝**：内存注册表、中央索引、面板、CLI/GUI 都持续保留，直到用户删除/清理。去掉了 `DONE_RETENTION_MS` 自动剪枝。
 - 清理入口三处，语义一致但各有形态：
   - Web 面板 🧹 → 菜单二选一：仅 >24h / 全部（范围 = 当前视图过滤后的任务，逐条 `/bgjobs/delete`）；
-  - GUI → YesNoCancel（是=24h、否=0=全部、取消）；
+  - GUI → 自定义弹窗：输入小时数（默认 24、会话内记忆），按钮「清理超期 N 小时 / 清理全部已完成 / 取消」；
   - CLI → `cleanup [-OlderThanHours 24]`（`0`=全部）。
 - 面板「仅 >24h」依赖 `/bgjobs/state` 视图的 `finishedAt`（done=时间戳、running=null；缺失按不算超期）。
+- 离线 CLI/GUI 的「仅 >N 小时」只删能确定完成时间且已超期的 done：finishedAt 缺失（DSH 离线完成未回写）以 exitcode.txt 落盘时间近似完成时间；两者皆无才保留，仅「全部」（0）无条件删除。
 
 ## 可选沙箱（bgjob_submit_pwsh，复用 dsh Windows ACL runner）
 

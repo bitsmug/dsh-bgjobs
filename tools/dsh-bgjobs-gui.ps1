@@ -228,6 +228,89 @@ function Show-GuiSubmitDialog {
     Update-GuiList
 }
 
+# ── cleanup dialog: adjustable age cutoff + explicit buttons ────────────
+$script:GuiCleanupHours = 24   # session-memory default; reset to 24 on restart
+
+function Show-GuiCleanupDialog {
+    $dlg = New-Object System.Windows.Forms.Form
+    $dlg.Text = (Get-BgjobsText 'dlg.cleanup.title')
+    $dlg.Size = New-Object System.Drawing.Size(470, 150)
+    $dlg.StartPosition = 'CenterParent'
+    $dlg.FormBorderStyle = 'FixedDialog'
+    $dlg.MaximizeBox = $false
+    $dlg.MinimizeBox = $false
+
+    # "仅清理超过 [24] 小时前完成的任务"
+    $pre = New-Object System.Windows.Forms.Label
+    $pre.Text = (Get-BgjobsText 'dlg.cleanup.older.pre')
+    $pre.Location = New-Object System.Drawing.Point(14, 22)
+    $pre.Size = New-Object System.Drawing.Size(130, 22)
+    $dlg.Controls.Add($pre)
+
+    $num = New-Object System.Windows.Forms.NumericUpDown
+    $num.Minimum = 1
+    $num.Maximum = 8760
+    $num.Value = $script:GuiCleanupHours
+    $num.Location = New-Object System.Drawing.Point(152, 20)
+    $num.Size = New-Object System.Drawing.Size(60, 22)
+    $dlg.Controls.Add($num)
+
+    $post = New-Object System.Windows.Forms.Label
+    $post.Text = (Get-BgjobsText 'dlg.cleanup.older.post')
+    $post.Location = New-Object System.Drawing.Point(220, 22)
+    $post.Size = New-Object System.Drawing.Size(240, 22)
+    $dlg.Controls.Add($post)
+
+    $btnOlder = New-Object System.Windows.Forms.Button
+    $btnOlder.Text = (Get-BgjobsText 'dlg.cleanup.doOlder')
+    $btnOlder.Location = New-Object System.Drawing.Point(60, 64)
+    $btnOlder.Size = New-Object System.Drawing.Size(135, 30)
+    $dlg.Controls.Add($btnOlder)
+
+    $btnAll = New-Object System.Windows.Forms.Button
+    $btnAll.Text = (Get-BgjobsText 'dlg.cleanup.doAll')
+    $btnAll.Location = New-Object System.Drawing.Point(205, 64)
+    $btnAll.Size = New-Object System.Drawing.Size(135, 30)
+    $dlg.Controls.Add($btnAll)
+
+    $btnCancel = New-Object System.Windows.Forms.Button
+    $btnCancel.Text = (Get-BgjobsText 'dlg.cancel')
+    $btnCancel.Location = New-Object System.Drawing.Point(350, 64)
+    $btnCancel.Size = New-Object System.Drawing.Size(95, 30)
+    $btnCancel.DialogResult = 'Cancel'
+    $dlg.Controls.Add($btnCancel)
+    $dlg.AcceptButton = $btnOlder
+    $dlg.CancelButton = $btnCancel
+
+    # 选择结果经 $script:CleanupChoice 传回（按钮在 ShowDialog 事件循环内触发，
+    # 局部变量当时在作用域内可读；写回必须用 script 级变量避免子作用域隔离）。
+    $script:CleanupChoice = $null
+    $btnOlder.Add_Click({
+        $script:CleanupChoice = @{ action = 'older'; hours = [int]$num.Value }
+        $dlg.Close()
+    })
+    $btnAll.Add_Click({
+        $script:CleanupChoice = @{ action = 'all' }
+        $dlg.Close()
+    })
+
+    $null = $dlg.ShowDialog($script:form)
+    $dlg.Dispose()
+    $choice = $script:CleanupChoice
+    $script:CleanupChoice = $null
+    if ($null -eq $choice) { return }   # cancelled
+
+    if ($choice.action -eq 'older') {
+        $script:GuiCleanupHours = $choice.hours
+        $hours = $choice.hours
+    } else {
+        $hours = 0   # all finished
+    }
+    $removed = @(Clear-BgjobsDone $hours)
+    [System.Windows.Forms.MessageBox]::Show(((Get-BgjobsText 'msg.cleaned') -f @($removed).Count), 'bgjobs', 'OK', 'Information')
+    Update-GuiList
+}
+
 # ── main window ───────────────────────────────────────────────────────────
 $script:form = New-Object System.Windows.Forms.Form
 $script:form.Text = (Get-BgjobsText 'gui.title')
@@ -295,17 +378,7 @@ $script:btnKill.Add_Click({
     if (-not $r.ok) { [System.Windows.Forms.MessageBox]::Show(((Get-BgjobsText 'msg.kill.failed') -f $r.error), 'bgjobs', 'OK', 'Error') }
     Update-GuiList
 })
-$script:btnCleanup.Add_Click({
-    # 手动选择清理范围：是 = 仅超过 24h；否 = 全部（含 24h 内）；取消 = 不清理。
-    $ask = [System.Windows.Forms.MessageBox]::Show(
-        (Get-BgjobsText 'msg.cleanup'),
-        'bgjobs', 'YesNoCancel', 'Question')
-    if ($ask -eq 'Cancel') { return }
-    $hours = if ($ask -eq 'No') { 0 } else { 24 }
-    $removed = @(Clear-BgjobsDone $hours)
-    [System.Windows.Forms.MessageBox]::Show(((Get-BgjobsText 'msg.cleaned') -f @($removed).Count), 'bgjobs', 'OK', 'Information')
-    Update-GuiList
-})
+$script:btnCleanup.Add_Click({ Show-GuiCleanupDialog })
 $script:btnIndex.Add_Click({
     # Index rebuild needs workdirs; prompt for one root (repeatable manually).
     $dir = (New-Object System.Windows.Forms.FolderBrowserDialog)

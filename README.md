@@ -114,7 +114,7 @@ dsh: pnpm failed in profile directory <你的 DSH home>\profiles\<profile>
 
 ## 图形面板（GUI）
 
-双击 `tools\dsh-bgjobs-gui.bat` 即可启动独立窗口（不依赖 DSH）：任务列表/日志、提交（bat 或 pwsh）、终止、清理（可选 24h 前或全部）、重建索引。GUI 与 Toast 文案跟随系统 UI 语言（zh → 简体中文，其他 → 英文）；CLI 输出固定为英文。
+双击 `tools\dsh-bgjobs-gui.bat` 即可启动独立窗口（不依赖 DSH）：任务列表/日志、提交（bat 或 pwsh）、终止、清理（超期小时数可调，或全部）、重建索引。GUI 与 Toast 文案跟随系统 UI 语言（zh → 简体中文，其他 → 英文）；CLI 输出固定为英文。
 
 ## 数据与存储
 
