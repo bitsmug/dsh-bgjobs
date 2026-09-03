@@ -1,4 +1,4 @@
-# dsh-bgjobs-gui.ps1 - bgjobs standalone management window (works WITHOUT DSH).
+﻿# dsh-bgjobs-gui.ps1 - bgjobs standalone management window (works WITHOUT DSH).
 # Mirrors dsh-undo-savepoint-gui.ps1: single-instance mutex, hidden console,
 # WinForms list with refresh/submit/kill/cleanup, live log tail panel.
 # Open via dsh-bgjobs-gui.bat or a desktop shortcut.
@@ -11,10 +11,10 @@ $script:guiMutex = $null
 try {
     $script:guiMutex = New-Object System.Threading.Mutex($false, 'DSHBgjobsGUI')
     if (-not $script:guiMutex.WaitOne(0, $false)) {
-        [System.Windows.Forms.MessageBox]::Show('bgjobs 管理面板已在运行（可能最小化到了托盘）。', 'bgjobs', 'OK', 'Information')
+        [System.Windows.Forms.MessageBox]::Show((Get-BgjobsText 'mutex.already'), 'bgjobs', 'OK', 'Information')
         exit 0
     }
-} catch { /* mutex unavailable: allow running anyway */ }
+} catch { } # mutex unavailable: allow running anyway
 
 # Hide the console window right after startup.
 try {
@@ -23,7 +23,7 @@ try {
 [DllImport("kernel32.dll")] public static extern System.IntPtr GetConsoleWindow();
 '@
     $null = [BgjobsWin.Native]::ShowWindow([BgjobsWin.Native]::GetConsoleWindow(), 0)
-} catch { /* cosmetic only */ }
+} catch { } # cosmetic only
 
 # ── helpers ───────────────────────────────────────────────────────────────
 function Format-GuiTime([object]$Ms) {
@@ -49,7 +49,7 @@ function Update-GuiList {
         $script:list.Items.Add($item) | Out-Null
     }
     $script:list.EndUpdate()
-    $script:statusLabel.Text = "任务数：$(@($jobs).Count)    索引：$($script:BgjobsIndexPath)"
+    $script:statusLabel.Text = (Get-BgjobsText 'status.count') -f @($jobs).Count, $script:BgjobsIndexPath
 }
 
 # Show the selected job's details + last log lines.
@@ -66,11 +66,11 @@ function Show-GuiDetail {
     [void]$sb.AppendLine("Workdir:  $($j.workdir)")
     [void]$sb.AppendLine("JobDir:   $($j.jobDir)")
     [void]$sb.AppendLine('')
-    [void]$sb.AppendLine('-- 最近日志 --')
+    [void]$sb.AppendLine((Get-BgjobsText 'detail.log'))
     if (Test-Path -LiteralPath $j.logPath) {
         foreach ($l in (Get-Content -LiteralPath $j.logPath -Tail 200 -Encoding UTF8)) { [void]$sb.AppendLine($l) }
     } else {
-        [void]$sb.AppendLine('(no log yet)')
+        [void]$sb.AppendLine((Get-BgjobsText 'detail.nolog'))
     }
     $script:detail.Text = $sb.ToString()
 }
@@ -79,26 +79,37 @@ function Show-GuiDetail {
 # Toast 经 dsh-bgjobs-toast.ps1（5.1 WinRT 帮助脚本）发出：pwsh 7/.NET Core 无法加载
 # WinRT 类型（实测 TYPE LOAD FAIL），示例在 pwsh 7 下委托 powershell.exe 执行；路径由
 # Set-GuiCountdownExample 用 __TOAST_HELPER__ 占位符替换为插件 tools 目录绝对路径。
-$script:CountdownExampleName = '倒计时演示'
+$script:CountdownExampleName = Get-BgjobsText 'example.countdown.name'
 $script:CountdownExampleWorkdir = [Environment]::GetFolderPath('MyDocuments')
-$script:CountdownExample = @'
-$n = 3
-for ($i = $n; $i -ge 1; $i--) {
-    '{0,3} 秒后结束...' -f $i
-    Start-Sleep -Seconds 1
+
+# Countdown sample command, localized once at GUI start. __TOAST_HELPER__ is
+# swapped for the real helper path by Set-GuiCountdownExample when applied.
+function New-GuiCountdownExample {
+    $secs = Get-BgjobsText 'example.countdown.secs'
+    $done = Get-BgjobsText 'example.countdown.done'
+    $toastTitle = Get-BgjobsText 'example.countdown.toast.title'
+    $toastMsg = Get-BgjobsText 'example.countdown.toast.msg'
+    $toastFail = Get-BgjobsText 'example.countdown.toast.fail'
+    $L = New-Object System.Collections.Generic.List[string]
+    $L.Add('$n = 3')
+    $L.Add('for ($i = $n; $i -ge 1; $i--) {')
+    $L.Add("    '$secs' -f `$i")
+    $L.Add('    Start-Sleep -Seconds 1')
+    $L.Add('}')
+    $L.Add("'$done'")
+    $L.Add("`$toastHelper = '__TOAST_HELPER__'")
+    $L.Add('try {')
+    $L.Add("    if (`$PSVersionTable.PSEdition -eq 'Core') {")
+    $L.Add('        # pwsh 7: WinRT types unavailable, delegate to Windows PowerShell 5.1')
+    $L.Add("        & `"`$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe`" -NoProfile -ExecutionPolicy Bypass -File `$toastHelper -Title '$toastTitle' -Message ('$toastMsg' -f `$n)")
+    $L.Add("        if (`$LASTEXITCODE -ne 0) { throw `"toast helper exit code `$LASTEXITCODE`" }")
+    $L.Add('    } else {')
+    $L.Add("        & `$toastHelper -Title '$toastTitle' -Message ('$toastMsg' -f `$n)")
+    $L.Add('    }')
+    $L.Add("} catch { ('$toastFail' -f `$_.Exception.Message) }")
+    return ($L -join "`r`n")
 }
-'倒计时结束！'
-$toastHelper = '__TOAST_HELPER__'
-try {
-    if ($PSVersionTable.PSEdition -eq 'Core') {
-        # pwsh 7：WinRT 类型不可用，委托给 Windows PowerShell 5.1
-        & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File $toastHelper -Title 'bgjobs 提醒' -Message "倒计时结束（$n 秒）"
-        if ($LASTEXITCODE -ne 0) { throw "toast helper exit code $LASTEXITCODE" }
-    } else {
-        & $toastHelper -Title 'bgjobs 提醒' -Message "倒计时结束（$n 秒）"
-    }
-} catch { '（Toast 通知失败：' + $_.Exception.Message + '）' }
-'@
+$script:CountdownExample = New-GuiCountdownExample
 
 function Set-GuiCountdownExample {
     # 填充三个输入框 + 自动选 pwsh 引擎（命令是 PowerShell 语法，bat 引擎无法运行）
@@ -111,7 +122,7 @@ function Set-GuiCountdownExample {
 # ── submit dialog (name / command / workdir / engine radio + example) ─────
 function Show-GuiSubmitDialog {
     $dlg = New-Object System.Windows.Forms.Form
-    $dlg.Text = '提交后台任务'
+    $dlg.Text = (Get-BgjobsText 'dlg.submit.title')
     $dlg.Size = New-Object System.Drawing.Size(560, 400)
     $dlg.StartPosition = 'CenterParent'
     $dlg.FormBorderStyle = 'FixedDialog'
@@ -140,41 +151,41 @@ function Show-GuiSubmitDialog {
 
     $y = 12
     # 示例下拉：一键填充三框
-    $null = New-GuiLabel '示例：' $y
+    $null = New-GuiLabel (Get-BgjobsText 'dlg.example') $y
     $comboExample = New-Object System.Windows.Forms.ComboBox
     $comboExample.DropDownStyle = 'DropDownList'
     $comboExample.Location = New-Object System.Drawing.Point($x, ($y + 18))
     $comboExample.Size = New-Object System.Drawing.Size($w, 22)
-    [void]$comboExample.Items.Add('（无）')
-    [void]$comboExample.Items.Add('倒计时（每1秒打印剩余时间，结束Toast提醒）')
+    [void]$comboExample.Items.Add((Get-BgjobsText 'dlg.example.none'))
+    [void]$comboExample.Items.Add((Get-BgjobsText 'dlg.example.countdown'))
     $comboExample.SelectedIndex = 0
     $dlg.Controls.Add($comboExample)
     $y += 48
 
     $script:submitInputs = @()
     # 任务名
-    $script:submitInputs += (New-GuiField '任务名（给任务起个名字，如：倒计时演示）' $y 22)
+    $script:submitInputs += (New-GuiField (Get-BgjobsText 'dlg.name') $y 22)
     $y += 48
     # 命令（可多行）
-    $script:submitInputs += (New-GuiField '命令（要执行的命令，可多行）' $y 74)
+    $script:submitInputs += (New-GuiField (Get-BgjobsText 'dlg.command') $y 74)
     $y += 96
     # 命令提示（灰字，仅提示）
-    $hint = New-GuiLabel '提示：不知道怎么写？用上方【示例】下拉选【倒计时】一键填充。' $y
+    $hint = New-GuiLabel (Get-BgjobsText 'dlg.hint') $y
     $hint.ForeColor = [System.Drawing.Color]::Gray
     $y += 22
     # 工作目录
-    $script:submitInputs += (New-GuiField '工作目录（任务运行目录，如 C:\logs）' $y 22)
+    $script:submitInputs += (New-GuiField (Get-BgjobsText 'dlg.workdir') $y 22)
     $y += 48
     # 引擎单选列表：bat（cmd，默认） / pwsh（PowerShell，pwsh 优先）
-    $null = New-GuiLabel '引擎：' $y
+    $null = New-GuiLabel (Get-BgjobsText 'dlg.engine') $y
     $radioBat = New-Object System.Windows.Forms.RadioButton
-    $radioBat.Text = 'bat（cmd）'
+    $radioBat.Text = (Get-BgjobsText 'dlg.engine.bat')
     $radioBat.Location = New-Object System.Drawing.Point($x, ($y + 18))
     $radioBat.Size = New-Object System.Drawing.Size(110, 22)
     $radioBat.Checked = $true
     $dlg.Controls.Add($radioBat)
     $script:submitRadioPwsh = New-Object System.Windows.Forms.RadioButton
-    $script:submitRadioPwsh.Text = 'pwsh（PowerShell）'
+    $script:submitRadioPwsh.Text = (Get-BgjobsText 'dlg.engine.pwsh')
     $script:submitRadioPwsh.Location = New-Object System.Drawing.Point(($x + 140), ($y + 18))
     $script:submitRadioPwsh.Size = New-Object System.Drawing.Size(190, 22)
     $dlg.Controls.Add($script:submitRadioPwsh)
@@ -182,13 +193,13 @@ function Show-GuiSubmitDialog {
 
     # 提交 / 取消（右下角，完整可见）
     $btnOk = New-Object System.Windows.Forms.Button
-    $btnOk.Text = '提交'
+    $btnOk.Text = (Get-BgjobsText 'dlg.ok')
     $btnOk.Location = New-Object System.Drawing.Point(360, $y)
     $btnOk.Size = New-Object System.Drawing.Size(90, 30)
     $btnOk.DialogResult = 'OK'
     $dlg.Controls.Add($btnOk)
     $btnCancel = New-Object System.Windows.Forms.Button
-    $btnCancel.Text = '取消'
+    $btnCancel.Text = (Get-BgjobsText 'dlg.cancel')
     $btnCancel.Location = New-Object System.Drawing.Point(460, $y)
     $btnCancel.Size = New-Object System.Drawing.Size(90, 30)
     $btnCancel.DialogResult = 'Cancel'
@@ -205,13 +216,13 @@ function Show-GuiSubmitDialog {
     $command = $script:submitInputs[1].Text
     $workdir = $script:submitInputs[2].Text.Trim()
     if (-not $name -or -not $command -or -not $workdir) {
-        [System.Windows.Forms.MessageBox]::Show('任务名、命令、工作目录都不能为空。', 'bgjobs', 'OK', 'Warning')
+        [System.Windows.Forms.MessageBox]::Show((Get-BgjobsText 'dlg.empty'), 'bgjobs', 'OK', 'Warning')
         return
     }
     $engine = if ($script:submitRadioPwsh.Checked) { 'pwsh' } else { 'bat' }
     $r = Submit-BgjobsJob $name $command $workdir '' -Engine $engine
     if (-not $r.ok) {
-        [System.Windows.Forms.MessageBox]::Show("提交失败：$($r.error)", 'bgjobs', 'OK', 'Error')
+        [System.Windows.Forms.MessageBox]::Show(((Get-BgjobsText 'dlg.failed') -f $r.error), 'bgjobs', 'OK', 'Error')
         return
     }
     Update-GuiList
@@ -219,18 +230,18 @@ function Show-GuiSubmitDialog {
 
 # ── main window ───────────────────────────────────────────────────────────
 $script:form = New-Object System.Windows.Forms.Form
-$script:form.Text = 'bgjobs 后台任务管理'
+$script:form.Text = (Get-BgjobsText 'gui.title')
 $script:form.Size = New-Object System.Drawing.Size(900, 620)
 $script:form.StartPosition = 'CenterScreen'
 $script:form.MinimumSize = New-Object System.Drawing.Size(640, 420)
 
 # toolbar
 $script:toolbar = New-Object System.Windows.Forms.ToolStrip
-$script:btnRefresh = New-Object System.Windows.Forms.ToolStripButton('🔄 刷新')
-$script:btnSubmit = New-Object System.Windows.Forms.ToolStripButton('➕ 提交')
-$script:btnKill = New-Object System.Windows.Forms.ToolStripButton('⏹ 终止')
-$script:btnCleanup = New-Object System.Windows.Forms.ToolStripButton('🧹 清理')
-$script:btnIndex = New-Object System.Windows.Forms.ToolStripButton('🗺 重建索引')
+$script:btnRefresh = New-Object System.Windows.Forms.ToolStripButton((Get-BgjobsText 'gui.refresh'))
+$script:btnSubmit = New-Object System.Windows.Forms.ToolStripButton((Get-BgjobsText 'gui.submit'))
+$script:btnKill = New-Object System.Windows.Forms.ToolStripButton((Get-BgjobsText 'gui.kill'))
+$script:btnCleanup = New-Object System.Windows.Forms.ToolStripButton((Get-BgjobsText 'gui.cleanup'))
+$script:btnIndex = New-Object System.Windows.Forms.ToolStripButton((Get-BgjobsText 'gui.index'))
 $script:toolbar.Items.Add($script:btnRefresh) | Out-Null
 $script:toolbar.Items.Add($script:btnSubmit) | Out-Null
 $script:toolbar.Items.Add($script:btnKill) | Out-Null
@@ -250,12 +261,12 @@ $script:list.View = 'Details'
 $script:list.FullRowSelect = $true
 $script:list.GridLines = $true
 $script:list.MultiSelect = $false
-$script:list.Columns.Add('ID', 190) | Out-Null
-$script:list.Columns.Add('名称', 140) | Out-Null
-$script:list.Columns.Add('状态', 70) | Out-Null
-$script:list.Columns.Add('退出码', 60) | Out-Null
-$script:list.Columns.Add('完成时间', 110) | Out-Null
-$script:list.Columns.Add('工作目录', 300) | Out-Null
+$script:list.Columns.Add((Get-BgjobsText 'col.id'), 190) | Out-Null
+$script:list.Columns.Add((Get-BgjobsText 'col.name'), 140) | Out-Null
+$script:list.Columns.Add((Get-BgjobsText 'col.status'), 70) | Out-Null
+$script:list.Columns.Add((Get-BgjobsText 'col.exit'), 60) | Out-Null
+$script:list.Columns.Add((Get-BgjobsText 'col.finished'), 110) | Out-Null
+$script:list.Columns.Add((Get-BgjobsText 'col.workdir'), 300) | Out-Null
 $script:list.Anchor = 'Top, Left, Right'
 $script:list.Location = New-Object System.Drawing.Point(10, 30)
 $script:list.Size = New-Object System.Drawing.Size(870, 300)
@@ -278,30 +289,30 @@ $script:btnSubmit.Add_Click({ Show-GuiSubmitDialog })
 $script:btnKill.Add_Click({
     if ($script:list.SelectedItems.Count -eq 0) { return }
     $j = $script:list.SelectedItems[0].Tag
-    $ask = [System.Windows.Forms.MessageBox]::Show("终止任务 $($j.name)（$($j.id)）？", 'bgjobs', 'YesNo', 'Question')
+    $ask = [System.Windows.Forms.MessageBox]::Show(((Get-BgjobsText 'msg.kill') -f $j.name, $j.id), 'bgjobs', 'YesNo', 'Question')
     if ($ask -ne 'Yes') { return }
     $r = Stop-BgjobsJob $j.id
-    if (-not $r.ok) { [System.Windows.Forms.MessageBox]::Show("终止失败：$($r.error)", 'bgjobs', 'OK', 'Error') }
+    if (-not $r.ok) { [System.Windows.Forms.MessageBox]::Show(((Get-BgjobsText 'msg.kill.failed') -f $r.error), 'bgjobs', 'OK', 'Error') }
     Update-GuiList
 })
 $script:btnCleanup.Add_Click({
     # 手动选择清理范围：是 = 仅超过 24h；否 = 全部（含 24h 内）；取消 = 不清理。
     $ask = [System.Windows.Forms.MessageBox]::Show(
-        '清理已完成任务目录？`n`n是(Y) = 仅清理超过 24h 的（24h 内默认保留）`n否(N) = 清理全部已完成（含 24h 内）`n取消 = 不清理',
+        (Get-BgjobsText 'msg.cleanup'),
         'bgjobs', 'YesNoCancel', 'Question')
     if ($ask -eq 'Cancel') { return }
     $hours = if ($ask -eq 'No') { 0 } else { 24 }
     $removed = @(Clear-BgjobsDone $hours)
-    [System.Windows.Forms.MessageBox]::Show("已清理 $(@($removed).Count) 个任务", 'bgjobs', 'OK', 'Information')
+    [System.Windows.Forms.MessageBox]::Show(((Get-BgjobsText 'msg.cleaned') -f @($removed).Count), 'bgjobs', 'OK', 'Information')
     Update-GuiList
 })
 $script:btnIndex.Add_Click({
     # Index rebuild needs workdirs; prompt for one root (repeatable manually).
     $dir = (New-Object System.Windows.Forms.FolderBrowserDialog)
-    $dir.Description = '选择工作区根目录（扫描其 .dsh/bgjobs 下的任务）'
+    $dir.Description = (Get-BgjobsText 'msg.index.prompt')
     if ($dir.ShowDialog($script:form) -ne 'OK') { return }
     $payload = Write-BgjobsIndexRebuild @($dir.SelectedPath)
-    [System.Windows.Forms.MessageBox]::Show("索引重建完成：$(@($payload.jobs).Count) 个任务", 'bgjobs', 'OK', 'Information')
+    [System.Windows.Forms.MessageBox]::Show(((Get-BgjobsText 'msg.index.done') -f @($payload.jobs).Count), 'bgjobs', 'OK', 'Information')
     Update-GuiList
 })
 

@@ -427,3 +427,66 @@ function Clear-BgjobsDone([int]$OlderThanHours) {
     [System.IO.File]::WriteAllText($script:BgjobsIndexPath, ($payload | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
     return $removed
 }
+
+# ── UI language (shared by dsh-bgjobs-gui.ps1) ──────────────────────────
+# Follow the Windows UI language: zh* → Simplified Chinese, anything else → English.
+# Note: this file must stay UTF-8 with BOM so Windows PowerShell 5.1 parses
+# the Chinese fallback strings correctly (ANSI/GBK misread otherwise).
+$script:BgjobsLangZh = [System.Globalization.CultureInfo]::CurrentUICulture.Name -like 'zh*'
+
+# GUI text dictionary. Keys are stable; pick zh or en by $script:BgjobsLangZh.
+$script:BgjobsText = @{
+    # main window
+    'gui.title' = if ($script:BgjobsLangZh) { 'bgjobs 后台任务管理' } else { 'bgjobs Job Manager' }
+    'gui.refresh' = if ($script:BgjobsLangZh) { '🔄 刷新' } else { '🔄 Refresh' }
+    'gui.submit' = if ($script:BgjobsLangZh) { '➕ 提交' } else { '➕ Submit' }
+    'gui.kill' = if ($script:BgjobsLangZh) { '⏹ 终止' } else { '⏹ Kill' }
+    'gui.cleanup' = if ($script:BgjobsLangZh) { '🧹 清理' } else { '🧹 Cleanup' }
+    'gui.index' = if ($script:BgjobsLangZh) { '🗺 重建索引' } else { '🗺 Rebuild index' }
+    'col.id' = 'ID'
+    'col.name' = if ($script:BgjobsLangZh) { '名称' } else { 'Name' }
+    'col.status' = if ($script:BgjobsLangZh) { '状态' } else { 'Status' }
+    'col.exit' = if ($script:BgjobsLangZh) { '退出码' } else { 'Exit' }
+    'col.finished' = if ($script:BgjobsLangZh) { '完成时间' } else { 'Finished' }
+    'col.workdir' = if ($script:BgjobsLangZh) { '工作目录' } else { 'Workdir' }
+    'status.count' = if ($script:BgjobsLangZh) { '任务数：{0}    索引：{1}' } else { 'Jobs: {0}    Index: {1}' }
+    'detail.log' = if ($script:BgjobsLangZh) { '-- 最近日志 --' } else { '-- recent log --' }
+    'detail.nolog' = '(no log yet)'
+    'mutex.already' = if ($script:BgjobsLangZh) { 'bgjobs 管理面板已在运行（可能最小化到了托盘）。' } else { 'bgjobs manager is already running (maybe minimized to tray).' }
+    'dlg.submit.title' = if ($script:BgjobsLangZh) { '提交后台任务' } else { 'Submit Background Job' }
+    'dlg.example' = if ($script:BgjobsLangZh) { '示例：' } else { 'Example: ' }
+    'dlg.example.none' = if ($script:BgjobsLangZh) { '（无）' } else { '(none)' }
+    'dlg.example.countdown' = if ($script:BgjobsLangZh) { '倒计时（每1秒打印剩余时间，结束Toast提醒）' } else { 'Countdown (prints remaining seconds, Toast on finish)' }
+    'dlg.name' = if ($script:BgjobsLangZh) { '任务名（给任务起个名字，如：倒计时演示）' } else { 'Name (e.g. countdown-demo)' }
+    'dlg.command' = if ($script:BgjobsLangZh) { '命令（要执行的命令，可多行）' } else { 'Command (multi-line supported)' }
+    'dlg.hint' = if ($script:BgjobsLangZh) { '提示：不知道怎么写？用上方【示例】下拉选【倒计时】一键填充。' } else { 'Tip: not sure what to type? Pick "Countdown" in the Example dropdown above.' }
+    'dlg.workdir' = if ($script:BgjobsLangZh) { '工作目录（任务运行目录，如 C:\logs）' } else { 'Workdir (absolute path, e.g. C:\logs)' }
+    'dlg.engine' = if ($script:BgjobsLangZh) { '引擎：' } else { 'Engine: ' }
+    'dlg.engine.bat' = if ($script:BgjobsLangZh) { 'bat（cmd）' } else { 'bat (cmd)' }
+    'dlg.engine.pwsh' = if ($script:BgjobsLangZh) { 'pwsh（PowerShell）' } else { 'pwsh (PowerShell)' }
+    'dlg.ok' = if ($script:BgjobsLangZh) { '提交' } else { 'Submit' }
+    'dlg.cancel' = if ($script:BgjobsLangZh) { '取消' } else { 'Cancel' }
+    'dlg.empty' = if ($script:BgjobsLangZh) { '任务名、命令、工作目录都不能为空。' } else { 'Name, command and workdir are all required.' }
+    'dlg.failed' = if ($script:BgjobsLangZh) { '提交失败：{0}' } else { 'Submit failed: {0}' }
+    'msg.kill' = if ($script:BgjobsLangZh) { '终止任务 {0}（{1}）？' } else { 'Kill job {0} ({1})?' }
+    'msg.kill.failed' = if ($script:BgjobsLangZh) { '终止失败：{0}' } else { 'Kill failed: {0}' }
+    'msg.cleanup' = if ($script:BgjobsLangZh) { "清理已完成任务目录？`n`n是(Y) = 仅清理超过 24h 的（24h 内默认保留）`n否(N) = 清理全部已完成（含 24h 内）`n取消 = 不清理" } else { "Clean up finished job dirs?`n`nYes = only >24h (default keeps <24h)`nNo = all finished (incl. <24h)`nCancel = abort" }
+    'msg.cleaned' = if ($script:BgjobsLangZh) { '已清理 {0} 个任务' } else { 'Cleaned {0} job(s)' }
+    'msg.index.prompt' = if ($script:BgjobsLangZh) { '选择工作区根目录（扫描其 .dsh/bgjobs 下的任务）' } else { 'Choose a workspace root (scans its .dsh/bgjobs for jobs)' }
+    'msg.index.done' = if ($script:BgjobsLangZh) { '索引重建完成：{0} 个任务' } else { 'Index rebuilt: {0} job(s)' }
+    # countdown example command (kept bilingual so the sample is readable in either locale)
+    'example.countdown.name' = if ($script:BgjobsLangZh) { '倒计时演示' } else { 'Countdown demo' }
+    'example.countdown.secs' = if ($script:BgjobsLangZh) { '{0,3} 秒后结束...' } else { '{0,3}s left...' }
+    'example.countdown.done' = if ($script:BgjobsLangZh) { '倒计时结束！' } else { 'Countdown finished!' }
+    'example.countdown.toast.title' = if ($script:BgjobsLangZh) { 'bgjobs 提醒' } else { 'bgjobs reminder' }
+    'example.countdown.toast.msg' = if ($script:BgjobsLangZh) { '倒计时结束（{0} 秒）' } else { 'Countdown finished ({0}s)' }
+    'example.countdown.toast.fail' = if ($script:BgjobsLangZh) { '（Toast 通知失败：{0}）' } else { '(Toast failed: {0})' }
+}
+
+# Resolve a UI text key. Templates with placeholders are formatted by the
+# caller with -f, e.g. (Get-BgjobsText 'status.count') -f $n, $path
+function Get-BgjobsText([string]$Key) {
+    $tpl = $script:BgjobsText[$Key]
+    if ($null -eq $tpl) { return $Key }
+    return $tpl
+}

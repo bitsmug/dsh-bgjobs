@@ -1,10 +1,10 @@
-# dsh-bgjobs.ps1 - offline bgjobs management CLI (works WITHOUT DSH running).
+﻿# dsh-bgjobs.ps1 - offline bgjobs management CLI (works WITHOUT DSH running).
 #
 # Usage:
 #   .\dsh-bgjobs.ps1 list                              # all jobs (id/name/status/exit/time/workdir)
 #   .\dsh-bgjobs.ps1 status -Id <id>                   # one job: details + log tail
 #   .\dsh-bgjobs.ps1 log -Id <id> [-Tail 100]          # job log (last N lines)
-#   .\dsh-bgjobs.ps1 submit -Name <n> -Command <c> -Workdir <dir> [-Pwsh]   # submit a new task offline (-Pwsh: 用 PowerShell 引擎，pwsh 优先)
+#   .\dsh-bgjobs.ps1 submit -Name <n> -Command <c> -Workdir <dir> [-Pwsh]   # submit a new task offline (-Pwsh: use the PowerShell engine, pwsh preferred)
 #   .\dsh-bgjobs.ps1 kill -Id <id> [-NoDeleteDir]      # stop a task (+ delete job dir unless -NoDeleteDir)
 #   .\dsh-bgjobs.ps1 cleanup [-OlderThanHours 24]      # remove done job dirs: >24h (default) or all when -OlderThanHours 0
 #   .\dsh-bgjobs.ps1 index -Workdir <dir>            # rebuild the central index from disk (repeatable)

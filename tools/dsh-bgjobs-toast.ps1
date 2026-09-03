@@ -13,11 +13,16 @@
 # 显示的必要条件：App 必须有 Start Menu 快捷方式且带 PKEY_AppUserModel_ID，否则
 # Show() 抛 0x803E0105 或静默不显示。
 param(
-    [string]$Title = 'bgjobs 提醒',
-    [string]$Message = '任务完成',
+    [string]$Title = '',
+    [string]$Message = '',
     [string]$AppId = 'bgjobs'
 )
 $ErrorActionPreference = 'Stop'
+
+# Follow the Windows UI language for the default texts; explicit -Title/-Message win.
+$toastZh = [System.Globalization.CultureInfo]::CurrentUICulture.Name -like 'zh*'
+if (-not $Title) { $Title = if ($toastZh) { 'bgjobs 提醒' } else { 'bgjobs reminder' } }
+if (-not $Message) { $Message = if ($toastZh) { '任务完成' } else { 'Job finished' } }
 
 # ── Method 1: WinRT Toast（5.1 原生可加载 WinRT 类型）────────────────────
 function Send-BgjobsToast {
@@ -65,7 +70,9 @@ function Send-BgjobsBalloon {
 }
 
 # ── 按顺序尝试：Toast 优先，失败回退气泡 ────────────────────────────────
-try { Send-BgjobsToast; exit 0 } catch { [Console]::WriteLine('Toast 通知失败，回退气泡通知...') }
+$toastFallback = if ($toastZh) { 'Toast 通知失败，回退气泡通知...' } else { 'Toast failed, falling back to balloon...' }
+$toastFatal = if ($toastZh) { 'bgjobs 通知失败：Toast 与气泡通知均不可用' } else { 'bgjobs notification failed: neither Toast nor balloon is available' }
+try { Send-BgjobsToast; exit 0 } catch { [Console]::WriteLine($toastFallback) }
 try { Send-BgjobsBalloon; exit 0 } catch { }
-[Console]::Error.WriteLine('bgjobs 通知失败：Toast 与气泡通知均不可用')
+[Console]::Error.WriteLine($toastFatal)
 exit 1
