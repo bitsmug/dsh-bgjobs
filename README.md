@@ -21,17 +21,25 @@
 
 前置：已安装 DSH（`@deepseek-ai/dsh`）与 Node.js（≥18），Windows 系统。
 
-**方式 A（推荐，从 GitHub 安装，免 npm 发布）**
+**方式 A（推荐，npm 发布版）**
+
+```bat
+dsh plugin --profile <profile> add bgjobs
+```
+
+> 从 npm registry 安装发布版。**注意 registry 同步可能有延迟**（尤其国内镜像如 npmmirror），新版本发布后未必立即可装；要确保装到最新，或想试用未发布的改动，用下面的方式 B（GitHub 直装）。
+
+**方式 B（从 GitHub 安装，始终最新）**
 
 ```bat
 dsh plugin --profile <profile> add github:bitsmug/dsh-bgjobs
 ```
 
-> 从 GitHub 仓库默认分支安装（免 npm 发布）。仓库含 `dsh.bundle` 声明，装完自动加入 profile 层栈并启用工具。
+> 直接从 GitHub 仓库默认分支拉取，**始终是最新代码**（含刚发布与未发布改动），不受 npm registry 同步延迟影响。两种方式装完包名都是 `bgjobs`，卸载命令相同。
 
 **首次安装报 `ERR_PNPM_IGNORED_BUILDS`？**
 
-插件依赖原生库 `koffi`，git 安装会触发它的构建脚本，而 pnpm ≥10 默认阻止依赖运行构建脚本。报错形如：
+插件依赖原生库 `koffi`，安装会触发它的构建脚本，而 pnpm ≥10 默认阻止依赖运行构建脚本（GitHub 安装还会跑 `prepare`）。报错形如：
 
 ```
 [ERR_PNPM_IGNORED_BUILDS] Ignored build scripts: koffi@3.1.6
@@ -57,7 +65,7 @@ dsh: pnpm failed in profile directory <你的 DSH home>\profiles\<profile>
 
 重启 DSH 后生效：网页右下角出现「后台任务监控」面板，agent 获得 `bgjob_submit` / `bgjob_submit_pwsh` / `bgjob_status` 工具。
 
-**方式 B（本地源码）**
+**方式 C（本地源码开发）**
 
 1. 把仓库放到本地插件目录（路径不要含中文），如 `D:\dsh\plugins\bgjobs`；
 2. 让 DSH 的模块解析器能找到它（把插件目录 junction 到 DSH 的 `node_modules\bgjobs`，或把目录加到 DSH 的插件扫描路径）；本地开发还需在插件目录执行一次 `pnpm install`（沙箱 runner 依赖，见下）；
