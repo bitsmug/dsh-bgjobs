@@ -28,8 +28,32 @@ dsh plugin --profile <profile> add github:bitsmug/dsh-bgjobs
 ```
 
 > 从 GitHub 仓库默认分支安装（免 npm 发布）。仓库含 `dsh.bundle` 声明，装完自动加入 profile 层栈并启用工具。
->
-> 若首次 `add` 报 pnpm 的 `allowBuilds` 提示（git 安装会跑 `prepare` 构建脚本，pnpm ≥10 默认阻止），把提示里的键复制进该 profile 的 `pnpm-workspace.yaml` 后重跑即可。
+
+**首次安装报 `ERR_PNPM_IGNORED_BUILDS`？**
+
+插件依赖原生库 `koffi`，git 安装会触发它的构建脚本，而 pnpm ≥10 默认阻止依赖运行构建脚本。报错形如：
+
+```
+[ERR_PNPM_IGNORED_BUILDS] Ignored build scripts: koffi@3.1.6
+Run "pnpm approve-builds" to pick which dependencies should be allowed to run scripts.
+dsh: pnpm failed in profile directory <你的 DSH home>\profiles\<profile>
+```
+
+处理（一次性）：
+
+1. 打开 `pnpm-workspace.yaml`（位置同上，报错里会打印完整路径）。首次失败的 `add` 已自动写入一行占位：
+   ```yaml
+   allowBuilds:
+     koffi: set this to true or false
+   ```
+2. 把值改成 `true`（键名以你 pnpm 报错里打印的为准，可能是 `koffi@3.1.6` 带版本号）：
+   ```yaml
+   allowBuilds:
+     koffi: true
+   ```
+3. 重新执行上面的 `add` 命令即可，之后无需再改。
+
+> `pnpm approve-builds`（交互式）也可达到同样效果；上面是纯手动等价做法。仅首次安装需要，装好后 koffi 已编译完毕，升级/重装不需要重复配置。
 
 重启 DSH 后生效：网页右下角出现「后台任务监控」面板，agent 获得 `bgjob_submit` / `bgjob_submit_pwsh` / `bgjob_status` 工具。
 
