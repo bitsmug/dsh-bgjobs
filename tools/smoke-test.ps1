@@ -5,11 +5,20 @@
 $ErrorActionPreference = 'Stop'
 
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ('bgjobs-smoke-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+$origDshHome = $env:DSH_HOME
 $env:DSH_HOME = Join-Path $tmp 'home'
 New-Item -ItemType Directory -Force -Path $env:DSH_HOME | Out-Null
 $workdir = Join-Path $tmp 'work'
 New-Item -ItemType Directory -Force -Path $workdir | Out-Null
 $jobsRoot = Join-Path $workdir '.dsh\bgjobs'
+
+# Safety guard: everything must live under a fresh temp dir. Never let the
+# test touch (or intersect) the real user job store under ~/.dsh/bgjobs.
+$realDshHome = if ($origDshHome) { $origDshHome } else { Join-Path $env:USERPROFILE '.dsh' }
+$realJobsRoot = Join-Path $realDshHome 'bgjobs'
+if ($jobsRoot -eq $realJobsRoot -or $env:DSH_HOME -eq $realDshHome -or -not $tmp.StartsWith([System.IO.Path]::GetTempPath(), [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "refusing to run: smoke jobs root would intersect the real DSH home ($realDshHome)"
+}
 $script = Join-Path $PSScriptRoot 'dsh-bgjobs-lib.ps1'
 . $script
 
