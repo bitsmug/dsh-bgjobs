@@ -36,6 +36,12 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
 - **增量读**：按字节位置只读增量，TextDecoder 流式避免截断多字节；完成前补读一次捕获 marker 行。
 - **恢复（中央索引优先）**：索引只存 `jobDir` 当"地图"，状态实时读 `job.json`——索引过期/缺失不影响正确性。recover 挂 done 直接显示终态、running 继续跟踪；重启不重复通知（见 notify 幂等）。
 
+### bgjob_wait（v0.1.50）
+
+- 目的：agent 需要「等结果继续」时不再用前台 `pwsh sleep` 反复轮询；`bgjob_wait(jobId, timeoutSeconds?)` 等到任务 done 立即返回退出码/日志尾。
+- 实现：轮询 `waitSnapshot(jobId)`——注册表命中时对 running 任务复用既有 `checkCompletion(job)`（幂等收尾：置 done/写盘/通知），未命中回退 `statusFromDisk`；间隔指数退避（0–30s 250ms → 30–60s 500ms → ≥60s 1s，档位先截断防大数指数），默认 120s、clamp 1–600s。
+- 语义：未知 id 立即返回 `not found` 不空等；等待期间任务被清理 → `status:'removed'`；超时返回 `timedOut:true` 的当前快照供 agent 再次调用；不替代 `notify`（异步收结果仍用 submit 的 notify）。
+
 ### 保留策略（v0.1.32 起）
 
 - **done 任务不按时间剪枝**：内存注册表、中央索引、面板、CLI/GUI 都持续保留，直到用户删除/清理。去掉了 `DONE_RETENTION_MS` 自动剪枝。

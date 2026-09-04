@@ -65,7 +65,7 @@ dsh: pnpm failed in profile directory <你的 DSH home>\profiles\<profile>
 
 > `pnpm approve-builds`（交互式）也可达到同样效果；上面是纯手动等价做法。仅首次安装需要，装好后 koffi 已编译完毕，升级/重装不需要重复配置。
 
-重启 DSH 后生效：网页右下角出现「后台任务监控」面板，agent 获得 `bgjob_submit` / `bgjob_submit_pwsh` / `bgjob_status` 工具。
+重启 DSH 后生效：网页右下角出现「后台任务监控」面板，agent 获得 `bgjob_submit` / `bgjob_submit_pwsh` / `bgjob_status` / `bgjob_wait` 工具。
 
 **方式 C（本地源码开发）**
 
@@ -85,7 +85,8 @@ dsh: pnpm failed in profile directory <你的 DSH home>\profiles\<profile>
 
 - `bgjob_submit(name, command, workdir, [notify], [notify_mode])` — 提交后台任务（command 为 **bat** 语法）；
 - `bgjob_submit_pwsh(name, command, workdir, [sandbox], [justification], [notify], [notify_mode])` — 提交后台任务（command 为 **PowerShell** 语法，UTF-8 日志、`exit <code>` 语义安全）；
-- `bgjob_status(jobId)` — 查询状态 / 退出码 / 日志尾部。
+- `bgjob_status(jobId)` — 查询状态 / 退出码 / 日志尾部；
+- `bgjob_wait(jobId, [timeoutSeconds])` — 等待后台任务结束并**立即返回**退出码与日志尾部（默认最多 120s；需要等结果继续时用它，代替前台 `sleep` 反复轮询）。
 
 直接对 AI 说一句即可：
 

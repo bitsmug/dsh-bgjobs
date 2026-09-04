@@ -65,7 +65,7 @@ Fix (one-time):
 
 > `pnpm approve-builds` (interactive) does the same thing; the manual edit above is its equivalent. Only the first install needs this — once koffi is compiled it stays compiled, and upgrades/reinstalls don't repeat the step.
 
-Restart DSH afterwards: the "Background Jobs Monitor" panel appears bottom-right of the web page and the agent gains `bgjob_submit` / `bgjob_submit_pwsh` / `bgjob_status` tools.
+Restart DSH afterwards: the "Background Jobs Monitor" panel appears bottom-right of the web page and the agent gains `bgjob_submit` / `bgjob_submit_pwsh` / `bgjob_status` / `bgjob_wait` tools.
 
 **Method C (local source)**
 
@@ -85,7 +85,8 @@ Restart DSH afterwards: the "Background Jobs Monitor" panel appears bottom-right
 
 - `bgjob_submit(name, command, workdir, [notify], [notify_mode])` — submit a background job (`command` is **bat** syntax);
 - `bgjob_submit_pwsh(name, command, workdir, [sandbox], [justification], [notify], [notify_mode])` — submit a background job (`command` is **PowerShell** syntax, UTF-8 logs, safe `exit <code>` semantics);
-- `bgjob_status(jobId)` — query status / exit code / log tail.
+- `bgjob_status(jobId)` — query status / exit code / log tail;
+- `bgjob_wait(jobId, [timeoutSeconds])` — wait until the background job finishes and **return immediately** with its exit code and log tail (default up to 120s; use it when you need the result to continue, instead of foreground `sleep` polling).
 
 Just tell the AI:
 

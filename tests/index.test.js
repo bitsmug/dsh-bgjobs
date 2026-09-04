@@ -222,17 +222,17 @@ test('buildPs1: 编码 preamble + 用户命令原样保留（含空行）', () =
 
 // ── 工具注册契约 ──
 
-test('apply: 注册三个工具，output 结构合法', () => {
+test('apply: 注册四个工具，output 结构合法', () => {
   const { ctx, tools } = makeCtx()
   const dispose = apply(ctx)
-  assert.equal(tools.length, 3)
+  assert.equal(tools.length, 4)
   for (const tool of tools) {
     assert.ok(tool.output, `${tool.name} 必须声明 output`)
     assert.equal(typeof tool.output.render, 'function')
     assert.equal(typeof tool.output.schema, 'object')
     assert.equal(typeof tool.execute, 'function')
   }
-  assert.deepEqual(tools.map((t) => t.name).sort(), ['bgjob_status', 'bgjob_submit', 'bgjob_submit_pwsh'])
+  assert.deepEqual(tools.map((t) => t.name).sort(), ['bgjob_status', 'bgjob_submit', 'bgjob_submit_pwsh', 'bgjob_wait'])
   dispose()
 })
 
@@ -246,11 +246,12 @@ test('apply: presentCall 返回 generic 卡片', () => {
   dispose()
 })
 
-test('guidance: buildBgjobsGuidance 提及三个工具与关键注意事项', () => {
+test('guidance: buildBgjobsGuidance 提及四个工具与关键注意事项', () => {
   const text = buildBgjobsGuidance()
   assert.ok(text.includes('bgjob_submit'))
   assert.ok(text.includes('bgjob_submit_pwsh'))
   assert.ok(text.includes('bgjob_status'))
+  assert.ok(text.includes('bgjob_wait'))
   assert.ok(text.includes('bat 语法'))
   assert.ok(text.includes('PowerShell'))
   assert.ok(text.includes('workdir'))
@@ -1728,4 +1729,80 @@ test('notify: 重启恢复已通知（notifiedAt）的 done 任务 → 不重复
     delete process.env.DSH_HOME
     await fsp.rm(home, { recursive: true, force: true })
   }
+})
+
+// ── bgjob_wait（v0.1.50）：等任务结束立即返回 ──
+
+test('bgjob_wait: 已 done 的任务立即返回（waitedMs 0，不再轮询）', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  const workdir = await makeWorkdir()
+  const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
+  const dispose = apply(ctx)
+  const submit = tools.find((t) => t.name === 'bgjob_submit')
+  const wait = tools.find((t) => t.name === 'bgjob_wait')
+  const res = await submit.execute({ name: 't', command: 'echo x', workdir }, { agent: undefined })
+  const jobDir = workdir + '\\.dsh\\bgjobs\\' + res.jobId
+  await fsp.writeFile(path.join(jobDir, 'exitcode.txt'), '0', 'utf8')
+  const w = await wait.execute({ jobId: res.jobId })
+  assert.equal(w.ok, true)
+  assert.equal(w.timedOut, false)
+  assert.equal(w.waitedMs, 0)
+  assert.equal(w.status, 'done')
+  assert.equal(w.exitCode, 0)
+  assert.equal(w.error, undefined)
+  const meta = JSON.parse(await fsp.readFile(path.join(jobDir, 'job.json'), 'utf8'))
+  assert.equal(meta.status, 'done', 'wait 首查应顺带完成幂等收尾（job.json 落盘 done）')
+  await fsp.rm(workdir, { recursive: true, force: true })
+  dispose()
+})
+
+test('bgjob_wait: 未知 id 立即报 not found（不空等）', async () => {
+  const { ctx, tools } = makeCtx({ services: {} })
+  const dispose = apply(ctx)
+  const wait = tools.find((t) => t.name === 'bgjob_wait')
+  const started = Date.now()
+  const w = await wait.execute({ jobId: 'bg-nonexistent' })
+  assert.equal(w.ok, false)
+  assert.ok(w.error && w.error.includes('not found'))
+  assert.ok(Date.now() - started < 1000, '未知 id 应立即返回，不进入轮询')
+  dispose()
+})
+
+test('bgjob_wait: 超时返回 timedOut 快照（任务仍在 running）', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  const workdir = await makeWorkdir()
+  const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
+  const dispose = apply(ctx)
+  const submit = tools.find((t) => t.name === 'bgjob_submit')
+  const wait = tools.find((t) => t.name === 'bgjob_wait')
+  const res = await submit.execute({ name: 't', command: 'echo x', workdir }, { agent: undefined })
+  const w = await wait.execute({ jobId: res.jobId, timeoutSeconds: 1 })
+  assert.equal(w.ok, true)
+  assert.equal(w.timedOut, true)
+  assert.equal(w.status, 'running')
+  assert.ok(w.waitedMs >= 950, '应等待约 timeoutSeconds')
+  await fsp.rm(workdir, { recursive: true, force: true })
+  dispose()
+})
+
+test('bgjob_wait: 等待期间任务完成 → 立即返回 done + 退出码（无需 sleep 轮询）', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  const workdir = await makeWorkdir()
+  const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
+  const dispose = apply(ctx)
+  const submit = tools.find((t) => t.name === 'bgjob_submit')
+  const wait = tools.find((t) => t.name === 'bgjob_wait')
+  const res = await submit.execute({ name: 't', command: 'echo x', workdir }, { agent: undefined })
+  const jobDir = workdir + '\\.dsh\\bgjobs\\' + res.jobId
+  setTimeout(() => {
+    fsp.writeFile(path.join(jobDir, 'exitcode.txt'), '7', 'utf8').catch(() => {})
+  }, 150)
+  const w = await wait.execute({ jobId: res.jobId, timeoutSeconds: 5 })
+  assert.equal(w.ok, true)
+  assert.equal(w.timedOut, false)
+  assert.equal(w.status, 'done')
+  assert.equal(w.exitCode, 7)
+  assert.ok(w.waitedMs >= 100 && w.waitedMs < 5000, '完成后应尽快返回（waitedMs=' + w.waitedMs + '）')
+  await fsp.rm(workdir, { recursive: true, force: true })
+  dispose()
 })
