@@ -20,7 +20,10 @@ import {
 
 /** 建一个临时 DSH home 并设置 DSH_HOME，返回清理函数。 */
 async function makeDshHome() {
-  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'bgjobs-home-'))
+  const raw = await fsp.mkdtemp(path.join(os.tmpdir(), 'bgjobs-home-'))
+  // 归一化：去掉 Windows 扩展长度前缀（\\?\），否则 fs.watch 拿到的路径与文件通知
+  // API 返回的路径不一致，node 24/libuv 会触发 src\win\fs-event.c 断言崩溃。
+  const dir = await fsp.realpath(raw).catch(() => raw)
   process.env.DSH_HOME = dir
   // legacy 语义：该 home 下提交默认 full access 放行（沙箱联动用例显式写 enabled=false）。
   await fsp.mkdir(path.join(dir, 'bgjobs'), { recursive: true })
@@ -36,7 +39,9 @@ async function makeDshHome() {
 let suiteHome = null
 beforeEach(async () => {
   if (suiteHome) await fsp.rm(suiteHome, { recursive: true, force: true }).catch(() => {})
-  suiteHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'bgjobs-suite-'))
+  const raw = await fsp.mkdtemp(path.join(os.tmpdir(), 'bgjobs-suite-'))
+  // 归一化路径，去掉 Windows \\?\ 前缀，避免 fs.watch 断言（同 makeDshHome/makeWorkdir）。
+  suiteHome = await fsp.realpath(raw).catch(() => raw)
   process.env.DSH_HOME = suiteHome
   // 套件默认 full access ON（沙箱联动功能 v0.1.29 之前的 legacy 语义）：
   // 无 sandboxPolicy 服务的用例照旧放行；需验证「拒绝/审批/继承」的用例自行写 enabled=false。
@@ -50,7 +55,9 @@ after(async () => {
 
 /** 建一个临时 workdir。 */
 async function makeWorkdir() {
-  return fsp.mkdtemp(path.join(os.tmpdir(), 'bgjobs-test-'))
+  const raw = await fsp.mkdtemp(path.join(os.tmpdir(), 'bgjobs-test-'))
+  // 归一化路径，去掉 Windows \\?\ 前缀（避免 fs.watch 断言崩溃）。
+  return fsp.realpath(raw).catch(() => raw)
 }
 
 /** 构造一个 apply 可用的 mock ctx。 */
