@@ -83,8 +83,8 @@ dsh: pnpm failed in profile directory <你的 DSH home>\profiles\<profile>
 
 ## 使用（agent 工具）
 
-- `bgjob_submit(name, command, workdir, [notify], [notify_mode])` — 提交后台任务（command 为 **bat** 语法）；
-- `bgjob_submit_pwsh(name, command, workdir, [sandbox], [justification], [notify], [notify_mode])` — 提交后台任务（command 为 **PowerShell** 语法，UTF-8 日志、`exit <code>` 语义安全）；
+- `bgjob_submit(name, command, workdir, [wait], [notify], [notify_mode])` — 提交后台任务（command 为 **bat** 语法）；`wait`=提交后自动等待结果的秒数（0/缺省不等待）；
+- `bgjob_submit_pwsh(name, command, workdir, [wait], [sandbox], [justification], [notify], [notify_mode])` — 提交后台任务（command 为 **PowerShell** 语法，UTF-8 日志、`exit <code>` 语义安全）；`wait` 同上，提交后自动等待；
 - `bgjob_status(jobId)` — 查询状态 / 退出码 / 日志尾部；
 - `bgjob_wait(jobId, [timeoutSeconds])` — 等待后台任务结束并**立即返回**退出码与日志尾部（默认最多 120s；需要等结果继续时用它，代替前台 `sleep` 反复轮询）。
 

@@ -83,8 +83,8 @@ Restart DSH afterwards: the "Background Jobs Monitor" panel appears bottom-right
 
 ## Usage (agent tools)
 
-- `bgjob_submit(name, command, workdir, [notify], [notify_mode])` — submit a background job (`command` is **bat** syntax);
-- `bgjob_submit_pwsh(name, command, workdir, [sandbox], [justification], [notify], [notify_mode])` — submit a background job (`command` is **PowerShell** syntax, UTF-8 logs, safe `exit <code>` semantics);
+- `bgjob_submit(name, command, workdir, [wait], [notify], [notify_mode])` — submit a background job (`command` is **bat** syntax); `wait` = seconds to wait for the result after submitting (0/omitted = return immediately);
+- `bgjob_submit_pwsh(name, command, workdir, [wait], [sandbox], [justification], [notify], [notify_mode])` — submit a background job (`command` is **PowerShell** syntax, UTF-8 logs, safe `exit <code>` semantics); `wait` same as above (auto-wait after submit);
 - `bgjob_status(jobId)` — query status / exit code / log tail;
 - `bgjob_wait(jobId, [timeoutSeconds])` — wait until the background job finishes and **return immediately** with its exit code and log tail (default up to 120s; use it when you need the result to continue, instead of foreground `sleep` polling).
 

@@ -1806,3 +1806,106 @@ test('bgjob_wait: 等待期间任务完成 → 立即返回 done + 退出码（�
   await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
 })
+
+// ── submit 可选 wait（v0.1.52）：提交成功后自动等待 ──
+
+/** 轮询扫描 jobsRoot：任务目录出现 delayMs 后写 exitcode（模拟真实任务收尾）。返回 stop()，可读是否已写入。 */
+function scheduleExitWrite(jobsRoot, code, delayMs) {
+  const started = Date.now()
+  let wrote = false
+  const timer = setInterval(() => {
+    fsp.readdir(jobsRoot)
+      .then(async (names) => {
+        if (wrote) return
+        const dir = names.find((n) => n.startsWith('bg-'))
+        if (!dir) return
+        const ec = path.join(jobsRoot, dir, 'exitcode.txt')
+        const exists = await fsp.access(ec).then(() => true).catch(() => false)
+        if (!exists && Date.now() - started >= delayMs) {
+          wrote = true
+          await fsp.writeFile(ec, String(code), 'utf8')
+        }
+      })
+      .catch(() => {})
+  }, 20)
+  return { stop: () => clearInterval(timer), get wrote() { return wrote } }
+}
+
+test('bgjob_submit wait=1：提交后自动等待，任务结束立即返回 done + 退出码', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  const workdir = await makeWorkdir()
+  const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
+  const dispose = apply(ctx)
+  const submit = tools.find((t) => t.name === 'bgjob_submit')
+  const writer = scheduleExitWrite(workdir + '\\.dsh\\bgjobs', 5, 150)
+  try {
+    const r = await submit.execute({ name: 't', command: 'echo x', workdir, wait: 1 }, { agent: undefined })
+    assert.equal(r.ok, true)
+    assert.equal(r.timedOut, false)
+    assert.equal(r.status, 'done')
+    assert.equal(r.exitCode, 5)
+    assert.ok(r.jobId)
+    assert.ok(r.waitedMs > 0, '提交+等待应消耗等待时间')
+    const meta = JSON.parse(await fsp.readFile(path.join(workdir, '.dsh', 'bgjobs', r.jobId, 'job.json'), 'utf8'))
+    assert.equal(meta.status, 'done', '等待结束 job.json 已落盘 done')
+    assert.equal(writer.wrote, true)
+  } finally {
+    writer.stop()
+    await fsp.rm(workdir, { recursive: true, force: true })
+    dispose()
+  }
+})
+
+test('bgjob_submit wait 缺省/0：立即返回（不等待、无 timedOut）', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  const workdir = await makeWorkdir()
+  const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
+  const dispose = apply(ctx)
+  const submit = tools.find((t) => t.name === 'bgjob_submit')
+  const started = Date.now()
+  const r = await submit.execute({ name: 't', command: 'echo x', workdir, wait: 0 }, { agent: undefined })
+  assert.equal(r.ok, true)
+  assert.equal(r.timedOut, undefined)
+  assert.ok(r.jobId)
+  assert.ok(Date.now() - started < 3000, 'wait:0 应立即返回不阻塞')
+  await fsp.rm(workdir, { recursive: true, force: true })
+  dispose()
+})
+
+test('bgjob_submit wait=1：任务未结束则超时返回 timedOut 快照', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  const workdir = await makeWorkdir()
+  const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
+  const dispose = apply(ctx)
+  const submit = tools.find((t) => t.name === 'bgjob_submit')
+  const r = await submit.execute({ name: 't', command: 'echo x', workdir, wait: 1 }, { agent: undefined })
+  assert.equal(r.ok, true)
+  assert.equal(r.timedOut, true)
+  assert.equal(r.status, 'running')
+  assert.ok(r.waitedMs >= 950, '超时应等待约 wait 秒')
+  await fsp.rm(workdir, { recursive: true, force: true })
+  dispose()
+})
+
+test('bgjob_submit_pwsh wait=1：提交后自动等待 done', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  setShellResolver(async () => ({ exe: 'C:\\pwsh\\pwsh.exe', engine: 'pwsh' }))
+  const workdir = await makeWorkdir()
+  const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
+  const dispose = apply(ctx)
+  const submit = tools.find((t) => t.name === 'bgjob_submit_pwsh')
+  const writer = scheduleExitWrite(workdir + '\\.dsh\\bgjobs', 0, 150)
+  try {
+    const r = await submit.execute({ name: 't', command: 'Write-Output ok', workdir, wait: 1 }, { agent: undefined })
+    assert.equal(r.ok, true)
+    assert.equal(r.timedOut, false)
+    assert.equal(r.status, 'done')
+    assert.equal(r.exitCode, 0)
+    assert.ok(r.waitedMs > 0)
+    assert.equal(writer.wrote, true)
+  } finally {
+    writer.stop()
+    await fsp.rm(workdir, { recursive: true, force: true })
+    dispose()
+  }
+})

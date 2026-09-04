@@ -41,6 +41,7 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
 - 目的：agent 需要「等结果继续」时不再用前台 `pwsh sleep` 反复轮询；`bgjob_wait(jobId, timeoutSeconds?)` 等到任务 done 立即返回退出码/日志尾。
 - 实现：轮询 `waitSnapshot(jobId)`——注册表命中时对 running 任务复用既有 `checkCompletion(job)`（幂等收尾：置 done/写盘/通知），未命中回退 `statusFromDisk`；间隔与**任务自身已运行时长**成正比（`clamp(250ms, taskAge×10%, 1s)`，上限 1s 保证检测延迟 ≤~1s；v0.1.51 起，废弃按等待时长的档位退避），默认 120s、clamp 1–600s。
 - 语义：未知 id 立即返回 `not found` 不空等；等待期间任务被清理 → `status:'removed'`；超时返回 `timedOut:true` 的当前快照供 agent 再次调用；不替代 `notify`（异步收结果仍用 submit 的 notify）。
+- submit 糖（v0.1.52）：`bgjob_submit` / `bgjob_submit_pwsh` 传 `wait: <秒>`（1–600）会在提交成功后自动等待任务结束（内部同一 `waitJobDone`，超时返回 timedOut 快照）；提交失败不进入等待。
 
 ### 保留策略（v0.1.32 起）
 
