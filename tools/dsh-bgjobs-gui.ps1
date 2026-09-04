@@ -1,4 +1,4 @@
-﻿# dsh-bgjobs-gui.ps1 - bgjobs standalone management window (works WITHOUT DSH).
+﻿﻿# dsh-bgjobs-gui.ps1 - bgjobs standalone management window (works WITHOUT DSH).
 # Mirrors dsh-undo-savepoint-gui.ps1: single-instance mutex, hidden console,
 # WinForms list with refresh/submit/kill/cleanup, live log tail panel.
 # Open via dsh-bgjobs-gui.bat or a desktop shortcut.
