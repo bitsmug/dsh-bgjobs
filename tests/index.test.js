@@ -306,8 +306,8 @@ test('submitJob: 成功路径完整落盘（run.bat+cmd.bat+job.json）+ /Create
   const runIdx = calls.findIndex((argv) => argv.includes('/Run'))
   const disableIdx = calls.findIndex((argv) => argv.includes('/DISABLE'))
   assert.ok(runIdx >= 0 && disableIdx > runIdx, '/Run 成功后应立即 /Change /DISABLE 任务计划')
-  await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
+  await fsp.rm(workdir, { recursive: true, force: true })
 })
 
 test('submitJob: /Create 失败时清理目录且不调用 /Run', async () => {
@@ -329,8 +329,8 @@ test('submitJob: /Create 失败时清理目录且不调用 /Run', async () => {
   const leftovers = await fsp.readdir(jobsRoot).catch(() => [])
   assert.equal(leftovers.length, 0, '失败后 job 目录应被清理')
   assert.ok(!calls.some((argv) => argv.includes('/Run')), '/Create 失败不应 /Run')
-  await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
+  await fsp.rm(workdir, { recursive: true, force: true })
 })
 
 test('submitJob: /Run 失败时删除残留任务计划并清理目录', async () => {
@@ -352,8 +352,8 @@ test('submitJob: /Run 失败时删除残留任务计划并清理目录', async (
   const leftovers = await fsp.readdir(jobsRoot).catch(() => [])
   assert.equal(leftovers.length, 0, '失败后 job 目录应被清理')
   assert.ok(calls.some((argv) => argv.includes('/Delete')), '/Run 失败应删除残留任务计划')
-  await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
+  await fsp.rm(workdir, { recursive: true, force: true })
 })
 
 test('submitJob(pwsh): 写 job.ps1 + run.ps1（UTF-8 BOM，无 run.bat），/TR 直接调 interpreter -File run.ps1', async () => {
@@ -400,8 +400,8 @@ test('submitJob(pwsh): 写 job.ps1 + run.ps1（UTF-8 BOM，无 run.bat），/TR 
   const runIdx = calls.findIndex((argv) => argv.includes('/Run'))
   const disableIdx = calls.findIndex((argv) => argv.includes('/DISABLE'))
   assert.ok(runIdx >= 0 && disableIdx > runIdx, '/Run 成功后应立即 /Change /DISABLE 任务计划')
-  await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
+  await fsp.rm(workdir, { recursive: true, force: true })
 })
 
 test('submitJob(pwsh): PowerShell 未找到时返回错误并清理目录', async () => {
@@ -417,8 +417,8 @@ test('submitJob(pwsh): PowerShell 未找到时返回错误并清理目录', asyn
   const jobsRoot = workdir + '\\.dsh\\bgjobs'
   const leftovers = await fsp.readdir(jobsRoot).catch(() => [])
   assert.equal(leftovers.length, 0, '失败后 job 目录应被清理')
-  await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
+  await fsp.rm(workdir, { recursive: true, force: true })
 })
 
 // ── tick / 完成检测 ──
@@ -450,8 +450,8 @@ test('tick: 日志增量读 + exitcode 未出现时保持 running', async () => 
   const jobs = JSON.parse(body).jobs
   assert.equal(jobs.length, 1)
   assert.equal(jobs[0].status, 'running')
-  await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
+  await fsp.rm(workdir, { recursive: true, force: true })
 })
 
 test('tick: exitcode 出现 → done、落盘、兜底删除任务计划；tail 含最后写入的行', async () => {
@@ -475,8 +475,8 @@ test('tick: exitcode 出现 → done、落盘、兜底删除任务计划；tail 
   assert.equal(jobs.length, 1)
   assert.equal(jobs[0].status, 'done')
   assert.ok(jobs[0].tail.includes('final-line'), '完成时 tail 应包含日志最后一行')
-  await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
+  await fsp.rm(workdir, { recursive: true, force: true })
 })
 
 test('完成迁移：不再注入会话消息（v0.1.8 起改 UI toast，host 侧不调 agents）', async () => {
@@ -496,8 +496,8 @@ test('完成迁移：不再注入会话消息（v0.1.8 起改 UI toast，host �
   const meta = JSON.parse(await fsp.readFile(path.join(jobDir, 'job.json'), 'utf8'))
   assert.equal(meta.status, 'done', '完成迁移仍正常落盘 job.json')
   assert.equal(meta.exitCode, 3)
-  await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
+  await fsp.rm(workdir, { recursive: true, force: true })
 })
 
 test('完成迁移：无 agents 服务时静默不抛错', async () => {
@@ -510,8 +510,8 @@ test('完成迁移：无 agents 服务时静默不抛错', async () => {
   await assert.doesNotReject(tick())
   const meta = JSON.parse(await fsp.readFile(path.join(jobDir, 'job.json'), 'utf8'))
   assert.equal(meta.status, 'done')
-  await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
+  await fsp.rm(workdir, { recursive: true, force: true })
 })
 
 // ── 恢复 ──
@@ -539,8 +539,8 @@ test('recover: 重挂 running 任务并在 exitcode 出现后迁移 done', async
   const meta = JSON.parse(await fsp.readFile(path.join(jobsRoot, 'bg-running', 'job.json'), 'utf8'))
   assert.equal(meta.status, 'done')
   assert.equal(meta.exitCode, 7)
-  await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
+  await fsp.rm(workdir, { recursive: true, force: true })
 })
 
 test('recover: workspaceRegistry 未就绪时 tick 不抛错（持续重试）', async () => {
@@ -617,8 +617,8 @@ test('recover: 无 workspaceRegistry 时按中央索引恢复成功', async () =
     assert.equal(jobs[0].id, jobId)
     assert.equal(jobs[0].status, 'done')
     assert.equal(jobs[0].exitCode, 0)
-    await fsp.rm(workdir, { recursive: true, force: true })
     dispose()
+    await fsp.rm(workdir, { recursive: true, force: true })
   } finally {
     delete process.env.DSH_HOME
     await fsp.rm(home, { recursive: true, force: true })
@@ -651,8 +651,8 @@ test('recover: 索引缺失时工作区扫描兜底', async () => {
     const jobs = JSON.parse(body).jobs
     assert.equal(jobs.length, 1, '索引缺失时应由工作区扫描兜底')
     assert.equal(jobs[0].id, jobId)
-    await fsp.rm(workdir, { recursive: true, force: true })
     dispose()
+    await fsp.rm(workdir, { recursive: true, force: true })
   } finally {
     delete process.env.DSH_HOME
     await fsp.rm(home, { recursive: true, force: true })
@@ -692,8 +692,8 @@ test('保留: 已完成任务不被时间剪枝（近期与超过24h都保留）
   const jobs = JSON.parse(body).jobs
   assert.equal(jobs.length, 2, '已完成任务应一直保留（不按时间剪枝）')
   assert.ok(jobs.some((j) => j.id === 'bg-fresh') && jobs.some((j) => j.id === 'bg-old'), '近期与超期 done 均保留')
-  await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
+  await fsp.rm(workdir, { recursive: true, force: true })
 })
 
 test('state 视图含 finishedAt：面板可据此区分"超 24h 清理"范围', async () => {
@@ -718,8 +718,8 @@ test('state 视图含 finishedAt：面板可据此区分"超 24h 清理"范围',
   assert.equal(done.status, 'done')
   assert.equal(typeof done.finishedAt, 'number', 'done 任务视图应携带 finishedAt（时间戳）')
   assert.ok(done.finishedAt <= Date.now())
-  await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
+  await fsp.rm(workdir, { recursive: true, force: true })
 })
 
 // ── webServer 路由 ──
@@ -746,8 +746,8 @@ test('webServer: /bgjobs/state 返回 jobs 列表，其他路径 404', async () 
   let status404 = 0
   await getJobs().handler({ url: '/other' }, { writeHead: (code) => { status404 = code }, end: () => {} })
   assert.equal(status404, 404)
-  await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
+  await fsp.rm(workdir, { recursive: true, force: true })
 })
 
 test('webServer: /bgjobs/delete 删除单个任务（目录+任务计划+索引）', async () => {
@@ -782,8 +782,8 @@ test('webServer: /bgjobs/delete 删除单个任务（目录+任务计划+索引�
     // 再次删除 → not found
     const again = await call('/bgjobs/delete?id=' + res.jobId)
     assert.equal(again.ok, false)
-    await fsp.rm(workdir, { recursive: true, force: true })
     dispose()
+    await fsp.rm(workdir, { recursive: true, force: true })
   } finally {
     delete process.env.DSH_HOME
     await fsp.rm(home, { recursive: true, force: true })
@@ -822,8 +822,8 @@ test('webServer: /bgjobs/cleanup 一键清理 done 任务（含异常退出）�
     const state = await call('/bgjobs/state')
     assert.equal(state.jobs.length, 1)
     assert.equal(state.jobs[0].id, c.jobId)
-    await fsp.rm(workdir, { recursive: true, force: true })
     dispose()
+    await fsp.rm(workdir, { recursive: true, force: true })
   } finally {
     delete process.env.DSH_HOME
     await fsp.rm(home, { recursive: true, force: true })
@@ -954,8 +954,8 @@ test('索引: submitJob 成功写入索引；完成不删条目', async () => {
     await tick()
     const after = await readBgjobsIndex(home)
     assert.equal(after.jobs.length, 1, '完成不删索引条目')
-    await fsp.rm(workdir, { recursive: true, force: true })
     dispose()
+    await fsp.rm(workdir, { recursive: true, force: true })
   } finally {
     delete process.env.DSH_HOME
     await fsp.rm(home, { recursive: true, force: true })
@@ -993,8 +993,8 @@ test('索引: recover 兼收近期与超期任务（不按时间剪枝）', asyn
     const idx = await readBgjobsIndex(home)
     assert.equal(idx.jobs.length, 2, '近期与超期任务均入索引（不按时间剪枝）')
     assert.ok(idx.jobs.some((j) => j.id === 'bg-fresh') && idx.jobs.some((j) => j.id === 'bg-old'))
-    await fsp.rm(workdir, { recursive: true, force: true })
     dispose()
+    await fsp.rm(workdir, { recursive: true, force: true })
   } finally {
     delete process.env.DSH_HOME
     await fsp.rm(home, { recursive: true, force: true })
@@ -1015,8 +1015,8 @@ test('bgjob_status: 内存注册表命中走内存路径（回归）', async () 
   assert.equal(st.error, undefined)
   assert.equal(st.id, res.jobId)
   assert.equal(st.status, 'running')
-  await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
+  await fsp.rm(workdir, { recursive: true, force: true })
 })
 
 test('bgjob_status: 磁盘回退（索引）—— 重启后旧 running 任务返回 running 而非 not found', async () => {
@@ -1047,8 +1047,8 @@ test('bgjob_status: 磁盘回退（索引）—— 重启后旧 running 任务�
     assert.equal(st.exitCode, null)
     assert.equal(st.logPath, meta.logPath)
     assert.ok(st.tail.includes('line2'))
-    await fsp.rm(workdir, { recursive: true, force: true })
     dispose()
+    await fsp.rm(workdir, { recursive: true, force: true })
   } finally {
     delete process.env.DSH_HOME
     await fsp.rm(home, { recursive: true, force: true })
@@ -1077,8 +1077,8 @@ test('bgjob_status: 磁盘回退 —— DSH 离线期间任务结束（exitcode.
     const st = await status.execute({ jobId })
     assert.equal(st.status, 'done')
     assert.equal(st.exitCode, 3)
-    await fsp.rm(workdir, { recursive: true, force: true })
     dispose()
+    await fsp.rm(workdir, { recursive: true, force: true })
   } finally {
     delete process.env.DSH_HOME
     await fsp.rm(home, { recursive: true, force: true })
@@ -1105,8 +1105,8 @@ test('bgjob_status: 磁盘回退 —— job.json 已落盘 done 终态直接返�
     const st = await status.execute({ jobId })
     assert.equal(st.status, 'done')
     assert.equal(st.exitCode, 0)
-    await fsp.rm(workdir, { recursive: true, force: true })
     dispose()
+    await fsp.rm(workdir, { recursive: true, force: true })
   } finally {
     delete process.env.DSH_HOME
     await fsp.rm(home, { recursive: true, force: true })
@@ -1134,8 +1134,8 @@ test('bgjob_status: 磁盘回退 —— 索引缺失时按工作区扫描定位'
     assert.equal(st.error, undefined)
     assert.equal(st.status, 'running')
     assert.equal(st.name, 's')
-    await fsp.rm(workdir, { recursive: true, force: true })
     dispose()
+    await fsp.rm(workdir, { recursive: true, force: true })
   } finally {
     delete process.env.DSH_HOME
     await fsp.rm(home, { recursive: true, force: true })
@@ -1164,8 +1164,8 @@ test('bgjob_status: 磁盘回退只读，不触发任何 schtasks（不终止任
     const st = await status.execute({ jobId })
     assert.equal(st.status, 'running', 'running 任务被如实返回，不受查询影响')
     assert.deepEqual(calls, [], '状态查询不得调用 schtasks（/End//Delete 等终止逻辑）')
-    await fsp.rm(workdir, { recursive: true, force: true })
     dispose()
+    await fsp.rm(workdir, { recursive: true, force: true })
   } finally {
     delete process.env.DSH_HOME
     await fsp.rm(home, { recursive: true, force: true })
@@ -1315,8 +1315,8 @@ test('bgjob_submit_pwsh: 受限会话请求 off + full access 关 → approval �
   assert.ok(approvals[0].reason.includes('escalate bgjob sandbox to full access: 需要全权限'))
   const meta = JSON.parse(await fsp.readFile(path.join(workdir, '.dsh', 'bgjobs', res.jobId, 'job.json'), 'utf8'))
   assert.equal(meta.sandbox, 'off', 'job.json 应落盘 resolved 模式')
-  await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
+  await fsp.rm(workdir, { recursive: true, force: true })
 })
 
 test('bgjob_submit_pwsh: 受限会话宽请求被拒 → 抛错且不创建任何任务', async () => {
@@ -1337,8 +1337,8 @@ test('bgjob_submit_pwsh: 受限会话宽请求被拒 → 抛错且不创建任�
     /user rejected/,
   )
   assert.deepEqual(calls, [], '拒绝后不得有任何 schtasks 调用')
-  await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
+  await fsp.rm(workdir, { recursive: true, force: true })
 })
 
 test('bgjob_submit_pwsh: 受限会话宽请求但无 approval 服务 → fail closed 抛错', async () => {
@@ -1352,8 +1352,8 @@ test('bgjob_submit_pwsh: 受限会话宽请求但无 approval 服务 → fail cl
     submit.execute({ name: 't', command: 'echo x', workdir, sandbox: 'off' }, exec),
     /approval service/,
   )
-  await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
+  await fsp.rm(workdir, { recursive: true, force: true })
 })
 
 test('bgjob_submit: 未挂载沙箱服务 + full access 关 → 拒绝提交（fail closed，不默认放行）', async () => {
@@ -1369,8 +1369,8 @@ test('bgjob_submit: 未挂载沙箱服务 + full access 关 → 拒绝提交（f
     /no dsh sandbox policy service/,
   )
   assert.deepEqual(calls, [], '拒绝后不得有任何 schtasks 调用')
-  await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
+  await fsp.rm(workdir, { recursive: true, force: true })
 })
 
 test('bgjob_submit: 受限会话 + full access 关 → 直接拒绝（bat 恒全权限，不弹审批）', async () => {
@@ -1393,8 +1393,8 @@ test('bgjob_submit: 受限会话 + full access 关 → 直接拒绝（bat 恒全
   )
   assert.equal(approvalAsked, 0, 'bat 恒全权限不再逐次弹审批')
   assert.deepEqual(calls, [], '拒绝后不得有任何 schtasks 调用')
-  await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
+  await fsp.rm(workdir, { recursive: true, force: true })
 })
 
 test('bgjob_submit: 受限会话 + full access 开 → 原模式放行', async () => {
@@ -1414,8 +1414,8 @@ test('bgjob_submit: 受限会话 + full access 开 → 原模式放行', async (
   assert.equal(res.ok, true)
   const meta = JSON.parse(await fsp.readFile(path.join(workdir, '.dsh', 'bgjobs', res.jobId, 'job.json'), 'utf8'))
   assert.equal(meta.sandbox, 'off', 'full access 放行的 bat 任务落盘 off')
-  await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
+  await fsp.rm(workdir, { recursive: true, force: true })
 })
 
 test('bgjob_submit_pwsh: 受限会话缺省继承 → 自动沙箱化（不弹审批）+ wiring 完整', async () => {
@@ -1446,8 +1446,8 @@ test('bgjob_submit_pwsh: 受限会话缺省继承 → 自动沙箱化（不弹�
   const run = await fsp.readFile(path.join(jobDir, 'run.ps1'), 'utf8')
   assert.ok(run.includes("--workspace '" + workdir.replace(/\//g, '\\') + "'"), 'runner 应包 job.ps1 于工作区根')
   assert.ok(run.includes('--mode workspace-write'))
-  await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
+  await fsp.rm(workdir, { recursive: true, force: true })
 })
 
 test('bgjob_submit_pwsh: 会话全权限（danger-full-access）+ 显式 sandbox → 沙箱任务落盘 + state 展示', async () => {
@@ -1470,8 +1470,8 @@ test('bgjob_submit_pwsh: 会话全权限（danger-full-access）+ 显式 sandbox
   await state.handler({ url: '/bgjobs/state' }, { writeHead: () => {}, end: (b) => { body = b } })
   const jobs = JSON.parse(body).jobs
   assert.equal(jobs[0].sandbox, 'workspace-write', 'state 视图应携带 sandbox 字段')
-  await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
+  await fsp.rm(workdir, { recursive: true, force: true })
 })
 
 test('bgjob_submit_pwsh: 请求沙箱但 runner 不可得 → fail loud + 清理', async () => {
@@ -1488,8 +1488,8 @@ test('bgjob_submit_pwsh: 请求沙箱但 runner 不可得 → fail loud + 清理
   assert.match(res.error, /runner not found/)
   const leftovers = await fsp.readdir(path.join(workdir, '.dsh', 'bgjobs')).catch(() => [])
   assert.equal(leftovers.length, 0, 'runner 不可得时应清理 job 目录')
-  await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
+  await fsp.rm(workdir, { recursive: true, force: true })
 })
 
 // ── 完成通知创建者（v0.1.31，可选 notify 参数）──
@@ -1560,8 +1560,8 @@ test('notify 缺省 off：任务完成不注入会话、job.json 无 notify/noti
   const meta = JSON.parse(await fsp.readFile(path.join(jobDir, 'job.json'), 'utf8'))
   assert.equal(meta.notify, undefined)
   assert.equal(meta.notifiedAt, undefined)
-  await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
+  await fsp.rm(workdir, { recursive: true, force: true })
 })
 
 test('notify=on-exit + wakeup + 空闲 → followup 唤醒，消息含任务名与退出码，notifiedAt 落盘', async () => {
@@ -1584,8 +1584,8 @@ test('notify=on-exit + wakeup + 空闲 → followup 唤醒，消息含任务名�
   const meta = JSON.parse(await fsp.readFile(path.join(jobDir, 'job.json'), 'utf8'))
   assert.equal(meta.notify, 'on-exit')
   assert.equal(meta.notifiedAt !== undefined, true, '通知后应落盘 notifiedAt')
-  await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
+  await fsp.rm(workdir, { recursive: true, force: true })
 })
 
 test('notify=on-exit + wakeup + 忙碌 → inject 排入收件箱（不唤醒）', async () => {
@@ -1601,8 +1601,8 @@ test('notify=on-exit + wakeup + 忙碌 → inject 排入收件箱（不唤醒）
   await submitAndFinish(submit, { name: 't', command: 'Write-Output ok', workdir, notify: 'on-exit' }, exec, workdir, 0, tick)
   assert.equal(handle.calls.followup.length, 0, '忙碌会话不得唤醒')
   assert.equal(handle.calls.inject.length, 1)
-  await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
+  await fsp.rm(workdir, { recursive: true, force: true })
 })
 
 test('notify_mode=quiet + 空闲 → 仅 inject，不唤醒', async () => {
@@ -1617,8 +1617,8 @@ test('notify_mode=quiet + 空闲 → 仅 inject，不唤醒', async () => {
   await submitAndFinish(submit, { name: 't', command: 'echo x', workdir, notify: 'on-exit', notify_mode: 'quiet' }, exec, workdir, 0, tick)
   assert.equal(handle.calls.followup.length, 0)
   assert.equal(handle.calls.inject.length, 1)
-  await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
+  await fsp.rm(workdir, { recursive: true, force: true })
 })
 
 test('notify_mode=always + 空闲 → 无视预算恒 followup', async () => {
@@ -1635,8 +1635,8 @@ test('notify_mode=always + 空闲 → 无视预算恒 followup', async () => {
   }
   assert.equal(handle.calls.followup.length, 4)
   assert.equal(handle.calls.inject.length, 0)
-  await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
+  await fsp.rm(workdir, { recursive: true, force: true })
 })
 
 test('wakeup 预算：连续 2 次唤醒后降级 inject；用户领走消息后重置', async () => {
@@ -1662,8 +1662,8 @@ test('wakeup 预算：连续 2 次唤醒后降级 inject；用户领走消息后
   claimed.fn({ agent: { id: 's1' }, message: { source: { kind: 'user' } } })
   await finish('d')
   assert.equal(handle.calls.followup.length, 3, '用户消息后应恢复唤醒')
-  await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
+  await fsp.rm(workdir, { recursive: true, force: true })
 })
 
 test('notify=on-completion + 非零退出 → 不通知；on-fail + 非零 → 通知', async () => {
@@ -1680,8 +1680,8 @@ test('notify=on-completion + 非零退出 → 不通知；on-fail + 非零 → �
   await submitAndFinish(submit, { name: 'fail', command: 'echo x', workdir, notify: 'on-fail' }, exec, workdir, 5, tick)
   assert.equal(handle.calls.followup.length, 1, 'on-fail + exit≠0 通知')
   assert.ok(handle.calls.followup[0].content[0].text.includes('已结束（exit code 5）'))
-  await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
+  await fsp.rm(workdir, { recursive: true, force: true })
 })
 
 test('notify: 无 agents 服务 → 静默不抛错（toast 兜底）', async () => {
@@ -1695,8 +1695,8 @@ test('notify: 无 agents 服务 → 静默不抛错（toast 兜底）', async ()
   const jobDir = await submitAndFinish(submit, { name: 't', command: 'echo x', workdir, notify: 'on-exit' }, exec, workdir, 0, tick)
   const meta = JSON.parse(await fsp.readFile(path.join(jobDir, 'job.json'), 'utf8'))
   assert.equal(meta.status, 'done', '通知尽力而为，不得破坏完成迁移')
-  await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
+  await fsp.rm(workdir, { recursive: true, force: true })
 })
 
 test('notify: 重启恢复已通知（notifiedAt）的 done 任务 → 不重复通知', async () => {
@@ -1723,8 +1723,8 @@ test('notify: 重启恢复已通知（notifiedAt）的 done 任务 → 不重复
     await tick()
     assert.equal(handle.calls.followup.length, 0, '已通知任务重启后不得重复通知')
     assert.equal(handle.calls.inject.length, 0)
-    await fsp.rm(workdir, { recursive: true, force: true })
     dispose()
+    await fsp.rm(workdir, { recursive: true, force: true })
   } finally {
     delete process.env.DSH_HOME
     await fsp.rm(home, { recursive: true, force: true })
@@ -1752,8 +1752,8 @@ test('bgjob_wait: 已 done 的任务立即返回（waitedMs 0，不再轮询）'
   assert.equal(w.error, undefined)
   const meta = JSON.parse(await fsp.readFile(path.join(jobDir, 'job.json'), 'utf8'))
   assert.equal(meta.status, 'done', 'wait 首查应顺带完成幂等收尾（job.json 落盘 done）')
-  await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
+  await fsp.rm(workdir, { recursive: true, force: true })
 })
 
 test('bgjob_wait: 未知 id 立即报 not found（不空等）', async () => {
@@ -1781,8 +1781,8 @@ test('bgjob_wait: 超时返回 timedOut 快照（任务仍在 running）', async
   assert.equal(w.timedOut, true)
   assert.equal(w.status, 'running')
   assert.ok(w.waitedMs >= 950, '应等待约 timeoutSeconds')
-  await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
+  await fsp.rm(workdir, { recursive: true, force: true })
 })
 
 test('bgjob_wait: 等待期间任务完成 → 立即返回 done + 退出码（无需 sleep 轮询）', async () => {
@@ -1803,8 +1803,8 @@ test('bgjob_wait: 等待期间任务完成 → 立即返回 done + 退出码（�
   assert.equal(w.status, 'done')
   assert.equal(w.exitCode, 7)
   assert.ok(w.waitedMs >= 100 && w.waitedMs < 5000, '完成后应尽快返回（waitedMs=' + w.waitedMs + '）')
-  await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
+  await fsp.rm(workdir, { recursive: true, force: true })
 })
 
 // ── submit 可选 wait（v0.1.52）：提交成功后自动等待 ──
@@ -1851,8 +1851,8 @@ test('bgjob_submit wait=1：提交后自动等待，任务结束立即返回 don
     assert.equal(writer.wrote, true)
   } finally {
     writer.stop()
-    await fsp.rm(workdir, { recursive: true, force: true })
     dispose()
+    await fsp.rm(workdir, { recursive: true, force: true })
   }
 })
 
@@ -1868,8 +1868,8 @@ test('bgjob_submit wait 缺省/0：立即返回（不等待、无 timedOut）', 
   assert.equal(r.timedOut, undefined)
   assert.ok(r.jobId)
   assert.ok(Date.now() - started < 3000, 'wait:0 应立即返回不阻塞')
-  await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
+  await fsp.rm(workdir, { recursive: true, force: true })
 })
 
 test('bgjob_submit wait=1：任务未结束则超时返回 timedOut 快照', async () => {
@@ -1883,8 +1883,8 @@ test('bgjob_submit wait=1：任务未结束则超时返回 timedOut 快照', asy
   assert.equal(r.timedOut, true)
   assert.equal(r.status, 'running')
   assert.ok(r.waitedMs >= 950, '超时应等待约 wait 秒')
-  await fsp.rm(workdir, { recursive: true, force: true })
   dispose()
+  await fsp.rm(workdir, { recursive: true, force: true })
 })
 
 test('bgjob_submit_pwsh wait=1：提交后自动等待 done', async () => {
@@ -1905,7 +1905,7 @@ test('bgjob_submit_pwsh wait=1：提交后自动等待 done', async () => {
     assert.equal(writer.wrote, true)
   } finally {
     writer.stop()
-    await fsp.rm(workdir, { recursive: true, force: true })
     dispose()
+    await fsp.rm(workdir, { recursive: true, force: true })
   }
 })
