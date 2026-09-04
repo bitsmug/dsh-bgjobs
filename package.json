@@ -1,6 +1,6 @@
 {
   "name": "bgjobs",
-  "version": "0.1.50",
+  "version": "0.1.51",
   "description": "独立于 DSH 进程的后台任务（schtasks 托管）：bgjob_submit/bgjob_status 工具、网页「后台任务监控」实时面板、可选完成后通知创建者 agent（notify 参数）；支持可选 dsh 沙箱（read-only/workspace-write）约束后台任务文件效果。关 DSH/关终端不影响任务运行。",
   "type": "module",
   "license": "MIT",

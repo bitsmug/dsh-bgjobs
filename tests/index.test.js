@@ -1731,7 +1731,7 @@ test('notify: 重启恢复已通知（notifiedAt）的 done 任务 → 不重复
   }
 })
 
-// ── bgjob_wait（v0.1.50）：等任务结束立即返回 ──
+// ── bgjob_wait（v0.1.51）：等任务结束立即返回 ──
 
 test('bgjob_wait: 已 done 的任务立即返回（waitedMs 0，不再轮询）', async () => {
   setSchtasksRunner(makeFakeRunner([]))
