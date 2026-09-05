@@ -1,10 +1,10 @@
 # bgjobs — DSH 独立后台任务插件
 
+**中文** · [English](README.en.md)
+
 [![npm version](https://img.shields.io/npm/v/bgjobs)](https://www.npmjs.com/package/bgjobs)
 [![License](https://img.shields.io/npm/l/bgjobs)](LICENSE)
 [![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)
-
-> **中文** · [English](README.en.md)
 
 **让 DSH 提交的命令脱离 DSH 进程独立运行**：任务交给 Windows 任务计划程序服务托管，关掉 DSH、关掉网页都不影响执行；网页弹 Toast 提醒完成，随时看实时输出；DSH 离线时还能用独立 CLI/GUI 管理。
 
@@ -29,17 +29,15 @@
 
 **方式 A（推荐，npm 发布版）**
 
-```pwsh
-$profile="web"; dsh plugin --profile $profile add bgjobs || dsh plugin --profile $profile approve-builds koffi; dsh plugin --profile $profile add bgjobs && echo "bgjobs 安装成功"
+```sh
+$pf="web"; dsh plugin --profile $pf add bgjobs || dsh plugin --profile $pf approve-builds koffi; dsh plugin --profile $pf add bgjobs && Write-Host "✓ bgjobs安装成功！" -ForegroundColor Green
 ```
 
-把 `web` 改成你自己的 profile 名，整行粘贴到 PowerShell（pwsh）即可。第一次 `add` 会报 `ERR_PNPM_IGNORED_BUILDS`（koffi 构建脚本未批准），`||` 会自动触发 `approve-builds` 批准并运行 koffi 构建，再 `add` 成功后打印「bgjobs 安装成功」。
-
-> 从 npm registry 安装发布版。**注意 registry 同步可能有延迟**（尤其国内镜像如 npmmirror），新版本发布后未必立即可装；要确保装到最新，或想试用未发布的改动，用下面的方式 B（GitHub 直装）。
+> 把 `web` 改成你自己的 profile 名，整行粘贴到 PowerShell（pwsh）即可。第一次 `add` 会报 `ERR_PNPM_IGNORED_BUILDS`（koffi 构建脚本未批准），`||` 会自动触发 `approve-builds` 批准并运行 koffi 构建，再 `add` 成功后打印「bgjobs 安装成功」。
 
 **方式 B（从 GitHub 安装，始终最新）**
 
-```pwsh
+```sh
 dsh plugin --profile <profile> add github:bitsmug/dsh-bgjobs
 ```
 
@@ -56,7 +54,7 @@ dsh: pnpm failed in profile directory <你的 DSH home>\profiles\<profile>
 
 处理（一次性，首选一条命令）：
 
-```pwsh
+```sh
 dsh plugin --profile <profile> approve-builds koffi
 dsh plugin --profile <profile> add bgjobs
 ```

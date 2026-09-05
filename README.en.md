@@ -1,10 +1,10 @@
 # bgjobs — standalone background jobs for DSH
 
+**English** · [中文](README.md)
+
 [![npm version](https://img.shields.io/npm/v/bgjobs)](https://www.npmjs.com/package/bgjobs)
 [![License](https://img.shields.io/npm/l/bgjobs)](LICENSE)
 [![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)
-
-> **English** · [中文](README.md)
 
 **Run commands outside the DSH process**: jobs are handed to the Windows Task Scheduler service, so closing DSH or the web page does not stop them. A toast appears in the web UI when a job finishes; live output is always one refresh away; and when DSH is offline you can still manage jobs with the standalone CLI/GUI.
 
@@ -29,17 +29,15 @@ Prereqs: DSH (`@deepseek-ai/dsh`), PowerShell 7, and Node.js (≥22 for docs bel
 
 **Method A (recommended, npm release)**
 
-```pwsh
-$profile="web"; dsh plugin --profile $profile add bgjobs || dsh plugin --profile $profile approve-builds koffi; dsh plugin --profile $profile add bgjobs && echo "bgjobs installed"
+```sh
+$pf="web"; dsh plugin --profile $pf add bgjobs || dsh plugin --profile $pf approve-builds koffi; dsh plugin --profile $pf add bgjobs && Write-Host "✓ bgjobs installed successfully!" -ForegroundColor Green
 ```
 
-Replace `web` with your own profile name and paste the whole line into PowerShell (pwsh). The first `add` raises `ERR_PNPM_IGNORED_BUILDS` (koffi build script not approved); `||` then automatically runs `approve-builds` to approve and build koffi, the second `add` succeeds, and "bgjobs installed" is printed.
-
-> Installs the published version from the npm registry. **Note: registry mirrors can lag** (especially in China, e.g. npmmirror), so a fresh release may not be installable immediately. For the very latest — or to try unpublished changes — use Method B below (direct from GitHub).
+> Replace `web` with your own profile name and paste the whole line into PowerShell (pwsh). The first `add` raises `ERR_PNPM_IGNORED_BUILDS` (koffi build script not approved); `||` then automatically runs `approve-builds` to approve and build koffi, the second `add` succeeds, and "bgjobs installed" is printed.
 
 **Method B (from GitHub, always latest)**
 
-```pwsh
+```sh
 dsh plugin --profile <profile> add github:bitsmug/dsh-bgjobs
 ```
 
@@ -56,7 +54,7 @@ dsh: pnpm failed in profile directory <your DSH home>\profiles\<profile>
 
 Fix (one-time; prefer the one command):
 
-```pwsh
+```sh
 dsh plugin --profile <profile> approve-builds koffi
 dsh plugin --profile <profile> add bgjobs
 ```
