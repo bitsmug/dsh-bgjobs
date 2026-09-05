@@ -38,12 +38,12 @@ $pf="web"; dsh plugin --profile $pf add bgjobs || dsh plugin --profile $pf appro
 **Method B (from GitHub, always latest)**
 
 ```sh
-dsh plugin --profile <profile> add github:bitsmug/dsh-bgjobs
+$pf="web"; dsh plugin --profile $pf add github:bitsmug/dsh-bgjobs || dsh plugin --profile $pf approve-builds koffi; dsh plugin --profile $pf add bgjobs && Write-Host "✓ bgjobs installed successfully!" -ForegroundColor Green
 ```
 
 > Pulls the default branch directly from the GitHub repo — **always the newest code** (published and unpublished alike), no registry-lag. Both methods install under the name `bgjobs`, so the uninstall command is the same.
 
-**First install fails with `ERR_PNPM_IGNORED_BUILDS`?**
+**From dsh-market install fails with `ERR_PNPM_IGNORED_BUILDS`?**
 
 The plugin depends on the native library `koffi`; installing it triggers a build script, and pnpm ≥10 blocks dependency build scripts by default (a GitHub install also runs `prepare`). The error looks like:
 
@@ -52,11 +52,10 @@ The plugin depends on the native library `koffi`; installing it triggers a build
 dsh: pnpm failed in profile directory <your DSH home>\profiles\<profile>
 ```
 
-Fix (one-time; prefer the one command):
+Fix (one-time fix):
 
 ```sh
-dsh plugin --profile <profile> approve-builds koffi
-dsh plugin --profile <profile> add bgjobs
+$pf="web"; dsh plugin --profile $pf approve-builds koffi; dsh plugin --profile $pf add bgjobs
 ```
 
 The first command approves and runs koffi's build script; the second `add` then succeeds.

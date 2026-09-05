@@ -38,12 +38,12 @@ $pf="web"; dsh plugin --profile $pf add bgjobs || dsh plugin --profile $pf appro
 **方式 B（从 GitHub 安装，始终最新）**
 
 ```sh
-dsh plugin --profile <profile> add github:bitsmug/dsh-bgjobs
+$pf="web"; dsh plugin --profile $pf add github:bitsmug/dsh-bgjobs || dsh plugin --profile $pf approve-builds koffi; dsh plugin --profile $pf add bgjobs && Write-Host "✓ bgjobs安装成功！" -ForegroundColor Green
 ```
 
 > 直接从 GitHub 仓库默认分支拉取，**始终是最新代码**（含刚发布与未发布改动），不受 npm registry 同步延迟影响。两种方式装完包名都是 `bgjobs`，卸载命令相同。
 
-**首次安装报 `ERR_PNPM_IGNORED_BUILDS`？**
+**从插件市场(dsh-market)安装报 `ERR_PNPM_IGNORED_BUILDS`？**
 
 插件依赖原生库 `koffi`，安装会触发它的构建脚本，而 pnpm ≥10 默认阻止依赖运行构建脚本（GitHub 安装还会跑 `prepare`）。报错形如：
 
@@ -52,11 +52,10 @@ dsh plugin --profile <profile> add github:bitsmug/dsh-bgjobs
 dsh: pnpm failed in profile directory <你的 DSH home>\profiles\<profile>
 ```
 
-处理（一次性，首选一条命令）：
+处理（把 `web` 改成你自己的 `<profile>` 名，整行粘贴到 PowerShell（pwsh）即可）：
 
 ```sh
-dsh plugin --profile <profile> approve-builds koffi
-dsh plugin --profile <profile> add bgjobs
+$pf="web"; dsh plugin --profile $pf approve-builds koffi; dsh plugin --profile $pf add bgjobs
 ```
 
 第一条命令批准并运行 koffi 的构建脚本，随后重新 `add` 即可装上。
