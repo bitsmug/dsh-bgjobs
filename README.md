@@ -1,4 +1,4 @@
-# bgjobs — DSH 独立后台任务插件
+# bgjobs (standalone background jobs) — DSH 独立后台任务插件
 
 **中文** · [English](README.en.md)
 
@@ -16,7 +16,7 @@
 |---|---|
 | 进程外独立运行 | 任务经 `schtasks` 托管，DSH 崩溃/关闭不影响 |
 | 实时输出面板 | 网页右下角浮动面板每秒刷新输出：可拖拽、最小化为悬浮球、折叠为仅任务列表、随主题换肤；按工作区分组、可调大小 |
-| 清理已完成 | 🧹 手动选择清理范围：仅超过 24h（默认保留 24h 内）或全部；单条任务可拖到垃圾篓删除 |
+| 清理已完成 | 🧹 点击右上角清理图标开启垃圾篓：拖拽单条已结束任务删除，或批量清理（仅超 24h / 全部，与视图过滤一致） |
 | 完成通知 | 任务退出即弹 Toast（不打扰会话）；可选把通知发回创建它的 agent（`notify` 参数） |
 | 断线续跟 | DSH 重启自动恢复跟踪；旧任务 id 也能从磁盘查询状态 |
 | 离线管理 | 不依赖 DSH 的 CLI / GUI：list / status / log / submit / kill / cleanup |
@@ -38,7 +38,7 @@ $pf="web"; dsh plugin --profile $pf add bgjobs || dsh plugin --profile $pf appro
 **方式 B（从 GitHub 安装，始终最新）**
 
 ```sh
-$pf="web"; dsh plugin --profile $pf add github:bitsmug/dsh-bgjobs || dsh plugin --profile $pf approve-builds koffi; dsh plugin --profile $pf add bgjobs && Write-Host "✓ bgjobs安装成功！" -ForegroundColor Green
+$pf="web"; dsh plugin --profile $pf add github:bitsmug/dsh-bgjobs || dsh plugin --profile $pf approve-builds koffi; dsh plugin --profile $pf add github:bitsmug/bgjobs && Write-Host "✓ bgjobs安装成功！" -ForegroundColor Green
 ```
 
 > 直接从 GitHub 仓库默认分支拉取，**始终是最新代码**（含刚发布与未发布改动），不受 npm registry 同步延迟影响。两种方式装完包名都是 `bgjobs`，卸载命令相同。
@@ -102,7 +102,7 @@ allowBuilds:
 
 ## 网页面板
 
-面板顶部依次是：清理（选 24h 前/全部）、折叠（收成仅任务列表）、最小化（悬浮球落在按钮位置）。工具栏两个开关：「仅当前会话」（只显示当前会话工作区任务）与「全权限」（预批准全权限任务，默认关）。点击任务行展开实时日志。面板文案跟随 DSH 界面语言（中文 DSH → 中文面板，其他 → 英文）。
+面板顶部依次是：清理（点击开启底部垃圾篓：拖拽删除单条已结束任务，或点「清理超 24h / 清理全部」批量清理）、折叠（收成仅任务列表）、最小化（悬浮球落在按钮位置）。工具栏两个开关：「仅当前会话」（只显示当前会话工作区任务）与「全权限」（预批准全权限任务，默认关）。点击任务行展开实时日志。面板文案跟随 DSH 界面语言（中文 DSH → 中文面板，其他 → 英文）。
 
 ## 离线管理 CLI（DSH 不运行也能用）
 

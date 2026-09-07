@@ -665,6 +665,55 @@ test('recover: 无 workspaceRegistry 时按中央索引恢复成功', async () =
   }
 })
 
+test('recover: done 任务重挂后 tail 从磁盘回填（面板不再显示等待输出）', async () => {
+  const home = await makeDshHome()
+  try {
+    const workdir = await makeWorkdir()
+    const jobsRoot = workdir + '\\.dsh\\bgjobs'
+    const mk = async (id, withLog) => {
+      const jobDir = jobsRoot + '\\' + id
+      await fsp.mkdir(jobDir, { recursive: true })
+      await fsp.writeFile(path.join(jobDir, 'job.json'), JSON.stringify({
+        id, name: id, workdir, jobDir,
+        logPath: jobDir + '\\stdout.log', exitcodePath: jobDir + '\\exitcode.txt',
+        jsonPath: jobDir + '\\job.json', taskName: 'dsh-bgj-' + id,
+        command: 'echo x', status: 'done', exitCode: 0,
+        finishedAt: Date.now(), createdAt: Date.now(),
+      }), 'utf8')
+      if (withLog) await fsp.writeFile(path.join(jobDir, 'stdout.log'), 'line1\nfinal-line\n', 'utf8')
+    }
+    await mk('bg-done-log', true)
+    await mk('bg-done-empty', false)
+    await writeBgjobsIndex({ version: 1, updatedAt: Date.now(), jobs: [
+      { id: 'bg-done-log', jobDir: jobsRoot + '\\bg-done-log', workdir, name: 'bg-done-log', createdAt: Date.now() },
+      { id: 'bg-done-empty', jobDir: jobsRoot + '\\bg-done-empty', workdir, name: 'bg-done-empty', createdAt: Date.now() },
+    ] }, home)
+    const { ctx, intervals, injectCallbacks } = makeCtx({ services: {} })
+    const dispose = apply(ctx)
+    try {
+      const tick = intervals.find((i) => i.ms === 1000).fn
+      await tick()
+      const getJobs = attachWebServer(ctx, injectCallbacks)
+      let body = ''
+      await getJobs().handler({ url: '/bgjobs/state' }, { writeHead: () => {}, end: (b) => { body = b } })
+      const jobs = JSON.parse(body).jobs
+      assert.equal(jobs.length, 2, '两个 done 任务都应从中央索引恢复')
+      const withLog = jobs.find((j) => j.id === 'bg-done-log')
+      const empty = jobs.find((j) => j.id === 'bg-done-empty')
+      assert.equal(withLog.status, 'done')
+      assert.ok(withLog.tail.includes('final-line'), '恢复的 done 任务 tail 应从磁盘回填')
+      assert.equal(empty.status, 'done')
+      assert.equal(empty.tail, '', '无日志文件的 done 任务 tail 保持空')
+    } finally {
+      dispose()
+      await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
+    }
+  } finally {
+    delete process.env.DSH_HOME
+    await fsp.rm(home, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
 test('recover: 索引缺失时工作区扫描兜底', async () => {
   const home = await makeDshHome()
   try {

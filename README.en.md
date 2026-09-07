@@ -16,7 +16,7 @@ Built for long-running work — large downloads, batch scripts, compilation, dat
 |---|---|
 | Runs outside DSH | Jobs are hosted via `schtasks`; DSH crashes/shutdowns don't matter |
 | Live output panel | Floating panel (bottom-right) refreshes every second: draggable, minimizable to a bubble, collapsible to a job list, theme-aware; grouped by workspace, resizable |
-| Manual cleanup | 🧹 pick the scope: >24h only (default keeps the last 24h) or everything; a single job can be dragged to the trash to delete |
+| Manual cleanup | 🧹 click the cleanup icon to open the trash bar: drag a single finished job to delete, or bulk-clean (>24h only / all; follows the view filter) |
 | Completion notice | Toast on exit (does not interrupt the session); optionally notify the creating agent (`notify` param) |
 | Reconnect & track | Auto-recovers after a DSH restart; old job ids can still be queried from disk |
 | Offline management | CLI / GUI that don't need DSH: list / status / log / submit / kill / cleanup |
@@ -38,7 +38,7 @@ $pf="web"; dsh plugin --profile $pf add bgjobs || dsh plugin --profile $pf appro
 **Method B (from GitHub, always latest)**
 
 ```sh
-$pf="web"; dsh plugin --profile $pf add github:bitsmug/dsh-bgjobs || dsh plugin --profile $pf approve-builds koffi; dsh plugin --profile $pf add bgjobs && Write-Host "✓ bgjobs installed successfully!" -ForegroundColor Green
+$pf="web"; dsh plugin --profile $pf add github:bitsmug/dsh-bgjobs || dsh plugin --profile $pf approve-builds koffi; dsh plugin --profile $pf add github:bitsmug/bgjobs && Write-Host "✓ bgjobs installed successfully!" -ForegroundColor Green
 ```
 
 > Pulls the default branch directly from the GitHub repo — **always the newest code** (published and unpublished alike), no registry-lag. Both methods install under the name `bgjobs`, so the uninstall command is the same.
@@ -104,7 +104,7 @@ Then:
 
 ## Web panel
 
-Top bar, left to right: cleanup (choose >24h ago / all), collapse (to a compact job list), minimize (floating bubble anchored at the button). Toolbar toggles: "Only this session" (show only the current session's workspace jobs) and "Full access" (pre-approve full-access jobs; off by default). Click a job row to expand its live log. Panel copy follows the DSH UI language (Chinese DSH → Chinese panel, otherwise English).
+Top bar, left to right: cleanup (opens the bottom trash bar: drag a finished job to delete, or bulk-clean >24h / all), collapse (to a compact job list), minimize (floating bubble anchored at the button). Toolbar toggles: "Only this session" (show only the current session's workspace jobs) and "Full access" (pre-approve full-access jobs; off by default). Click a job row to expand its live log. Panel copy follows the DSH UI language (Chinese DSH → Chinese panel, otherwise English).
 
 ## Offline CLI (works without DSH)
 
