@@ -1,4 +1,4 @@
-﻿﻿﻿# dsh-bgjobs-gui.ps1 - bgjobs standalone management window (works WITHOUT DSH).
+﻿﻿﻿﻿﻿﻿﻿﻿﻿# dsh-bgjobs-gui.ps1 - bgjobs standalone management window (works WITHOUT DSH).
 # Mirrors dsh-undo-savepoint-gui.ps1: single-instance mutex, hidden console,
 # WinForms list with refresh/submit/kill/cleanup, live log tail panel.
 # Open via dsh-bgjobs-gui.bat or a desktop shortcut.
@@ -33,25 +33,36 @@ function Format-GuiTime([object]$Ms) {
 }
 
 # 按 job 填一行（新建与原位刷新共用；7 列 + Tag 携带最新 job 对象）。
+# 逐格比较、仅在值有差异时才赋值：静止数据下不触发无效重绘；
+# 返回本次是否有实际变化（供 Update-GuiList 决定是否刷新状态栏）。
 function Set-GuiListItem([System.Windows.Forms.ListViewItem]$item, $j) {
     $exit = if ($null -eq $j.exitCode) { '-' } else { [string]$j.exitCode }
+    $newName    = $j.name
+    $newStatus  = $j.status
+    $newNotify  = if ($j.notified) { Get-BgjobsText 'notify.done' } else { Get-BgjobsText 'notify.pending' }
+    $newFinish  = (Format-GuiTime $j.finishedAt)
+    $newWorkdir = $j.workdir
+    $changed = $false
     if ($item.SubItems.Count -gt 1) {
-        $item.Text = [string]$j.id
-        $item.SubItems[1].Text = $j.name
-        $item.SubItems[2].Text = $j.status
-        $item.SubItems[3].Text = $exit
-        $item.SubItems[4].Text = (if ($j.notified) { Get-BgjobsText 'notify.done' } else { Get-BgjobsText 'notify.pending' })
-        $item.SubItems[5].Text = (Format-GuiTime $j.finishedAt)
-        $item.SubItems[6].Text = $j.workdir
+        if ($item.Text -ne [string]$j.id) { $item.Text = [string]$j.id; $changed = $true }
+        if ($item.SubItems[1].Text -ne $newName)    { $item.SubItems[1].Text = $newName;    $changed = $true }
+        if ($item.SubItems[2].Text -ne $newStatus)  { $item.SubItems[2].Text = $newStatus;  $changed = $true }
+        if ($item.SubItems[3].Text -ne $exit)       { $item.SubItems[3].Text = $exit;       $changed = $true }
+        if ($item.SubItems[4].Text -ne $newNotify)  { $item.SubItems[4].Text = $newNotify;  $changed = $true }
+        if ($item.SubItems[5].Text -ne $newFinish)  { $item.SubItems[5].Text = $newFinish;  $changed = $true }
+        if ($item.SubItems[6].Text -ne $newWorkdir) { $item.SubItems[6].Text = $newWorkdir; $changed = $true }
     } else {
-        $item.SubItems.Add($j.name) | Out-Null
-        $item.SubItems.Add($j.status) | Out-Null
-        $item.SubItems.Add($exit) | Out-Null
-        $item.SubItems.Add((if ($j.notified) { Get-BgjobsText 'notify.done' } else { Get-BgjobsText 'notify.pending' })) | Out-Null
-        $item.SubItems.Add((Format-GuiTime $j.finishedAt)) | Out-Null
-        $item.SubItems.Add($j.workdir) | Out-Null
+        $item.Text = [string]$j.id
+        $item.SubItems.Add($newName)    | Out-Null
+        $item.SubItems.Add($newStatus)  | Out-Null
+        $item.SubItems.Add($exit)       | Out-Null
+        $item.SubItems.Add($newNotify)  | Out-Null
+        $item.SubItems.Add($newFinish)  | Out-Null
+        $item.SubItems.Add($newWorkdir) | Out-Null
+        $changed = $true
     }
     $item.Tag = $j
+    return $changed
 }
 
 # Refresh the job list from disk (live job.json; index only locates dirs).
@@ -60,6 +71,7 @@ function Set-GuiListItem([System.Windows.Forms.ListViewItem]$item, $j) {
 function Update-GuiList {
     $jobs = @(Get-BgjobsJobs)
     $script:list.BeginUpdate()
+    $changed = $false
     $existing = @{}
     foreach ($it in $script:list.Items) {
         if ($null -ne $it.Tag -and $null -ne $it.Tag.id) { $existing[[string]$it.Tag.id] = $it }
@@ -69,19 +81,22 @@ function Update-GuiList {
         $key = [string]$j.id
         $seen[$key] = $true
         if ($existing.ContainsKey($key)) {
-            Set-GuiListItem $existing[$key] $j      # 原位刷新（对象不变，选中保持）
+            if (Set-GuiListItem $existing[$key] $j) { $changed = $true }   # 仅值有变化才算脏
         } else {
             $item = New-Object System.Windows.Forms.ListViewItem([string]$j.id)
-            Set-GuiListItem $item $j
+            Set-GuiListItem $item $j | Out-Null
             [void]$script:list.Items.Add($item)
+            $changed = $true
         }
     }
     # 剔除已消失任务（被删行若正被选中，WinForms 自行清空选中）
     foreach ($key in @($existing.Keys)) {
-        if (-not $seen.ContainsKey($key)) { [void]$script:list.Items.Remove($existing[$key]) }
+        if (-not $seen.ContainsKey($key)) { [void]$script:list.Items.Remove($existing[$key]); $changed = $true }
     }
     $script:list.EndUpdate()
-    $script:statusLabel.Text = (Get-BgjobsText 'status.count') -f @($jobs).Count, $script:BgjobsIndexPath
+    if ($changed) {
+        $script:statusLabel.Text = (Get-BgjobsText 'status.count') -f @($jobs).Count, $script:BgjobsIndexPath
+    }
 }
 
 # Show the selected job's details + last log lines.
@@ -394,6 +409,13 @@ $script:list.Columns.Add((Get-BgjobsText 'col.exit'), 60) | Out-Null
 $script:list.Columns.Add((Get-BgjobsText 'col.notify'), 90) | Out-Null
 $script:list.Columns.Add((Get-BgjobsText 'col.finished'), 110) | Out-Null
 $script:list.Columns.Add((Get-BgjobsText 'col.workdir'), 300) | Out-Null
+# 启用 ListView 双缓冲，消除刷新闪烁（DoubleBuffered 是 Control 的受保护属性，需反射设置）。
+$flags = [System.Reflection.BindingFlags]::Instance -bor [System.Reflection.BindingFlags]::NonPublic
+$dbProp = [System.Windows.Forms.ListView].GetProperty('DoubleBuffered', $flags)
+if ($dbProp) { $dbProp.SetValue($script:list, $true, $null) }
+$setStyle = [System.Windows.Forms.Control].GetMethod('SetStyle', $flags)
+$style = [System.Windows.Forms.ControlStyles]::OptimizedDoubleBuffer -bor [System.Windows.Forms.ControlStyles]::AllPaintingInWmPaint
+[void]$setStyle.Invoke($script:list, @($style, $true))
 $script:list.Dock = 'Fill'
 $script:list.Add_SelectedIndexChanged({ Show-GuiDetail })
 $script:split.Panel1.Controls.Add($script:list)
@@ -413,6 +435,11 @@ $script:form.Add_Shown({
     try { $script:split.SplitterDistance = 300 } catch { /* 保持默认，仍可拖动分界 */ }
 })
 $script:form.Controls.Add($script:split)
+# 关键：把 Fill 的 SplitContainer 提到控件树最前（z-order index 0）。WinForms
+# 按反 z-order 停靠：后添加/靠后的控件先停靠。若顺序是 toolbar、statusStrip、split，
+# split（靠后）会先停靠占满整个窗体并叠在 toolStrip 之上，把它顶部的列头遮住（列头不显示）。
+# 改为 split 停靠最后 → 让出 toolbar/statusStrip 空间，列头可见。
+$script:form.Controls.SetChildIndex($script:split, 0)
 
 $script:btnRefresh.Add_Click({ Update-GuiList })
 $script:btnSubmit.Add_Click({ Show-GuiSubmitDialog })
