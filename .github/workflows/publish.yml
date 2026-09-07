@@ -14,7 +14,7 @@ on:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     outputs:
       should_publish: ${{ steps.check.outputs.should_publish }}
       version: ${{ steps.check.outputs.version }}
