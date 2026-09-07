@@ -848,6 +848,72 @@ test('webServer: /bgjobs/state 返回 jobs 列表，其他路径 404', async () 
   }
 })
 
+test('webServer: /bgjobs/log 按需读日志（注册表命中/磁盘兜底/空日志/未知 id）', async () => {
+  const home = await makeDshHome()
+  try {
+    const workdir = await makeWorkdir()
+    const { ctx, tools, intervals, injectCallbacks } = makeCtx({
+      services: { workspaceRegistry: { list: () => [{ path: workdir }] } },
+    })
+    const dispose = apply(ctx)
+    try {
+      const getJobs = attachWebServer(ctx, injectCallbacks)
+      const submit = tools.find((t) => t.name === 'bgjob_submit')
+      const call = (url) => new Promise((resolve) => {
+        let body = ''
+        getJobs().handler({ url }, { writeHead: () => {}, end: (b) => { resolve(JSON.parse(b || '{}')) } })
+      })
+      // ① 注册表命中的任务：日志文件有内容 → 返回日志尾
+      const live = await submit.execute({ name: 'live', command: 'echo live', workdir }, { agent: undefined })
+      await fsp.writeFile(workdir + '\\.dsh\\bgjobs\\' + live.jobId + '\\stdout.log', 'line1\nlazy-loaded-line\n', 'utf8')
+      await fsp.writeFile(workdir + '\\.dsh\\bgjobs\\' + live.jobId + '\\exitcode.txt', '0', 'utf8')
+      await intervals.find((i) => i.ms === 1000).fn() // 完成 → done
+      let r = await call('/bgjobs/log?id=' + live.jobId)
+      assert.equal(r.ok, true)
+      assert.ok(r.text.includes('lazy-loaded-line'), '/bgjobs/log 应返回日志内容')
+      // ② 仅磁盘（不在注册表）：中央索引定位 → 返回日志
+      const diskId = 'bg-log-disk'
+      const jobDir = workdir + '\\.dsh\\bgjobs\\' + diskId
+      await fsp.mkdir(jobDir, { recursive: true })
+      await fsp.writeFile(path.join(jobDir, 'job.json'), JSON.stringify({
+        id: diskId, name: 'disk', workdir, jobDir,
+        logPath: jobDir + '\\stdout.log', exitcodePath: jobDir + '\\exitcode.txt',
+        jsonPath: jobDir + '\\job.json', taskName: 'dsh-bgj-disk',
+        command: 'echo x', status: 'done', exitCode: 0, finishedAt: Date.now(), createdAt: Date.now(),
+      }), 'utf8')
+      await fsp.writeFile(path.join(jobDir, 'stdout.log'), 'disk-output\n', 'utf8')
+      await writeBgjobsIndex({ version: 1, updatedAt: Date.now(), jobs: [{ id: diskId, jobDir, workdir, name: 'disk', createdAt: Date.now() }] }, home)
+      r = await call('/bgjobs/log?id=' + diskId)
+      assert.equal(r.ok, true)
+      assert.ok(r.text.includes('disk-output'), '磁盘兜底应返回日志内容')
+      // ③ 存在但无日志文件 → ok:true 且 text 为空串
+      const emptyId = 'bg-log-empty'
+      const emptyDir = workdir + '\\.dsh\\bgjobs\\' + emptyId
+      await fsp.mkdir(emptyDir, { recursive: true })
+      await fsp.writeFile(path.join(emptyDir, 'job.json'), JSON.stringify({
+        id: emptyId, name: 'empty', workdir, jobDir: emptyDir,
+        logPath: emptyDir + '\\stdout.log', exitcodePath: emptyDir + '\\exitcode.txt',
+        jsonPath: emptyDir + '\\job.json', taskName: 'dsh-bgj-empty',
+        command: 'echo x', status: 'done', exitCode: 0, finishedAt: Date.now(), createdAt: Date.now(),
+      }), 'utf8')
+      await writeBgjobsIndex({ version: 1, updatedAt: Date.now(), jobs: [{ id: emptyId, jobDir: emptyDir, workdir, name: 'empty', createdAt: Date.now() }] }, home)
+      r = await call('/bgjobs/log?id=' + emptyId)
+      assert.equal(r.ok, true)
+      assert.equal(r.text, '', '无日志文件应返回空 text')
+      // ④ 未知 id → not found
+      r = await call('/bgjobs/log?id=nonexistent')
+      assert.equal(r.ok, false)
+      assert.equal(r.error, 'not found')
+    } finally {
+      dispose()
+      await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
+    }
+  } finally {
+    delete process.env.DSH_HOME
+    await fsp.rm(home, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
 test('webServer: /bgjobs/delete 删除单个任务（目录+任务计划+索引）', async () => {
   const calls = []
   setSchtasksRunner(makeFakeRunner(calls))
