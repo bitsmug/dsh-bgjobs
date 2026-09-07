@@ -502,6 +502,30 @@ $script:BgjobsText = @{
     'example.countdown.toast.title' = if ($script:BgjobsLangZh) { 'bgjobs 提醒' } else { 'bgjobs reminder' }
     'example.countdown.toast.msg' = if ($script:BgjobsLangZh) { '倒计时结束（{0} 秒）' } else { 'Countdown finished ({0}s)' }
     'example.countdown.toast.fail' = if ($script:BgjobsLangZh) { '（Toast 通知失败：{0}）' } else { '(Toast failed: {0})' }
+    # auto-done: run shutdown / hibernate / a script after all jobs finish
+    'gui.autodone' = if ($script:BgjobsLangZh) { '🌙 完成后…' } else { '🌙 Auto-off…' }
+    'gui.autodone.cancel' = if ($script:BgjobsLangZh) { '✖ 取消预约' } else { '✖ Cancel schedule' }
+    'dlg.autodone.title' = if ($script:BgjobsLangZh) { '所有任务完成后自动执行' } else { 'Auto action when all jobs finish' }
+    'dlg.autodone.action' = if ($script:BgjobsLangZh) { '动作：' } else { 'Action: ' }
+    'dlg.autodone.action.shutdown' = if ($script:BgjobsLangZh) { '关机' } else { 'Shutdown' }
+    'dlg.autodone.action.hibernate' = if ($script:BgjobsLangZh) { '休眠' } else { 'Hibernate' }
+    'dlg.autodone.action.script' = if ($script:BgjobsLangZh) { '执行脚本' } else { 'Run script' }
+    'dlg.autodone.delay' = if ($script:BgjobsLangZh) { '延迟（秒）：' } else { 'Delay (s): ' }
+    'dlg.autodone.delay30' = if ($script:BgjobsLangZh) { '30 秒' } else { '30 s' }
+    'dlg.autodone.delay60' = if ($script:BgjobsLangZh) { '60 秒' } else { '60 s' }
+    'dlg.autodone.script' = if ($script:BgjobsLangZh) { '脚本路径：' } else { 'Script path: ' }
+    'dlg.autodone.args' = if ($script:BgjobsLangZh) { '脚本参数：' } else { 'Script args: ' }
+    'dlg.autodone.exampleToast' = if ($script:BgjobsLangZh) { '示例：完成后倒计时 + Toast 通知' } else { 'Example: countdown + Toast on finish' }
+    'dlg.autodone.noRunning' = if ($script:BgjobsLangZh) { '当前没有运行中的任务，无需预约。' } else { 'No running jobs; nothing to schedule.' }
+    'dlg.autodone.noscript' = if ($script:BgjobsLangZh) { '请填写要执行的脚本路径。' } else { 'Please provide the script path.' }
+    'status.autodone.armed' = if ($script:BgjobsLangZh) { '已预约：所有任务完成后{0}' } else { 'Scheduled: {0} when all jobs finish' }
+    'status.autodone.waiting' = if ($script:BgjobsLangZh) { '等待 {0} 个任务完成...' } else { 'Waiting for {0} job(s)...' }
+    'status.autodone.countdown' = if ($script:BgjobsLangZh) { '{0} 秒后将{1}（点“取消预约”可中止）' } else { '{0}s until {1} (Cancel to abort)' }
+    'status.autodone.norunning' = if ($script:BgjobsLangZh) { '无运行中的任务，已自动跳过。' } else { 'No running jobs; skipped.' }
+    'status.autodone.cancelled' = if ($script:BgjobsLangZh) { '已取消完成动作。' } else { 'Auto action cancelled.' }
+    'status.autodone.done' = if ($script:BgjobsLangZh) { '已完成动作：{0}' } else { 'Action done: {0}' }
+    'dlg.autodone.ok' = if ($script:BgjobsLangZh) { '确定' } else { 'OK' }
+    'msg.autodone.armed' = if ($script:BgjobsLangZh) { '已在预约中，请先取消预约再重新设定。' } else { 'Already scheduled. Cancel it first to reschedule.' }
 }
 
 # Resolve a UI text key. Templates with placeholders are formatted by the

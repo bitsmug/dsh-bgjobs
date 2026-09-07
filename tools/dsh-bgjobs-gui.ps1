@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿﻿﻿# dsh-bgjobs-gui.ps1 - bgjobs standalone management window (works WITHOUT DSH).
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿# dsh-bgjobs-gui.ps1 - bgjobs standalone management window (works WITHOUT DSH).
 # Mirrors dsh-undo-savepoint-gui.ps1: single-instance mutex, hidden console,
 # WinForms list with refresh/submit/kill/cleanup, live log tail panel.
 # Open via dsh-bgjobs-gui.bat or a desktop shortcut.
@@ -360,6 +360,178 @@ function Show-GuiCleanupDialog {
     Update-GuiList
 }
 
+# ── 完成后自动执行（关机/休眠/脚本）：预约对话框 + 看守进程管理 ──────────────
+function Get-GuiAutoDoneActionLabel([string]$Action) {
+    switch ($Action) {
+        'shutdown'  { return (Get-BgjobsText 'dlg.autodone.action.shutdown') }
+        'hibernate' { return (Get-BgjobsText 'dlg.autodone.action.hibernate') }
+        'script'    { return (Get-BgjobsText 'dlg.autodone.action.script') }
+        default     { return $Action }
+    }
+}
+
+function Show-GuiAutoDoneDialog {
+    $dlg = New-Object System.Windows.Forms.Form
+    $dlg.Text = (Get-BgjobsText 'dlg.autodone.title')
+    $dlg.Size = New-Object System.Drawing.Size(520, 264)
+    $dlg.StartPosition = 'CenterParent'
+    $dlg.FormBorderStyle = 'FixedDialog'
+    $dlg.MaximizeBox = $false
+    $dlg.MinimizeBox = $false
+
+    # 动作
+    $lblAction = New-Object System.Windows.Forms.Label
+    $lblAction.Text = (Get-BgjobsText 'dlg.autodone.action')
+    $lblAction.Location = New-Object System.Drawing.Point(16, 18)
+    $lblAction.Size = New-Object System.Drawing.Size(90, 18)
+    $dlg.Controls.Add($lblAction)
+    $comboAction = New-Object System.Windows.Forms.ComboBox
+    $comboAction.DropDownStyle = 'DropDownList'
+    $comboAction.Location = New-Object System.Drawing.Point(110, 16)
+    $comboAction.Size = New-Object System.Drawing.Size(180, 22)
+    [void]$comboAction.Items.Add((Get-BgjobsText 'dlg.autodone.action.shutdown'))
+    [void]$comboAction.Items.Add((Get-BgjobsText 'dlg.autodone.action.hibernate'))
+    [void]$comboAction.Items.Add((Get-BgjobsText 'dlg.autodone.action.script'))
+    $comboAction.SelectedIndex = 0
+    $dlg.Controls.Add($comboAction)
+
+    # 延迟（秒）：NumericUpDown 支持键盘直接输入任意秒数
+    $lblDelay = New-Object System.Windows.Forms.Label
+    $lblDelay.Text = (Get-BgjobsText 'dlg.autodone.delay')
+    $lblDelay.Location = New-Object System.Drawing.Point(16, 50)
+    $lblDelay.Size = New-Object System.Drawing.Size(90, 18)
+    $dlg.Controls.Add($lblDelay)
+    $numDelay = New-Object System.Windows.Forms.NumericUpDown
+    $numDelay.Location = New-Object System.Drawing.Point(110, 48)
+    $numDelay.Size = New-Object System.Drawing.Size(120, 22)
+    $numDelay.Minimum = 1
+    $numDelay.Maximum = 3600
+    $numDelay.Increment = 10
+    $numDelay.Value = 30
+    $dlg.Controls.Add($numDelay)
+
+    # 脚本路径（仅执行脚本时可用；可下拉选示例 Toast 脚本，也可手动输入）
+    $lblScript = New-Object System.Windows.Forms.Label
+    $lblScript.Text = (Get-BgjobsText 'dlg.autodone.script')
+    $lblScript.Location = New-Object System.Drawing.Point(16, 84)
+    $lblScript.Size = New-Object System.Drawing.Size(100, 18)
+    $dlg.Controls.Add($lblScript)
+    $exampleToast = Join-Path $PSScriptRoot 'dsh-bgjobs-autodone-demo.ps1'
+    $cmbScript = New-Object System.Windows.Forms.ComboBox
+    $cmbScript.DropDownStyle = 'DropDown'
+    $cmbScript.Location = New-Object System.Drawing.Point(120, 82)
+    $cmbScript.Size = New-Object System.Drawing.Size(380, 22)
+    [void]$cmbScript.Items.Add((Get-BgjobsText 'dlg.autodone.exampleToast'))
+    $cmbScript.Enabled = $false
+    $dlg.Controls.Add($cmbScript)
+
+    # 脚本参数（原样传给脚本，如 -Seconds 5）
+    $lblArgs = New-Object System.Windows.Forms.Label
+    $lblArgs.Text = (Get-BgjobsText 'dlg.autodone.args')
+    $lblArgs.Location = New-Object System.Drawing.Point(16, 116)
+    $lblArgs.Size = New-Object System.Drawing.Size(100, 18)
+    $dlg.Controls.Add($lblArgs)
+    $txtArgs = New-Object System.Windows.Forms.TextBox
+    $txtArgs.Location = New-Object System.Drawing.Point(120, 114)
+    $txtArgs.Size = New-Object System.Drawing.Size(380, 22)
+    $txtArgs.Enabled = $false
+    $dlg.Controls.Add($txtArgs)
+
+    $comboAction.Add_SelectedIndexChanged({
+        $isScript = ($comboAction.SelectedIndex -eq 2)
+        $cmbScript.Enabled = $isScript
+        $txtArgs.Enabled = $isScript
+    })
+    $cmbScript.Add_SelectionChangeCommitted({
+        if ($cmbScript.SelectedIndex -eq 0) { $cmbScript.Text = $exampleToast }
+    })
+
+    $btnOk = New-Object System.Windows.Forms.Button
+    $btnOk.Text = (Get-BgjobsText 'dlg.autodone.ok')
+    $btnOk.Location = New-Object System.Drawing.Point(300, 156)
+    $btnOk.Size = New-Object System.Drawing.Size(90, 30)
+    $btnOk.DialogResult = 'OK'
+    $dlg.Controls.Add($btnOk)
+    $btnCancel = New-Object System.Windows.Forms.Button
+    $btnCancel.Text = (Get-BgjobsText 'dlg.cancel')
+    $btnCancel.Location = New-Object System.Drawing.Point(400, 156)
+    $btnCancel.Size = New-Object System.Drawing.Size(90, 30)
+    $btnCancel.DialogResult = 'Cancel'
+    $dlg.Controls.Add($btnCancel)
+    $dlg.AcceptButton = $btnOk
+    $dlg.CancelButton = $btnCancel
+
+    $script:AutoDoneChoice = $null
+    $btnOk.Add_Click({
+        $action = switch ($comboAction.SelectedIndex) { 0 { 'shutdown' } 1 { 'hibernate' } 2 { 'script' } default { 'shutdown' } }
+        $script = if ($cmbScript.SelectedIndex -eq 0) { $exampleToast } else { $cmbScript.Text.Trim() }
+        $script:AutoDoneChoice = @{
+            action = $action
+            delay  = [int]$numDelay.Value
+            script = $script
+            args   = $txtArgs.Text.Trim()
+        }
+    })
+
+    $null = $dlg.ShowDialog($script:form)
+    $dlg.Dispose()
+}
+
+function Arm-AutoDone([object]$choice) {
+    if ($script:autoDonePid) { return }
+    $script:statusFile = Join-Path $env:TEMP 'bgjobs-autodone-status.txt'
+    $script:cancelFile = Join-Path $env:TEMP 'bgjobs-autodone-cancel.txt'
+    Remove-Item -LiteralPath $script:statusFile -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $script:cancelFile -Force -ErrorAction SilentlyContinue
+    $helper = Join-Path $PSScriptRoot 'dsh-bgjobs-autodone.ps1'
+    $args = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', $helper,
+        '-Action', [string]$choice.action, '-Delay', [string]$choice.delay,
+        '-StatusFile', $script:statusFile, '-CancelFile', $script:cancelFile)
+    if ($choice.action -eq 'script') {
+        $args += @('-ScriptPath', [string]$choice.script)
+        if ($choice.args) { $args += @('-ScriptArgs', ('"' + [string]$choice.args + '"')) }   # 含空格需引号包裹，防被拆分
+    }
+    $p = Start-Process -FilePath 'powershell.exe' -ArgumentList $args -WindowStyle Hidden -PassThru
+    $script:autoDonePid = $p.Id
+    $script:autoDoneActionLabel = (Get-GuiAutoDoneActionLabel $choice.action)
+    $script:btnAutoDone.Enabled = $false
+    $script:btnCancelAutoDone.Enabled = $true
+    $script:autoDoneStatus.Text = (Get-BgjobsText 'status.autodone.armed') -f $script:autoDoneActionLabel
+    $script:autoDoneTimer = New-Object System.Windows.Forms.Timer
+    $script:autoDoneTimer.Interval = 1000
+    $script:autoDoneTimer.Add_Tick({ Read-AutoDoneStatus })
+    $script:autoDoneTimer.Start()
+}
+
+function Disarm-AutoDone {
+    if ($script:autoDoneTimer) { $script:autoDoneTimer.Stop(); $script:autoDoneTimer.Dispose(); $script:autoDoneTimer = $null }
+    $script:btnAutoDone.Enabled = $true
+    $script:btnCancelAutoDone.Enabled = $false
+    $script:autoDonePid = $null
+    if ($script:statusFile)  { Remove-Item -LiteralPath $script:statusFile  -Force -ErrorAction SilentlyContinue }
+    if ($script:cancelFile)  { Remove-Item -LiteralPath $script:cancelFile  -Force -ErrorAction SilentlyContinue }
+}
+
+function Read-AutoDoneStatus {
+    if (-not $script:statusFile -or -not (Test-Path -LiteralPath $script:statusFile)) { return }
+    $s = ''
+    try { $s = (Get-Content -LiteralPath $script:statusFile -Raw -Encoding UTF8).Trim() } catch { return }
+    if (-not $s) { return }
+    if ($s -match '^waiting:(\d+)$') {
+        $script:autoDoneStatus.Text = (Get-BgjobsText 'status.autodone.waiting') -f $Matches[1]
+    } elseif ($s -match '^countdown:(\d+)$') {
+        $script:autoDoneStatus.Text = (Get-BgjobsText 'status.autodone.countdown') -f $Matches[1], $script:autoDoneActionLabel
+    } elseif ($s -eq 'norunning') {
+        $script:autoDoneStatus.Text = (Get-BgjobsText 'status.autodone.norunning'); Disarm-AutoDone
+    } elseif ($s -eq 'cancelled') {
+        $script:autoDoneStatus.Text = (Get-BgjobsText 'status.autodone.cancelled'); Disarm-AutoDone
+    } elseif ($s -match '^done:(.+)$') {
+        $script:autoDoneStatus.Text = (Get-BgjobsText 'status.autodone.done') -f $Matches[1]; Disarm-AutoDone
+    } elseif ($s -match '^err:(.+)$') {
+        $script:autoDoneStatus.Text = (Get-BgjobsText 'status.autodone.done') -f ('ERR: ' + $Matches[1]); Disarm-AutoDone
+    }
+}
+
 # ── main window ───────────────────────────────────────────────────────────
 $script:form = New-Object System.Windows.Forms.Form
 $script:form.Text = (Get-BgjobsText 'gui.title')
@@ -374,11 +546,16 @@ $script:btnSubmit = New-Object System.Windows.Forms.ToolStripButton((Get-BgjobsT
 $script:btnKill = New-Object System.Windows.Forms.ToolStripButton((Get-BgjobsText 'gui.kill'))
 $script:btnCleanup = New-Object System.Windows.Forms.ToolStripButton((Get-BgjobsText 'gui.cleanup'))
 $script:btnIndex = New-Object System.Windows.Forms.ToolStripButton((Get-BgjobsText 'gui.index'))
+$script:btnAutoDone = New-Object System.Windows.Forms.ToolStripButton((Get-BgjobsText 'gui.autodone'))
+$script:btnCancelAutoDone = New-Object System.Windows.Forms.ToolStripButton((Get-BgjobsText 'gui.autodone.cancel'))
+$script:btnCancelAutoDone.Enabled = $false
 $script:toolbar.Items.Add($script:btnRefresh) | Out-Null
 $script:toolbar.Items.Add($script:btnSubmit) | Out-Null
 $script:toolbar.Items.Add($script:btnKill) | Out-Null
 $script:toolbar.Items.Add($script:btnCleanup) | Out-Null
 $script:toolbar.Items.Add($script:btnIndex) | Out-Null
+$script:toolbar.Items.Add($script:btnAutoDone) | Out-Null
+$script:toolbar.Items.Add($script:btnCancelAutoDone) | Out-Null
 $script:toolbar.Dock = 'Top'
 $script:form.Controls.Add($script:toolbar)
 
@@ -386,6 +563,10 @@ $script:form.Controls.Add($script:toolbar)
 $script:statusLabel = New-Object System.Windows.Forms.ToolStripStatusLabel
 $script:statusStrip = New-Object System.Windows.Forms.StatusStrip
 $script:statusStrip.Items.Add($script:statusLabel) | Out-Null
+$script:autoDoneStatus = New-Object System.Windows.Forms.ToolStripStatusLabel
+$script:autoDoneStatus.Spring = $false
+$script:autoDoneStatus.Text = ''
+$script:statusStrip.Items.Add($script:autoDoneStatus) | Out-Null
 $script:form.Controls.Add($script:statusStrip)
 
 # ── 主内容区：可拖分界（上=任务列表，下=详情+日志）──
@@ -462,6 +643,34 @@ $script:btnIndex.Add_Click({
     [System.Windows.Forms.MessageBox]::Show(((Get-BgjobsText 'msg.index.done') -f @($payload.jobs).Count), 'bgjobs', 'OK', 'Information')
     Update-GuiList
 })
+$script:btnAutoDone.Add_Click({
+    if ($script:autoDonePid) {
+        [System.Windows.Forms.MessageBox]::Show((Get-BgjobsText 'msg.autodone.armed'), 'bgjobs', 'OK', 'Information')
+        return
+    }
+    Show-GuiAutoDoneDialog
+    $choice = $script:AutoDoneChoice
+    $script:AutoDoneChoice = $null
+    if ($null -eq $choice) { return }   # dialog cancelled
+    if ($choice.action -eq 'script' -and -not $choice.script) {
+        [System.Windows.Forms.MessageBox]::Show((Get-BgjobsText 'dlg.autodone.noscript'), 'bgjobs', 'OK', 'Warning')
+        return
+    }
+    $running = @(Get-BgjobsJobs | Where-Object { $_.status -eq 'running' })
+    if ($running.Count -eq 0) {
+        [System.Windows.Forms.MessageBox]::Show((Get-BgjobsText 'dlg.autodone.noRunning'), 'bgjobs', 'OK', 'Information')
+        return
+    }
+    Arm-AutoDone $choice
+})
+$script:btnCancelAutoDone.Add_Click({
+    if ($script:autoDonePid) {
+        if ($script:cancelFile) { New-Item -ItemType File -Force -Path $script:cancelFile | Out-Null }
+        Stop-Process -Id $script:autoDonePid -Force -ErrorAction SilentlyContinue
+    }
+    Disarm-AutoDone
+    $script:autoDoneStatus.Text = (Get-BgjobsText 'status.autodone.cancelled')
+})
 
 # auto-refresh every 2s (cheap: reads index + small job.json files)
 $script:timer = New-Object System.Windows.Forms.Timer
@@ -472,6 +681,7 @@ $script:timer.Start()
 # cleanup on close
 $script:form.Add_FormClosed({
     $script:timer.Stop()
+    if ($script:autoDoneTimer) { $script:autoDoneTimer.Stop() }
     try { if ($script:guiMutex) { $script:guiMutex.ReleaseMutex(); $script:guiMutex.Dispose() } } catch { }
 })
 
