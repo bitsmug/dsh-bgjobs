@@ -174,6 +174,8 @@ submit ─► [pending-running] ──done──► [pending-done]
 3. 更新 `README.md` / `docs/developer.md` 如有用户/开发者可读变化；
 4. `pnpm test` 全绿 → `git add`（按文件）→ commit。
 
+> 发布前抽查发布面：`npm pack --dry-run 2>&1 | Select-String "tools/dsh-bgjobs|client-src"`——应含 `tools/`（离线 CLI/GUI/toast 随包）、**不含** `lib/client-src`（构建源）。
+
 安装到 profile（在 harness 仓库目录执行，插件目录下会 fallback 到残缺全局 CLI）：
 
 ```powershell
