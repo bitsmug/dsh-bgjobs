@@ -1,4 +1,4 @@
-﻿﻿﻿﻿# dsh-bgjobs-gui.ps1 - bgjobs standalone management window (works WITHOUT DSH).
+﻿# dsh-bgjobs-gui.ps1 - bgjobs standalone management window (works WITHOUT DSH).
 # Mirrors dsh-undo-savepoint-gui.ps1: single-instance mutex, hidden console,
 # WinForms list with refresh/submit/kill/cleanup, live log tail panel.
 # Open via dsh-bgjobs-gui.bat or a desktop shortcut.
@@ -32,22 +32,53 @@ function Format-GuiTime([object]$Ms) {
     return $dt.ToLocalTime().ToString('MM-dd HH:mm')
 }
 
-# Refresh the job list from disk (live job.json; index only locates dirs).
-function Update-GuiList {
-    $jobs = @(Get-BgjobsJobs)
-    $script:list.BeginUpdate()
-    $script:list.Items.Clear()
-    foreach ($j in $jobs) {
-        $exit = if ($null -eq $j.exitCode) { '-' } else { [string]$j.exitCode }
-        $item = New-Object System.Windows.Forms.ListViewItem($j.id)
+# 按 job 填一行（新建与原位刷新共用；7 列 + Tag 携带最新 job 对象）。
+function Set-GuiListItem([System.Windows.Forms.ListViewItem]$item, $j) {
+    $exit = if ($null -eq $j.exitCode) { '-' } else { [string]$j.exitCode }
+    if ($item.SubItems.Count -gt 1) {
+        $item.Text = [string]$j.id
+        $item.SubItems[1].Text = $j.name
+        $item.SubItems[2].Text = $j.status
+        $item.SubItems[3].Text = $exit
+        $item.SubItems[4].Text = (if ($j.notified) { Get-BgjobsText 'notify.done' } else { Get-BgjobsText 'notify.pending' })
+        $item.SubItems[5].Text = (Format-GuiTime $j.finishedAt)
+        $item.SubItems[6].Text = $j.workdir
+    } else {
         $item.SubItems.Add($j.name) | Out-Null
         $item.SubItems.Add($j.status) | Out-Null
         $item.SubItems.Add($exit) | Out-Null
         $item.SubItems.Add((if ($j.notified) { Get-BgjobsText 'notify.done' } else { Get-BgjobsText 'notify.pending' })) | Out-Null
         $item.SubItems.Add((Format-GuiTime $j.finishedAt)) | Out-Null
         $item.SubItems.Add($j.workdir) | Out-Null
-        $item.Tag = $j
-        $script:list.Items.Add($item) | Out-Null
+    }
+    $item.Tag = $j
+}
+
+# Refresh the job list from disk (live job.json; index only locates dirs).
+# 就地合并更新（按 id 匹配既有行）：不清空 Items → 滚动位置与选中自然保留，
+# 不会因每 2s 自动刷新而跳回顶部；仅增删/原位刷新文本与 Tag。
+function Update-GuiList {
+    $jobs = @(Get-BgjobsJobs)
+    $script:list.BeginUpdate()
+    $existing = @{}
+    foreach ($it in $script:list.Items) {
+        if ($null -ne $it.Tag -and $null -ne $it.Tag.id) { $existing[[string]$it.Tag.id] = $it }
+    }
+    $seen = @{}
+    foreach ($j in $jobs) {
+        $key = [string]$j.id
+        $seen[$key] = $true
+        if ($existing.ContainsKey($key)) {
+            Set-GuiListItem $existing[$key] $j      # 原位刷新（对象不变，选中保持）
+        } else {
+            $item = New-Object System.Windows.Forms.ListViewItem([string]$j.id)
+            Set-GuiListItem $item $j
+            [void]$script:list.Items.Add($item)
+        }
+    }
+    # 剔除已消失任务（被删行若正被选中，WinForms 自行清空选中）
+    foreach ($key in @($existing.Keys)) {
+        if (-not $seen.ContainsKey($key)) { [void]$script:list.Items.Remove($existing[$key]) }
     }
     $script:list.EndUpdate()
     $script:statusLabel.Text = (Get-BgjobsText 'status.count') -f @($jobs).Count, $script:BgjobsIndexPath
@@ -333,6 +364,7 @@ $script:toolbar.Items.Add($script:btnSubmit) | Out-Null
 $script:toolbar.Items.Add($script:btnKill) | Out-Null
 $script:toolbar.Items.Add($script:btnCleanup) | Out-Null
 $script:toolbar.Items.Add($script:btnIndex) | Out-Null
+$script:toolbar.Dock = 'Top'
 $script:form.Controls.Add($script:toolbar)
 
 # status strip
@@ -341,7 +373,14 @@ $script:statusStrip = New-Object System.Windows.Forms.StatusStrip
 $script:statusStrip.Items.Add($script:statusLabel) | Out-Null
 $script:form.Controls.Add($script:statusStrip)
 
-# job list (top, ~55%)
+# ── 主内容区：可拖分界（上=任务列表，下=详情+日志）──
+$script:split = New-Object System.Windows.Forms.SplitContainer
+$script:split.Orientation = 'Horizontal'
+$script:split.Dock = 'Fill'
+$script:split.Panel1MinSize = 120
+$script:split.Panel2MinSize = 120
+
+# job list（上层面板，Dock 占满）
 $script:list = New-Object System.Windows.Forms.ListView
 $script:list.View = 'Details'
 $script:list.FullRowSelect = $true
@@ -354,22 +393,21 @@ $script:list.Columns.Add((Get-BgjobsText 'col.exit'), 60) | Out-Null
 $script:list.Columns.Add((Get-BgjobsText 'col.notify'), 90) | Out-Null
 $script:list.Columns.Add((Get-BgjobsText 'col.finished'), 110) | Out-Null
 $script:list.Columns.Add((Get-BgjobsText 'col.workdir'), 300) | Out-Null
-$script:list.Anchor = 'Top, Left, Right'
-$script:list.Location = New-Object System.Drawing.Point(10, 30)
-$script:list.Size = New-Object System.Drawing.Size(870, 300)
+$script:list.Dock = 'Fill'
 $script:list.Add_SelectedIndexChanged({ Show-GuiDetail })
-$script:form.Controls.Add($script:list)
+$script:split.Panel1.Controls.Add($script:list)
 
-# detail + log (bottom)
+# detail + log（下层面板，Dock 占满）
 $script:detail = New-Object System.Windows.Forms.TextBox
 $script:detail.Multiline = $true
 $script:detail.ReadOnly = $true
 $script:detail.ScrollBars = 'Vertical'
 $script:detail.Font = New-Object System.Drawing.Font('Consolas', 9)
-$script:detail.Anchor = 'Top, Bottom, Left, Right'
-$script:detail.Location = New-Object System.Drawing.Point(10, 340)
-$script:detail.Size = New-Object System.Drawing.Size(870, 220)
-$script:form.Controls.Add($script:detail)
+$script:detail.Dock = 'Fill'
+$script:split.Panel2.Controls.Add($script:detail)
+
+$script:split.SplitterDistance = 300   # 初始列表高度；拖动分界条可调
+$script:form.Controls.Add($script:split)
 
 $script:btnRefresh.Add_Click({ Update-GuiList })
 $script:btnSubmit.Add_Click({ Show-GuiSubmitDialog })
