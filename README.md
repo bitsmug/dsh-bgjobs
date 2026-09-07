@@ -87,10 +87,12 @@ allowBuilds:
 
 ## 使用（agent 工具）
 
-- `bgjob_submit(name, command, workdir, [wait], [notify], [notify_mode])` — 提交后台任务（command 为 **bat** 语法）；`wait`=提交后自动等待结果的秒数（0/缺省不等待）；
-- `bgjob_submit_pwsh(name, command, workdir, [wait], [sandbox], [justification], [notify], [notify_mode])` — 提交后台任务（command 为 **PowerShell** 语法，UTF-8 日志、`exit <code>` 语义安全）；`wait` 同上，提交后自动等待；
+- `bgjob_submit(name, command, workdir, [wait], [notify], [notify_mode])` — 提交后台任务（command 为 **bat** 语法）；`wait`=提交后原地等待的秒数（0/缺省不等待；>0 语义同 bgjob_wait 全缺省——等本会话任一任务先结束，无会话信息时回退等刚提交任务）；
+- `bgjob_submit_pwsh(name, command, workdir, [wait], [sandbox], [justification], [notify], [notify_mode])` — 提交后台任务（command 为 **PowerShell** 语法，UTF-8 日志、`exit <code>` 语义安全）；`wait` 同上；
 - `bgjob_status(jobId)` — 查询状态 / 退出码 / 日志尾部；
-- `bgjob_wait(jobId, [timeoutSeconds])` — 等待后台任务结束并**立即返回**退出码与日志尾部（默认最多 120s；需要等结果继续时用它，代替前台 `sleep` 反复轮询）。
+- `bgjob_wait(jobId | jobIds, [timeoutSeconds])` — 等待后台任务结束并**立即返回**退出码与日志尾部（默认最多 120s）。三种用法：单个 `jobId` 等该任务；`jobIds` 数组 = **任一先结束即返回**（any 竞速，返回完成者 + 其余 pending）；两者都缺省 = 等**本会话**任务任一结束；
+- `bgjob_wait_all(jobIds, [timeoutSeconds])` — 等一批任务**全部**结束，返回每个任务的退出码/日志尾 + `allDone`（超时返回部分状态可续等）；`jobIds` 缺省 = 本会话全部任务；
+- `bgjob_list` — 列出当前 agent 会话提交的全部任务（id/状态/退出码），配合 wait 工具缺省使用。
 
 直接对 AI 说一句即可：
 

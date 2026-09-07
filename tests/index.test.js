@@ -229,17 +229,17 @@ test('buildPs1: 编码 preamble + 用户命令原样保留（含空行）', () =
 
 // ── 工具注册契约 ──
 
-test('apply: 注册四个工具，output 结构合法', () => {
+test('apply: 注册六个工具，output 结构合法', () => {
   const { ctx, tools } = makeCtx()
   const dispose = apply(ctx)
-  assert.equal(tools.length, 4)
+  assert.equal(tools.length, 6)
   for (const tool of tools) {
     assert.ok(tool.output, `${tool.name} 必须声明 output`)
     assert.equal(typeof tool.output.render, 'function')
     assert.equal(typeof tool.output.schema, 'object')
     assert.equal(typeof tool.execute, 'function')
   }
-  assert.deepEqual(tools.map((t) => t.name).sort(), ['bgjob_status', 'bgjob_submit', 'bgjob_submit_pwsh', 'bgjob_wait'])
+  assert.deepEqual(tools.map((t) => t.name).sort(), ['bgjob_list', 'bgjob_status', 'bgjob_submit', 'bgjob_submit_pwsh', 'bgjob_wait', 'bgjob_wait_all'])
   dispose()
 })
 
@@ -253,12 +253,14 @@ test('apply: presentCall 返回 generic 卡片', () => {
   dispose()
 })
 
-test('guidance: buildBgjobsGuidance 提及四个工具与关键注意事项', () => {
+test('guidance: buildBgjobsGuidance 提及各工具与关键注意事项', () => {
   const text = buildBgjobsGuidance()
   assert.ok(text.includes('bgjob_submit'))
   assert.ok(text.includes('bgjob_submit_pwsh'))
   assert.ok(text.includes('bgjob_status'))
   assert.ok(text.includes('bgjob_wait'))
+  assert.ok(text.includes('bgjob_wait_all'))
+  assert.ok(text.includes('bgjob_list'))
   assert.ok(text.includes('bat 语法'))
   assert.ok(text.includes('PowerShell'))
   assert.ok(text.includes('workdir'))
@@ -2138,6 +2140,154 @@ test('bgjob_submit_pwsh wait=1：提交后自动等待 done', async () => {
     assert.equal(writer.wrote, true)
   } finally {
     writer.stop()
+    dispose()
+    await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+// ── 多任务等待（v0.1.59）：bgjob_wait any 竞速 / bgjob_wait_all / bgjob_list ──
+
+test('bgjob_wait jobIds 数组：任一先完成即返回（any 竞速）', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  const workdir = await makeWorkdir()
+  const exec = { agent: { session: { id: 's1' } } }
+  const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
+  const dispose = apply(ctx)
+  try {
+    const submit = tools.find((t) => t.name === 'bgjob_submit')
+    const wait = tools.find((t) => t.name === 'bgjob_wait')
+    const a = await submit.execute({ name: 'a', command: 'echo a', workdir }, exec)
+    const b = await submit.execute({ name: 'b', command: 'echo b', workdir }, exec)
+    assert.ok(a.jobId && b.jobId && a.jobId !== b.jobId)
+    await fsp.writeFile(workdir + '\\.dsh\\bgjobs\\' + a.jobId + '\\exitcode.txt', '0', 'utf8')
+    const r = await wait.execute({ jobIds: [a.jobId, b.jobId], timeoutSeconds: 5 })
+    assert.equal(r.ok, true)
+    assert.equal(r.anyDone, true)
+    assert.equal(r.timedOut, false)
+    assert.equal(r.result.jobId, a.jobId, '先完成者应命中')
+    assert.equal(r.result.status, 'done')
+    assert.equal(r.result.exitCode, 0)
+    assert.deepEqual(r.pending, [b.jobId], '未完成的 b 应在 pending')
+    assert.ok(r.waitedMs < 5000)
+  } finally {
+    dispose()
+    await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+test('bgjob_wait 全缺省：等本会话任务任一结束（跨会话任务不入集合）', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  const workdir = await makeWorkdir()
+  const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
+  const dispose = apply(ctx)
+  try {
+    const submit = tools.find((t) => t.name === 'bgjob_submit')
+    const wait = tools.find((t) => t.name === 'bgjob_wait')
+    const a = await submit.execute({ name: 'a', command: 'echo a', workdir }, { agent: { session: { id: 's1' } } })
+    const b = await submit.execute({ name: 'b', command: 'echo b', workdir }, { agent: { session: { id: 's1' } } })
+    await submit.execute({ name: 'c', command: 'echo c', workdir }, { agent: { session: { id: 's2' } } })
+    await fsp.writeFile(workdir + '\\.dsh\\bgjobs\\' + a.jobId + '\\exitcode.txt', '3', 'utf8')
+    const r = await wait.execute({ timeoutSeconds: 5 }, { agent: { session: { id: 's1' } } })
+    assert.equal(r.ok, true)
+    assert.equal(r.anyDone, true)
+    assert.equal(r.result.jobId, a.jobId, '应命中本会话完成的 a')
+    assert.equal(r.result.exitCode, 3)
+    assert.deepEqual(r.pending, [b.jobId], 'pending 只含本会话未完成的 b（s2 任务不在集合）')
+  } finally {
+    dispose()
+    await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+test('bgjob_wait 全缺省且无会话任务 → 报错', async () => {
+  const { ctx, tools } = makeCtx({ services: {} })
+  const dispose = apply(ctx)
+  const wait = tools.find((t) => t.name === 'bgjob_wait')
+  const r = await wait.execute({ timeoutSeconds: 1 }, { agent: { session: { id: 'nosess' } } })
+  assert.equal(r.ok, false)
+  assert.ok(r.error.includes('no jobId'))
+  dispose()
+})
+
+test('bgjob_wait_all：全部完成返回 allDone，含各自退出码；超时返回部分', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  const workdir = await makeWorkdir()
+  const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
+  const dispose = apply(ctx)
+  try {
+    const submit = tools.find((t) => t.name === 'bgjob_submit')
+    const all = tools.find((t) => t.name === 'bgjob_wait_all')
+    const a = await submit.execute({ name: 'a', command: 'echo a', workdir }, { agent: { session: { id: 's1' } } })
+    const b = await submit.execute({ name: 'b', command: 'echo b', workdir }, { agent: { session: { id: 's1' } } })
+    await fsp.writeFile(workdir + '\\.dsh\\bgjobs\\' + a.jobId + '\\exitcode.txt', '0', 'utf8')
+    await fsp.writeFile(workdir + '\\.dsh\\bgjobs\\' + b.jobId + '\\exitcode.txt', '7', 'utf8')
+    const r = await all.execute({ jobIds: [a.jobId, b.jobId], timeoutSeconds: 5 })
+    assert.equal(r.ok, true)
+    assert.equal(r.allDone, true)
+    assert.equal(r.timedOut, false)
+    assert.equal(r.results.length, 2)
+    const ra = r.results.find((x) => x.jobId === a.jobId)
+    const rb = r.results.find((x) => x.jobId === b.jobId)
+    assert.equal(ra.exitCode, 0)
+    assert.equal(rb.exitCode, 7)
+    // 一直 running → 超时 allDone:false
+    const c = await submit.execute({ name: 'c', command: 'echo c', workdir }, { agent: { session: { id: 's1' } } })
+    const t = await all.execute({ jobIds: [c.jobId], timeoutSeconds: 1 })
+    assert.equal(t.ok, true)
+    assert.equal(t.allDone, false)
+    assert.equal(t.timedOut, true)
+    assert.equal(t.results[0].status, 'running')
+  } finally {
+    dispose()
+    await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+test('bgjob_list：仅返回本会话任务，字段齐全', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  const workdir = await makeWorkdir()
+  const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
+  const dispose = apply(ctx)
+  try {
+    const submit = tools.find((t) => t.name === 'bgjob_submit')
+    const list = tools.find((t) => t.name === 'bgjob_list')
+    const a = await submit.execute({ name: 'a', command: 'echo a', workdir }, { agent: { session: { id: 's1' } } })
+    const b = await submit.execute({ name: 'b', command: 'echo b', workdir }, { agent: { session: { id: 's1' } } })
+    await submit.execute({ name: 'c', command: 'echo c', workdir }, { agent: { session: { id: 's2' } } })
+    const r = await list.execute({}, { agent: { session: { id: 's1' } } })
+    assert.equal(r.ok, true)
+    assert.equal(r.sessionId, 's1')
+    assert.equal(r.jobs.length, 2, '只含 s1 的任务')
+    const ids = r.jobs.map((j) => j.jobId).sort()
+    assert.deepEqual(ids, [a.jobId, b.jobId].sort())
+    const first = r.jobs[0]
+    assert.ok(typeof first.name === 'string' && first.status === 'running' && typeof first.workdir === 'string')
+    assert.equal(first.exitCode, null)
+    // 会话不可识别
+    const bad = await list.execute({}, { agent: undefined })
+    assert.equal(bad.ok, false)
+  } finally {
+    dispose()
+    await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+test('submit wait（有会话）＝全缺省 any：本会话已结束的任务先返回', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  const workdir = await makeWorkdir()
+  const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
+  const dispose = apply(ctx)
+  try {
+    const submit = tools.find((t) => t.name === 'bgjob_submit')
+    const exec1 = { agent: { session: { id: 's1' } } }
+    const a = await submit.execute({ name: 'a', command: 'echo a', workdir }, exec1) // 不 wait
+    await fsp.writeFile(workdir + '\\.dsh\\bgjobs\\' + a.jobId + '\\exitcode.txt', '0', 'utf8')
+    const r = await submit.execute({ name: 'b', command: 'echo b', workdir, wait: 1 }, exec1)
+    assert.equal(r.ok, true)
+    assert.equal(r.anyDone, true)
+    assert.equal(r.result.jobId, a.jobId, '全缺省 any 应命中先完成的 a（本会话集合）')
+    assert.equal(r.result.status, 'done')
+  } finally {
     dispose()
     await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
   }

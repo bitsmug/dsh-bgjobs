@@ -87,10 +87,12 @@ Restart DSH afterwards: the "Background Jobs Monitor" panel appears bottom-right
 
 ## Usage (agent tools)
 
-- `bgjob_submit(name, command, workdir, [wait], [notify], [notify_mode])` — submit a background job (`command` is **bat** syntax); `wait` = seconds to wait for the result after submitting (0/omitted = return immediately);
-- `bgjob_submit_pwsh(name, command, workdir, [wait], [sandbox], [justification], [notify], [notify_mode])` — submit a background job (`command` is **PowerShell** syntax, UTF-8 logs, safe `exit <code>` semantics); `wait` same as above (auto-wait after submit);
+- `bgjob_submit(name, command, workdir, [wait], [notify], [notify_mode])` — submit a background job (`command` is **bat** syntax); `wait` = seconds to wait in place after submitting (0/omitted = return immediately; >0 behaves like `bgjob_wait` with no ids — wait for any of the current session's jobs to finish, falling back to the just-submitted job when no session info);
+- `bgjob_submit_pwsh(name, command, workdir, [wait], [sandbox], [justification], [notify], [notify_mode])` — submit a background job (`command` is **PowerShell** syntax, UTF-8 logs, safe `exit <code>` semantics); `wait` same as above;
 - `bgjob_status(jobId)` — query status / exit code / log tail;
-- `bgjob_wait(jobId, [timeoutSeconds])` — wait until the background job finishes and **return immediately** with its exit code and log tail (default up to 120s; use it when you need the result to continue, instead of foreground `sleep` polling).
+- `bgjob_wait(jobId | jobIds, [timeoutSeconds])` — wait for background job(s) and **return immediately** with exit codes and log tails (default up to 120s). Three modes: single `jobId` waits for that job; a `jobIds` array is **any-race** (returns as soon as one finishes, with the finisher + the rest pending); omitting both waits for **any job of the current session** to finish;
+- `bgjob_wait_all(jobIds, [timeoutSeconds])` — wait until **all** of the given jobs finish and return each one's exit code/log tail plus `allDone` (on timeout returns partial states to re-wait); omitting `jobIds` waits for all jobs of the current session;
+- `bgjob_list` — list all jobs submitted by the current agent session (id/status/exit code); used together with the wait tools' default mode.
 
 Just tell the AI:
 
