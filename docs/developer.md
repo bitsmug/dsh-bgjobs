@@ -89,7 +89,31 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
   - 忙碌（`status !== 'idle'`）→ `inject`（排下一步收件箱，turn 关不掉未领消息）；空闲 + wakeup（预算内）或 always → `followup` 唤醒一轮；quiet → 恒 `inject`。
   - wakeup 预算：同 session 连续 2 次由 bgjob 通知触发的唤醒后降级 inject；`agent/inbox/claimed` 且 `message.source.kind === 'user'` 时重置（防「完成→提交新任务→再唤醒」自激链）。
   - 消息：纯文本 UserMessage（`randomUUID` id + `role: user` + source `{kind:'plugin', plugin:'bgjobs'}`），一行「后台任务『name』已完成/已结束（exit code N）」。
-- **幂等**：`checkCompletion` 里命中后**先**把 `notifiedAt` 并入终态写入 job.json **再**送达——防「done 已写未送 → 重启重挂 running → 重迁移重复通知」；漏送窗口极小且 toast 兜底，可接受。
+- **幂等**：`deliverCompletionNotice` 成功（inject/followup 未抛）后由 `markDelivered(job,'notify')` 把 `notifiedAt/notifiedBy` 并入 job.json——恢复判重依据「notifiedAt 已落盘」，漏送窗口极小且 toast 兜底，可接受。
+
+### 结果交付标记与 notify 视图（v0.1.60，全任务）
+
+每个任务的「结果是否已交付到 agent 上下文」由 `notifiedAt`（首次交付时间）+ `notifiedBy`（`notify` | `wait`）标记：**缺省即 pending（待交付）**。两条交付通道，先到者生效、不覆盖：
+
+```
+submit ─► [pending-running] ──done──► [pending-done]
+             │                          ├─ notify≠off 且完成通知投递成功 → [delivered · by=notify]
+             │                          ├─ wait 返回了它的结果        → [delivered · by=wait]
+             │                          └─ (仍 running / 投递失败)    → 保持 pending
+             └──────────── removed / 清理后不再参与 notify 视图
+```
+
+| 标记 | 含义 | 进入方式 | notify 视图是否包含 |
+|---|---|---|---|
+| pending-running | 未交付，运行中 | submit | ✔ |
+| pending-done | 已完成但结果未入上下文 | done（notify 未投递/失败/尚未被 wait） | ✔ |
+| delivered·notify | 完成通知注入成功 | `deliverCompletionNotice` 成功 → `markDelivered(job,'notify')` | ✘ |
+| delivered·wait | wait 返回了该结果 | 任一 wait（jobId/any/all/submit wait）命中返回前 `markDeliveredId(id,'wait')` | ✘ |
+| removed | 已删除 | cleanup / 拖删 | ✘ |
+
+- **notify 视图** = 本会话（`createdBySession`）中 pending 的任务；`sessionPendingIds` 单一实现，供 `bgjob_wait`/`bgjob_wait_all` 缺省与 `bgjob_pending_list` 同源。
+- wait 返回某任务结果即视为一次「上下文注入」——done 结果在返回前被置 delivered·wait 并落盘；已交付任务不会被缺省 wait 重复返回。
+- 面板 `/bgjobs/state` 的 `view()`、`bgjob_list`/GUI 均输出 `notified/notifiedAt/notifiedBy`；GUI 列表加「通知」列。
 
 ## Web 面板（lib/client.js）可维护要点
 

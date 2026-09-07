@@ -100,7 +100,8 @@ allowBuilds:
 
 - 任务输出实时写入 `<workdir>\.dsh\bgjobs\<jobId>\stdout.log`；
 - 退出后 `<workdir>\.dsh\bgjobs\<jobId>\exitcode.txt` 写入退出码，网页弹 Toast；
-- 完成后**默认不打扰会话**；需要让 agent 主动得知并收尾时，传 `notify: on-exit`（或 `on-completion` 仅成功 / `on-fail` 仅失败），并可选 `notify_mode`（`wakeup` 空闲唤醒 / `quiet` 仅入收件箱 / `always`）。
+- 完成后**默认不打扰会话**；需要让 agent 主动得知并收尾时，传 `notify: on-exit`（或 `on-completion` 仅成功 / `on-fail` 仅失败），并可选 `notify_mode`（`wakeup` 空闲唤醒 / `quiet` 仅入收件箱 / `always`）；
+- **交付标记（notify 视图）**：每个任务标注「结果是否已交付到会话上下文」——完成通知投递成功（`已通知·notify`）或某次 `bgjob_wait`/`bgjob_wait_all` 返回了它（`已通知·wait`）即交付；`bgjob_pending_list` 列出本会话**尚未交付**的任务（notify 视图），`bgjob_wait`/`bgjob_wait_all` 缺省只从这个视图等——已交付的结果不会重复返回。面板/离线 GUI 均有「已通知/待通知」标记。
 
 ## 网页面板
 

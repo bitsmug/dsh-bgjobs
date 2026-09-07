@@ -1,4 +1,4 @@
-﻿﻿# dsh-bgjobs-gui.ps1 - bgjobs standalone management window (works WITHOUT DSH).
+﻿﻿﻿﻿# dsh-bgjobs-gui.ps1 - bgjobs standalone management window (works WITHOUT DSH).
 # Mirrors dsh-undo-savepoint-gui.ps1: single-instance mutex, hidden console,
 # WinForms list with refresh/submit/kill/cleanup, live log tail panel.
 # Open via dsh-bgjobs-gui.bat or a desktop shortcut.
@@ -43,6 +43,7 @@ function Update-GuiList {
         $item.SubItems.Add($j.name) | Out-Null
         $item.SubItems.Add($j.status) | Out-Null
         $item.SubItems.Add($exit) | Out-Null
+        $item.SubItems.Add((if ($j.notified) { Get-BgjobsText 'notify.done' } else { Get-BgjobsText 'notify.pending' })) | Out-Null
         $item.SubItems.Add((Format-GuiTime $j.finishedAt)) | Out-Null
         $item.SubItems.Add($j.workdir) | Out-Null
         $item.Tag = $j
@@ -63,6 +64,8 @@ function Show-GuiDetail {
     [void]$sb.AppendLine("Exit:     $(if ($null -eq $j.exitCode) { '-' } else { $j.exitCode })")
     [void]$sb.AppendLine("Created:  $(Format-GuiTime $j.createdAt)")
     [void]$sb.AppendLine("Finished: $(Format-GuiTime $j.finishedAt)")
+    $notifyTxt = if ($j.notified) { if ($j.notifiedBy) { (Get-BgjobsText 'notify.done') + ' (' + $j.notifiedBy + ')' } else { Get-BgjobsText 'notify.done' } } else { Get-BgjobsText 'notify.pending' }
+    [void]$sb.AppendLine("Notify:   $notifyTxt")
     [void]$sb.AppendLine("Workdir:  $($j.workdir)")
     [void]$sb.AppendLine("JobDir:   $($j.jobDir)")
     [void]$sb.AppendLine('')
@@ -348,6 +351,7 @@ $script:list.Columns.Add((Get-BgjobsText 'col.id'), 190) | Out-Null
 $script:list.Columns.Add((Get-BgjobsText 'col.name'), 140) | Out-Null
 $script:list.Columns.Add((Get-BgjobsText 'col.status'), 70) | Out-Null
 $script:list.Columns.Add((Get-BgjobsText 'col.exit'), 60) | Out-Null
+$script:list.Columns.Add((Get-BgjobsText 'col.notify'), 90) | Out-Null
 $script:list.Columns.Add((Get-BgjobsText 'col.finished'), 110) | Out-Null
 $script:list.Columns.Add((Get-BgjobsText 'col.workdir'), 300) | Out-Null
 $script:list.Anchor = 'Top, Left, Right'

@@ -103,6 +103,7 @@ Then:
 - Job output is streamed live to `<workdir>\.dsh\bgjobs\<jobId>\stdout.log`;
 - On exit, `<workdir>\.dsh\bgjobs\<jobId>\exitcode.txt` gets the exit code and a toast pops in the web page;
 - By default, completion **does not interrupt the session**; when you want the agent to know and wrap up, pass `notify: on-exit` (or `on-completion` success-only / `on-fail` failure-only), plus optional `notify_mode` (`wakeup` wake an idle session / `quiet` inbox-only / `always`).
+- **Delivery marker (notify view)**: each job records whether its result has been delivered into the session context — a completion notice that was injected (`notified·notify`) or a `bgjob_wait`/`bgjob_wait_all` that returned it (`notified·wait`). `bgjob_pending_list` lists the session's **not-yet-delivered** jobs (the notify view), and the default mode of `bgjob_wait`/`bgjob_wait_all` waits only on that view, so an already-delivered result is never returned twice. The web panel and the offline GUI both show a "notified / pending" marker.
 
 ## Web panel
 

@@ -229,17 +229,17 @@ test('buildPs1: 编码 preamble + 用户命令原样保留（含空行）', () =
 
 // ── 工具注册契约 ──
 
-test('apply: 注册六个工具，output 结构合法', () => {
+test('apply: 注册七个工具，output 结构合法', () => {
   const { ctx, tools } = makeCtx()
   const dispose = apply(ctx)
-  assert.equal(tools.length, 6)
+  assert.equal(tools.length, 7)
   for (const tool of tools) {
     assert.ok(tool.output, `${tool.name} 必须声明 output`)
     assert.equal(typeof tool.output.render, 'function')
     assert.equal(typeof tool.output.schema, 'object')
     assert.equal(typeof tool.execute, 'function')
   }
-  assert.deepEqual(tools.map((t) => t.name).sort(), ['bgjob_list', 'bgjob_status', 'bgjob_submit', 'bgjob_submit_pwsh', 'bgjob_wait', 'bgjob_wait_all'])
+  assert.deepEqual(tools.map((t) => t.name).sort(), ['bgjob_list', 'bgjob_pending_list', 'bgjob_status', 'bgjob_submit', 'bgjob_submit_pwsh', 'bgjob_wait', 'bgjob_wait_all'])
   dispose()
 })
 
@@ -261,6 +261,7 @@ test('guidance: buildBgjobsGuidance 提及各工具与关键注意事项', () =>
   assert.ok(text.includes('bgjob_wait'))
   assert.ok(text.includes('bgjob_wait_all'))
   assert.ok(text.includes('bgjob_list'))
+  assert.ok(text.includes('bgjob_pending_list'))
   assert.ok(text.includes('bat 语法'))
   assert.ok(text.includes('PowerShell'))
   assert.ok(text.includes('workdir'))
@@ -2199,13 +2200,19 @@ test('bgjob_wait 全缺省：等本会话任务任一结束（跨会话任务不
   }
 })
 
-test('bgjob_wait 全缺省且无会话任务 → 报错', async () => {
+test('bgjob_wait 缺省空视图：会话无未交付任务 → empty 空返回；无会话 → 报错', async () => {
   const { ctx, tools } = makeCtx({ services: {} })
   const dispose = apply(ctx)
   const wait = tools.find((t) => t.name === 'bgjob_wait')
-  const r = await wait.execute({ timeoutSeconds: 1 }, { agent: { session: { id: 'nosess' } } })
-  assert.equal(r.ok, false)
-  assert.ok(r.error.includes('no jobId'))
+  // 会话存在但没有任何任务（notify 视图为空）
+  const empty = await wait.execute({ timeoutSeconds: 1 }, { agent: { session: { id: 'nosess' } } })
+  assert.equal(empty.ok, true)
+  assert.equal(empty.empty, true)
+  assert.equal(empty.anyDone, false)
+  // 完全无会话上下文 → 无法解析视图 → 报错
+  const noExec = await wait.execute({ timeoutSeconds: 1 }, { agent: undefined })
+  assert.equal(noExec.ok, false)
+  assert.ok(noExec.error.includes('no jobId'))
   dispose()
 })
 
@@ -2291,5 +2298,142 @@ test('submit wait（有会话）＝全缺省 any：本会话已结束的任务�
     dispose()
     await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
   }
+})
+
+// ── notify（交付）标记（v0.1.60）：wait 返回即置已通知、缺省=notify 视图 ──
+
+test('交付标记: off 任务 wait 返回即置 delivered·wait 并落盘（再 wait 不覆盖）', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  const workdir = await makeWorkdir()
+  const { ctx, tools, intervals } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
+  const dispose = apply(ctx)
+  try {
+    const submit = tools.find((t) => t.name === 'bgjob_submit')
+    const wait = tools.find((t) => t.name === 'bgjob_wait')
+    const tick = intervals.find((i) => i.ms === 1000).fn
+    const res = await submit.execute({ name: 't', command: 'echo x', workdir }, { agent: { session: { id: 's1' } } })
+    const jobDir = workdir + '\\.dsh\\bgjobs\\' + res.jobId
+    await fsp.writeFile(path.join(jobDir, 'exitcode.txt'), '0', 'utf8')
+    await tick() // 完成 → done，但未 notify/未 wait → pending
+    let meta = JSON.parse(await fsp.readFile(path.join(jobDir, 'job.json'), 'utf8'))
+    assert.equal(meta.status, 'done')
+    assert.equal(meta.notifiedAt, undefined, '完成且未被 wait 前应保持 pending（无 notifiedAt）')
+    const w = await wait.execute({ jobId: res.jobId, timeoutSeconds: 5 })
+    assert.equal(w.ok, true)
+    assert.equal(w.notified, true, 'wait 返回即视为交付')
+    assert.equal(w.notifiedBy, 'wait')
+    meta = JSON.parse(await fsp.readFile(path.join(jobDir, 'job.json'), 'utf8'))
+    assert.ok(meta.notifiedAt !== undefined && meta.notifiedAt !== null, 'wait 交付应落盘')
+    assert.equal(meta.notifiedBy, 'wait')
+    const firstAt = meta.notifiedAt
+    const w2 = await wait.execute({ jobId: res.jobId })
+    assert.equal(w2.notified, true)
+    meta = JSON.parse(await fsp.readFile(path.join(jobDir, 'job.json'), 'utf8'))
+    assert.equal(meta.notifiedAt, firstAt, '已交付任务不被再次 wait 覆盖')
+  } finally {
+    dispose()
+    await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+test('交付标记: notify 任务投递成功先行置 delivered·notify，wait 不覆盖', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  const handle = agentHandle('s1', 'idle')
+  const workdir = await makeWorkdir()
+  const { ctx, tools, intervals, injectCallbacks } = makeCtx({ services: { agents: { get: () => handle } } })
+  const dispose = apply(ctx)
+  try {
+    const submit = tools.find((t) => t.name === 'bgjob_submit')
+    const wait = tools.find((t) => t.name === 'bgjob_wait')
+    const tick = intervals.find((i) => i.ms === 1000).fn
+    const exec = { agent: { session: { id: 's1' } } }
+    const jobDir = await submitAndFinish(submit, { name: 't', command: 'echo x', workdir, notify: 'on-exit' }, exec, workdir, 3, tick)
+    assert.equal(handle.calls.followup.length, 1, '完成通知应投递成功')
+    let meta = JSON.parse(await fsp.readFile(path.join(jobDir, 'job.json'), 'utf8'))
+    assert.ok(meta.notifiedAt !== undefined, '投递成功后应落盘 notifiedAt')
+    assert.equal(meta.notifiedBy, 'notify')
+    // 面板数据源：state 视图应同步显示已通知（Bug1 回归）
+    const getJobs = attachWebServer(ctx, injectCallbacks)
+    let body = ''
+    await getJobs().handler({ url: '/bgjobs/state' }, { writeHead: () => {}, end: (b) => { body = b } })
+    const stateParsed = JSON.parse(body)
+    const sv = stateParsed.jobs.find((x) => x.id === meta.id)
+    assert.ok(sv && sv.notified === true, 'state 视图应带 notified:true')
+    const w = await wait.execute({ jobId: meta.id, timeoutSeconds: 5 })
+    assert.equal(w.notified, true)
+    assert.equal(w.notifiedBy, 'notify', '首通道 notify，wait 不覆盖')
+    meta = JSON.parse(await fsp.readFile(path.join(jobDir, 'job.json'), 'utf8'))
+    assert.equal(meta.notifiedBy, 'notify')
+  } finally {
+    dispose()
+    await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+test('bgjob_wait 缺省=notify 视图：已交付任务剔除，只等未交付的', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  const workdir = await makeWorkdir()
+  const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
+  const dispose = apply(ctx)
+  try {
+    const submit = tools.find((t) => t.name === 'bgjob_submit')
+    const wait = tools.find((t) => t.name === 'bgjob_wait')
+    const exec1 = { agent: { session: { id: 's1' } } }
+    const a = await submit.execute({ name: 'a', command: 'echo a', workdir }, exec1)
+    await fsp.writeFile(workdir + '\\.dsh\\bgjobs\\' + a.jobId + '\\exitcode.txt', '0', 'utf8')
+    const da = await wait.execute({ jobId: a.jobId, timeoutSeconds: 5 }) // 交付 a
+    assert.equal(da.notified, true)
+    const b = await submit.execute({ name: 'b', command: 'echo b', workdir }, exec1) // 仍 running、未交付
+    // 缺省 wait：a 已被交付 → 不应返回它；只有 b 在视图里 → 等满超时 timedOut
+    const r = await wait.execute({ timeoutSeconds: 1 }, exec1)
+    assert.equal(r.ok, true)
+    assert.equal(r.anyDone, false)
+    assert.equal(r.timedOut, true)
+    assert.equal(r.result, undefined)
+    assert.ok(r.results && r.results.length === 1 && r.results[0].jobId === b.jobId, '视图只含未交付的 b')
+  } finally {
+    dispose()
+    await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+test('bgjob_pending_list：仅本会话未交付任务', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  const workdir = await makeWorkdir()
+  const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
+  const dispose = apply(ctx)
+  try {
+    const submit = tools.find((t) => t.name === 'bgjob_submit')
+    const wait = tools.find((t) => t.name === 'bgjob_wait')
+    const pending = tools.find((t) => t.name === 'bgjob_pending_list')
+    const exec1 = { agent: { session: { id: 's1' } } }
+    const a = await submit.execute({ name: 'a', command: 'echo a', workdir }, exec1) // running pending
+    const b = await submit.execute({ name: 'b', command: 'echo b', workdir }, exec1)
+    await fsp.writeFile(workdir + '\\.dsh\\bgjobs\\' + b.jobId + '\\exitcode.txt', '0', 'utf8')
+    await wait.execute({ jobId: b.jobId, timeoutSeconds: 5 }) // b 已交付
+    await submit.execute({ name: 'c', command: 'echo c', workdir }, { agent: { session: { id: 's2' } } }) // 其它会话
+    const r = await pending.execute({}, exec1)
+    assert.equal(r.ok, true)
+    assert.equal(r.jobs.length, 1, '只含本会话未交付的 a')
+    assert.equal(r.jobs[0].jobId, a.jobId)
+    assert.equal(r.jobs[0].notified, false)
+    const bad = await pending.execute({}, { agent: undefined })
+    assert.equal(bad.ok, false)
+  } finally {
+    dispose()
+    await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+test('bgjob_wait_all 缺省空视图 → allDone 真空返回', async () => {
+  const { ctx, tools } = makeCtx({ services: {} })
+  const dispose = apply(ctx)
+  const all = tools.find((t) => t.name === 'bgjob_wait_all')
+  const r = await all.execute({}, { agent: { session: { id: 'nosess' } } })
+  assert.equal(r.ok, true)
+  assert.equal(r.allDone, true)
+  assert.equal(r.timedOut, false)
+  assert.deepEqual(r.results, [])
+  dispose()
 })
 

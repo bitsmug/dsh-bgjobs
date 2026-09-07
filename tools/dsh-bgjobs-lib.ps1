@@ -1,4 +1,4 @@
-﻿﻿# dsh-bgjobs-lib.ps1 - shared logic for the bgjobs offline management CLI.
+﻿﻿﻿﻿# dsh-bgjobs-lib.ps1 - shared logic for the bgjobs offline management CLI.
 # Dot-source this from dsh-bgjobs.ps1 (CLI). Works WITHOUT DSH running:
 # reads/writes the same job.json / stdout.log / exitcode.txt files and the
 # same central index ($DSH_HOME/bgjobs/index.json) as the bgjobs DSH plugin.
@@ -128,6 +128,10 @@ function Get-BgjobsJobs {
                 finishedAt = if ($meta.finishedAt) { $meta.finishedAt } else { $null }
                 taskName = if ($meta.taskName) { $meta.taskName } else { '' }
                 createdBySession = if ($meta.createdBySession) { $meta.createdBySession } else { $entry.createdBySession }
+                # notify（交付）标记：notifiedAt/notifiedBy 与宿主 job.json 同源
+                notified = if ($null -ne $meta.notifiedAt) { $true } else { $false }
+                notifiedAt = if ($meta.notifiedAt) { $meta.notifiedAt } else { $null }
+                notifiedBy = if ($null -ne $meta.notifiedAt) { if ($meta.notifiedBy) { $meta.notifiedBy } else { 'notify' } } else { $null }
             }
         } catch { }
     }
@@ -457,6 +461,9 @@ $script:BgjobsText = @{
     'col.name' = if ($script:BgjobsLangZh) { '名称' } else { 'Name' }
     'col.status' = if ($script:BgjobsLangZh) { '状态' } else { 'Status' }
     'col.exit' = if ($script:BgjobsLangZh) { '退出码' } else { 'Exit' }
+    'col.notify' = if ($script:BgjobsLangZh) { '通知' } else { 'Notified' }
+    'notify.done' = if ($script:BgjobsLangZh) { '已通知' } else { 'notified' }
+    'notify.pending' = if ($script:BgjobsLangZh) { '待通知' } else { 'pending' }
     'col.finished' = if ($script:BgjobsLangZh) { '完成时间' } else { 'Finished' }
     'col.workdir' = if ($script:BgjobsLangZh) { '工作目录' } else { 'Workdir' }
     'status.count' = if ($script:BgjobsLangZh) { '任务数：{0}    索引：{1}' } else { 'Jobs: {0}    Index: {1}' }
