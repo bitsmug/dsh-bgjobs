@@ -60,6 +60,18 @@ jobs:
       - name: Install deps
         run: pnpm install
 
+      - name: Rebuild client bundle and guard against drift
+        # 产物 lib/client.js 提交入库：发布前重建源码，若与已提交产物不一致则失败，
+        # 防止 npm 发出过期/错位的面板 bundle。
+        shell: bash
+        run: |
+          pnpm build:client
+          if ! git diff --exit-code --quiet -- lib/client.js; then
+            echo "::error::lib/client.js differs from lib/client-src build output — run pnpm build:client and commit the artifact"
+            exit 1
+          fi
+          echo "client bundle in sync with source"
+
       - name: Run tests
         run: pnpm test
 

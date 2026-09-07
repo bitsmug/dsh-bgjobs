@@ -2,23 +2,47 @@
 
 > 面向用户的说明见 [README.md](../README.md)。本文档给开发者：架构机制、设计取舍、测试与发布。
 
+## 目录
+
+- [目录结构](#目录结构)
+- [架构与关键机制](#架构与关键机制)
+- [可选沙箱（bgjob_submit_pwsh）](#可选沙箱bgjob_submit_pwsh复用-dsh-windows-acl-runner)
+- [完成通知创建者 Agent（可选 notify）](#完成通知创建者agentv0131可选-notify)
+- [Web 面板（client-src / 构建产物）](#web-面板libclient-src--构建产物-libclientjs可维护要点)
+- [测试与发布](#测试与发布)
+
 ## 目录结构
 
 ```
 lib/
-  index.js   宿主半（手写 ESM）：工具、schtasks 托管、监视、路由、沙箱/通知决策
-  client.js  Web 面板 bundle（client-modules 加载，免 build，改后刷新/重启生效）
+  index.js            入口聚合（插件元信息 + 公共导出；apply 来自 core/apply.js）
+  util.js / index-store.js / sandbox.js / scripts.js / notify-policy.js / guidance.js
+                      纯函数叶子模块（按功能拆分）
+  runners.js          schtasks / PowerShell / 沙箱 runner 执行层（测试替身 seam）
+  core/               host 域模块（store/notify/registry/watch/wait/jobs/web/tools + apply 装配）
+  client.js           Web 面板 bundle（产物，提交入库；由 lib/client-src 构建而来）
+  client-src/         网页面板源码（index/i18n/ui/panel/apply；改后需 pnpm build:client）
+scripts/
+  build-client.mjs    esbuild：lib/client-src → lib/client.js（产物提交，防漂移由 CI 把关）
 tests/
-  index.test.js    node:test（零依赖）：纯函数/提交/完成/恢复/保留/路由/沙箱/通知
+  helpers/common.js   共享测试工具与套件隔离（installSuiteHooks）
+  unit/tools/submit/watch/routes/sandbox/notify/wait.test.js
+                      node:test（零依赖，按功能分文件）：纯函数/提交/完成/恢复/路由/沙箱/通知
 tools/
-  dsh-bgjobs.ps1 / dsh-bgjobs-lib.ps1   离线 CLI（DSH 不运行时管理任务）
+  dsh-bgjobs.ps1 / dsh-bgjobs-lib.ps1   离线 CLI（DSH 不运行时管理任务；暂单文件，决策保留）
   dsh-bgjobs-gui.ps1 / dsh-bgjobs-gui.bat   WinForms GUI
   dsh-bgjobs-toast.ps1                   系统 Toast（WinRT，pwsh 7 自切 5.1）
   smoke-test.ps1                          离线 CLI 冒烟（pwsh 7 + 5.1）
 docs/developer.md   本文档
-package.json  版本即发布号；依赖 @deepseek-ai/dsh-sandbox-windows-acl + react
-pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependencies: koffi）
+package.json  版本即发布号；依赖 @deepseek-ai/dsh-sandbox-windows-acl + react；devDep esbuild
+pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependencies: koffi + esbuild）
 ```
+
+### host 域模型（v0.1.61 起，依赖无环）
+
+- 入口只做聚合；`apply(ctx)`（`lib/core/apply.js`）按依赖序创建各域：`store`（per-apply 状态：registry 注册表 + full access）← `notify` ← `registry` ← `watch` ← `wait`/`jobs` ← `web`/`tools`。
+- 每个域 = `createX(ctx, store, deps)` 工厂，返回 `{ api, dispose }`；跨域调用经 `deps` 注入的 `api` 解析（纯函数直接 import 叶子模块）。
+- 规则：凡「每插件实例一份」的可变状态必须在 `store` 或域工厂闭包内，**严禁模块级**（多 apply/测试隔离）。
 
 ## 架构与关键机制
 
@@ -115,9 +139,10 @@ submit ─► [pending-running] ──done──► [pending-done]
 - wait 返回某任务结果即视为一次「上下文注入」——done 结果在返回前被置 delivered·wait 并落盘；已交付任务不会被缺省 wait 重复返回。
 - 面板 `/bgjobs/state` 的 `view()`、`bgjob_list`/GUI 均输出 `notified/notifiedAt/notifiedBy`；GUI 列表加「通知」列。
 
-## Web 面板（lib/client.js）可维护要点
+## Web 面板（lib/client-src → 构建产物 lib/client.js）可维护要点
 
-- 加载：`dsh.client` 声明 → client-modules 提供 bundle（手写 CJS factory，**免 build**，改后刷新/重启生效）。
+- 源码在 `lib/client-src/`（多文件：i18n / ui 原子 / panel 主组件 / apply 装配 / index 入口），由 `pnpm build:client`（esbuild，见 `scripts/build-client.mjs`）打进**单文件** `lib/client.js`（产物提交入库）。**不再免 build**：改面板源码后需先 `pnpm build:client` 再刷新/重启。
+- 运行时铁定单文件（harness client-modules 约束：factory 的 `require` 只认模块表词，无相对路径通道）——相对 import 必须在构建期内联；`react` / `react-dom` / `@deepseek-ai/dsh-client-ui-primitives` 是模块表 seed，保持 external（try/catch require 语义不变）。
 - 主题：只用 `--dsw-*` token；组件来自 `@deepseek-ai/dsh-client-ui-primitives`（PLATFORM_MODULES 共享表直接 `require`：Toast、Icon 组件），每个都 try/catch 回退文本符号。
 - 层叠：面板 z-index 接近上限仍会被 `shell.overlay`（z-index 20 层叠上下文）困住 → `react-dom` **createPortal 到 document.body**（v0.1.27 实测）；`PANEL_Z = 2147483000`、`TOAST_Z = +1`。
 - 交互：拖拽用 pointer 事件 + `draggedRef` 位移阈值区分拖/点（悬浮球/折叠条/行区同款）；`data-bgjobs-ctrl` 让拖拽守卫忽略控件（防 setPointerCapture 吞 click）。
@@ -128,7 +153,7 @@ submit ─► [pending-running] ──done──► [pending-done]
 
 ### 测试
 
-- `pnpm test` / `node --test tests/index.test.js`（不依赖 DSH）。覆盖：纯函数、工具注册契约、提交/完成/恢复/保留、webServer 路由、沙箱决策矩阵与审批、notify 矩阵与送达路由。
+- `pnpm test`（=`node --test "tests/**/*.test.js"`，不依赖 DSH）。用例按功能分布在 `tests/*.test.js`（unit / tools / submit / watch / routes / sandbox / notify / wait），共享工具与套件隔离在 `tests/helpers/common.js`。覆盖：纯函数、工具注册契约、提交/完成/恢复/保留、webServer 路由、沙箱决策矩阵与审批、notify 矩阵与送达路由、wait/交付标记。
 - 回归注意：
   - `/bgjobs/state` 路由含 `await readFullAccess()` → 测试调 `handler` 必须 `await`；
   - makeCtx mock 需提供 `ctx.on`（apply 注册了 `agent/inbox/claimed`）；触发事件 = `onCallbacks.find(...)?.fn(payload)`；
@@ -140,13 +165,14 @@ submit ─► [pending-running] ──done──► [pending-done]
 ### 依赖与本地安装
 
 - 沙箱 runner 依赖 + koffi（原生）需在**插件目录内** `pnpm install`（Node 从插件真实路径向上解析 require；宿主 `link:` 装不进插件目录）。
-- pnpm ≥10 不再读 package.json 的 `pnpm` 字段；构建白名单在 `pnpm-workspace.yaml`（`allowBuilds: { koffi: true }` + `onlyBuiltDependencies`）；alpha 依赖在 `minimumReleaseAgeExclude`。`pnpm-lock.yaml`/`node_modules` 均被 .gitignore 排除。
+- pnpm ≥10 不再读 package.json 的 `pnpm` 字段；构建白名单在 `pnpm-workspace.yaml`（`allowBuilds: { esbuild: true, koffi: true }` + `onlyBuiltDependencies: [esbuild, koffi]`）；alpha 依赖在 `minimumReleaseAgeExclude`。`pnpm-lock.yaml`/`node_modules` 均被 .gitignore 排除（esbuild 属 devDep，仅插件仓库开发时需要；profile 经 link 安装不需装它）。
 
 ### 固定发布流程（每次改动）
 
 1. 递增 `package.json` 版本（默认只升末位）；
-2. 更新 `README.md` / `docs/developer.md` 如有用户/开发者可读变化；
-3. `pnpm test` 全绿 → `git add`（按文件）→ commit。
+2. 若改过 `lib/client-src/`：先 `pnpm build:client` 再确认 `git diff --exit-code -- lib/client.js`（产物已提交、无漂移；CI 发布前也会重建并比对）；
+3. 更新 `README.md` / `docs/developer.md` 如有用户/开发者可读变化；
+4. `pnpm test` 全绿 → `git add`（按文件）→ commit。
 
 安装到 profile（在 harness 仓库目录执行，插件目录下会 fallback 到残缺全局 CLI）：
 
@@ -154,4 +180,4 @@ submit ─► [pending-running] ──done──► [pending-done]
 pnpm dsh plugin --profile <profile> add link:<插件绝对路径>
 ```
 
-`package.json`（版本号等）变更需重新执行 add；`lib/*` 改动手写 bundle 即时生效（client 需刷新，必要时重启）。
+`package.json`（版本号等）变更需重新执行 add；`lib/core|lib/*.js` 改动即时生效；`lib/client-src/` 改动需先 `pnpm build:client` 再刷新（必要时重启）。
