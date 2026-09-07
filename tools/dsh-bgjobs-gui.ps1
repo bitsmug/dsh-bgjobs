@@ -1,4 +1,4 @@
-﻿# dsh-bgjobs-gui.ps1 - bgjobs standalone management window (works WITHOUT DSH).
+﻿﻿﻿# dsh-bgjobs-gui.ps1 - bgjobs standalone management window (works WITHOUT DSH).
 # Mirrors dsh-undo-savepoint-gui.ps1: single-instance mutex, hidden console,
 # WinForms list with refresh/submit/kill/cleanup, live log tail panel.
 # Open via dsh-bgjobs-gui.bat or a desktop shortcut.
@@ -385,6 +385,7 @@ $script:list = New-Object System.Windows.Forms.ListView
 $script:list.View = 'Details'
 $script:list.FullRowSelect = $true
 $script:list.GridLines = $true
+$script:list.HeaderStyle = [System.Windows.Forms.ColumnHeaderStyle]::Clickable
 $script:list.MultiSelect = $false
 $script:list.Columns.Add((Get-BgjobsText 'col.id'), 190) | Out-Null
 $script:list.Columns.Add((Get-BgjobsText 'col.name'), 140) | Out-Null
@@ -406,7 +407,11 @@ $script:detail.Font = New-Object System.Drawing.Font('Consolas', 9)
 $script:detail.Dock = 'Fill'
 $script:split.Panel2.Controls.Add($script:detail)
 
-$script:split.SplitterDistance = 300   # 初始列表高度；拖动分界条可调
+# 初始列表高度：SplitContainer 布局完成前（Height=0）赋 SplitterDistance 会抛
+# 参数越界异常（静默后间距停在默认值、布局畸形）——改在 Shown（布局就绪）时赋值。
+$script:form.Add_Shown({
+    try { $script:split.SplitterDistance = 300 } catch { /* 保持默认，仍可拖动分界 */ }
+})
 $script:form.Controls.Add($script:split)
 
 $script:btnRefresh.Add_Click({ Update-GuiList })
