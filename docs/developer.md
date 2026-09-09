@@ -19,8 +19,8 @@ lib/
   util.js / index-store.js / sandbox.js / scripts.js / notify-policy.js / guidance.js
                       纯函数叶子模块（按功能拆分）
   runners.js          schtasks / PowerShell / 沙箱 runner 执行层（测试替身 seam）
-  gui-launch.js       网页侧启动离线 GUI / 打开所在文件夹（载体 pwsh + Start-Process 起 GUI，
-                      目录用 powershell Invoke-Item；resolveShell + spawn/execFile，可注入替身）
+  gui-launch.js       网页侧启动离线 GUI / 打开所在文件夹（cmd start 批处理载体起独立控制台 GUI；
+                      目录用 explorer.exe 直开；resolveShell + spawn，可注入替身）
   core/               host 域模块（store/notify/registry/watch/wait/jobs/web/tools + apply 装配）
   client.js           Web 面板 bundle（产物，提交入库；由 lib/client-src 构建而来）
   client-src/         网页面板源码（index/i18n/ui/panel/apply/monitor/sidebar-action/
@@ -155,6 +155,7 @@ submit ─► [pending-running] ──done──► [pending-done]
 - DSH 设置 section（v0.1.65）：新增 occupant 注册进 `settings.section`（root/list，id `bgjobs`、order 30、label thunk `settings.nav`），组件 `lib/client-src/settings-section.js` 自绘：① `Switch`（primitives，缺位自绘退化）控制**左栏入口显隐**（偏好持久化 `$DSH_HOME/bgjobs/ui-prefs.json`，缺省 false → 入口默认隐藏）；② 「打开离线 GUI / 打开所在文件夹」走 host `/bgjobs/gui` POST（`gui-launch.js`：`resolveShell()` 解析解释器 + `spawn -WindowStyle Hidden -File tools/dsh-bgjobs-gui.ps1`，或 `explorer /select,` 定位）；③ 展示 GUI 脚本路径（GET 回显）。偏好共享 store `lib/client-src/gui-prefs.js`（`createGuiPrefsStore`/`loadGuiPrefs`/`useGuiPrefsEnabled`），sidebar-action 空渲染门控、设置开关即时生效。
 - 路由扩展（v0.1.65）：`/bgjobs/uiprefs`（GET/POST `?sidebarEntry=0|1`）与 `/bgjobs/gui`（GET 信息 / POST `?action=open|reveal`）；spawn 经 `gui-launch.setGuiSpawn` 注入（测试替身同 runners 模式）。
 - 设置页修复与增强（v0.1.66）：`/bgjobs/gui` GET 附 `version`（`lib/meta.js` 读包版本，模块级缓存）；「打开所在文件夹」客户端**优先第一方 `POST /open-in-app/open`**（`{app:'explorer', path:<tools 目录>}`，DSH 已验证的 explorer 打开机制；官方端点只收现存目录），不可用回退宿主 reveal；spawn 等 `'spawn'` 事件确认真实拉起（`'error'` → `{ok:false,error}`），失败一律透出到设置页结果行；监控面板显隐开关复用 monitor store 的 `setVisible`。附带修复：tools 三个 ps1 曾被反复写入**双 BOM**（运行时首行解析噪音，pwsh 报 `'works' 不是命令`），已规范为单一 UTF-8 BOM（字节级 EF BB BF + `#`）。
+- 启动/打开机制收敛（v0.1.67→v0.1.68）：真根因 **DETACHED_PROCESS 让 pwsh 秒退不执行**（§56），且 Start-Process 载体下 GUI 仍与宿主共享控制台（Ctrl+C 会杀 GUI）→ **打开离线 GUI = 写临时 UTF-8 .cmd（`chcp 65001` + `start "" <pwsh> -WindowStyle Hidden -File <gui.ps1>`，引号语义在文件内规避 Node 对 argv 内嵌引号的 `\"` 转义）+ spawn cmd.exe `/d /c` 判活**；**打开所在文件夹 = `explorer.exe <目录>` 直开**（Invoke-Item 实证对本机目录静默 exit 0 不弹窗；explorer 单实例握手后 exit 1，判活忽略退出码、只看 spawn 是否成功），客户端 reveal 不再走第一方 open-in-app 端点。
 - Toggle：轨道/滑块组件，`onColor` 自定义开启色——「全权限」用 `--dsw-alias-state-warn-primary`（与 dsh 审批提升面板同色）；「仅当前会话」默认 `--dsw-alias-state-business-primary`。
 
 ## 测试与发布

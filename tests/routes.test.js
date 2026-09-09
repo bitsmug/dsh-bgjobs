@@ -3,11 +3,11 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { promises as fsp } from 'node:fs'
+import { readFileSync, promises as fsp } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { guiScriptPath, setGuiSpawn, setGuiExec } from '../lib/gui-launch.js'
+import { guiScriptPath, setGuiSpawn } from '../lib/gui-launch.js'
 import {
   apply, strip, buildBat, buildCmdBat, buildPwshRunner, buildPs1, buildLaunchVbs, parseExitCode,
   jobSandboxDecision, shouldNotifyForExit,
@@ -629,7 +629,7 @@ test('webServer: /bgjobs/gui GET 报工具脚本信息与版本', async () => {
   }
 })
 
-test('webServer: /bgjobs/gui POST open —— 载体式 spawn（无 -WindowStyle、env 清洗、exit0 判 ok）', async () => {
+test('webServer: /bgjobs/gui POST open —— cmd start 载体（独立新控制台、env 清洗、exit0 判 ok）', async () => {
   const home = await makeDshHome()
   const spawned = []
   setShellResolver(async () => ({ exe: 'C:\\Fake\\pwsh.exe', engine: 'pwsh' }))
@@ -656,15 +656,19 @@ test('webServer: /bgjobs/gui POST open —— 载体式 spawn（无 -WindowStyle
       })
       const r = await call('/bgjobs/gui?action=open')
       assert.equal(r.ok, true)
-      const openSpawn = spawned.find((s) => String(s.file).toLowerCase().endsWith('pwsh.exe'))
-      assert.ok(openSpawn, 'open 应 spawn 解析到的 pwsh')
-      assert.ok(!openSpawn.args.includes('-WindowStyle') && !openSpawn.args.includes('-File'), '载体自身不再传 -WindowStyle/-File（GUI 由 Start-Process 带出）')
-      const encIdx = openSpawn.args.indexOf('-EncodedCommand')
-      assert.ok(encIdx >= 0, '载体应经 -EncodedCommand 启动，避免转义问题')
-      const decoded = Buffer.from(openSpawn.args[encIdx + 1], 'base64').toString('utf16le')
-      assert.ok(decoded.includes('Start-Process') && decoded.includes('-WindowStyle Hidden'), '载体应执行 Start-Process 起 GUI')
-      assert.ok(decoded.includes(guiScriptPath()), 'Start-Process 目标应为 GUI 脚本')
-      assert.equal(openSpawn.options.windowsHide, true, '载体控制台 windowsHide')
+      const openSpawn = spawned.find((s) => String(s.file).toLowerCase().endsWith('cmd.exe'))
+      assert.ok(openSpawn, 'open 应 spawn cmd.exe（start 载体）')
+      assert.deepEqual(openSpawn.args.slice(0, 2), ['/d', '/c'], 'cmd 应经 /d /c 跑批处理')
+      assert.ok(/bgjobs-gui-launch-\d+-\d+\.cmd$/.test(String(openSpawn.args[2])), 'argv 只带唯一临时批处理路径（引号不进 argv）')
+      // 引号语义在批处理文件里（Node 会把 argv 内嵌引号转义成 \"，cmd 解析错乱）
+      const batch = String(openSpawn.args[2])
+      const batchText = readFileSync(batch, 'utf8')
+      assert.ok(batchText.includes('start ""'), '批处理用 cmd start 分配独立新控制台')
+      assert.ok(batchText.includes('"C:\\Fake\\pwsh.exe"'), 'start 目标为解析到的 pwsh')
+      assert.ok(batchText.includes('-NoProfile') && batchText.includes('-File'))
+      assert.ok(batchText.includes('-WindowStyle Hidden'), 'pwsh 新控制台创建即隐藏')
+      assert.ok(batchText.includes(guiScriptPath()), 'start 目标文件为 GUI 脚本')
+      assert.equal(openSpawn.options.windowsHide, true, 'cmd 自身控制台 windowsHide')
       assert.notEqual(openSpawn.options.detached, true, '不能 detached（DETACHED_PROCESS 会让 pwsh 秒退不执行）')
       assert.ok(!('BGJOBS_TEST_TOKEN' in openSpawn.options.env), 'env 应清洗掉含 TOKEN 的变量')
     } finally {
@@ -720,13 +724,20 @@ test('webServer: /bgjobs/gui POST open —— 窗口内非零退出 / spawn erro
   }
 })
 
-test('webServer: /bgjobs/gui POST reveal —— powershell Invoke-Item 目录打开（第一方原语）', async () => {
+test('webServer: /bgjobs/gui POST reveal —— explorer.exe <tools 目录> 直开（v0.1.68）', async () => {
   const home = await makeDshHome()
-  const execCalls = []
+  const spawned = []
   try {
-    setGuiExec((file, args, options, cb) => {
-      execCalls.push({ file, args, options })
-      cb(null, '', '')
+    setGuiSpawn((file, args, options) => {
+      spawned.push({ file, args, options })
+      const listeners = {}
+      const child = {
+        once: (e, cb) => { listeners[e] = cb },
+        unref: () => {},
+        _fire: (e, arg) => { if (listeners[e]) listeners[e](arg) },
+      }
+      queueMicrotask(() => child._fire('exit', 0))
+      return child
     })
     const { ctx, injectCallbacks } = makeCtx({ services: {} })
     const dispose = apply(ctx)
@@ -738,19 +749,31 @@ test('webServer: /bgjobs/gui POST reveal —— powershell Invoke-Item 目录打
       })
       const r = await call('/bgjobs/gui?action=reveal')
       assert.equal(r.ok, true)
-      assert.equal(execCalls.length, 1)
-      const ec = execCalls[0]
-      assert.ok(String(ec.file).toLowerCase().endsWith('powershell.exe'))
-      assert.ok(ec.args.includes('-NoProfile'))
-      const cmd = ec.args.find((a) => String(a).startsWith('Invoke-Item'))
-      assert.ok(cmd, '命令应为 Invoke-Item -LiteralPath')
-      assert.ok(cmd.includes('tools'), '打开的是 tools 目录（脚本父目录）')
-      assert.equal(ec.options.windowsHide, true)
-      // 失败：execFile error → ok:false 透出
-      setGuiExec((file, args, options, cb) => cb(new Error('denied'), '', 'access denied'))
+      assert.equal(spawned.length, 1)
+      const sp = spawned[0]
+      assert.ok(String(sp.file).toLowerCase().endsWith('explorer.exe'), '应 spawn explorer.exe 直开目录')
+      assert.equal(sp.args.length, 1, '单参数 = 目录绝对路径')
+      assert.equal(sp.args[0], path.dirname(guiScriptPath()), '打开的是 tools 目录（脚本父目录）')
+      assert.equal(sp.options.windowsHide, true)
+      // 退出码忽略（explorer 单实例握手后常 exit 1）：exit 1 也应 ok
+      setGuiSpawn(() => {
+        const listeners = {}
+        const child = { once: (e, cb) => { listeners[e] = cb }, unref: () => {}, _fire: (e, arg) => { if (listeners[e]) listeners[e](arg) } }
+        queueMicrotask(() => child._fire('exit', 1))
+        return child
+      })
+      const r1 = await call('/bgjobs/gui?action=reveal')
+      assert.equal(r1.ok, true, 'explorer 退出码不可靠，exit 1 也应判 ok')
+      // 失败：spawn 'error'（explorer 缺失等）→ ok:false 透出
+      setGuiSpawn(() => {
+        const listeners = {}
+        const child = { once: (e, cb) => { listeners[e] = cb }, unref: () => {}, _fire: (e, arg) => { if (listeners[e]) listeners[e](arg) } }
+        queueMicrotask(() => child._fire('error', new Error('ENOENT')))
+        return child
+      })
       const r2 = await call('/bgjobs/gui?action=reveal')
       assert.equal(r2.ok, false)
-      assert.ok(r2.error && (r2.error.includes('denied') || r2.error.includes('access denied')), 'exec 错误应透出：' + r2.error)
+      assert.ok(r2.error && r2.error.includes('ENOENT'), 'explorer spawn error 应透出：' + r2.error)
     } finally {
       dispose()
     }
