@@ -3,7 +3,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { promises as fsp } from 'node:fs'
+import { readFileSync, promises as fsp } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -649,14 +649,21 @@ test('webServer: /bgjobs/gui POST open —— schtasks 一次性任务拉起（�
       const create = calls.find((a) => a[1] === '/Create')
       assert.ok(create, '应有 schtasks /Create')
       assert.equal(create[3], 'dsh-bgj-gui', '固定任务名 dsh-bgj-gui（/F 覆盖，不堆积）')
+      // /TR 只带 cmd.exe /c <短路径批处理>（schtasks /TR 有长度上限，深路径安装必须经批处理承载长命令）
       const tr = create[create.indexOf('/TR') + 1]
-      assert.ok(tr.includes('C:\\Fake\\pwsh.exe'), '/TR 目标为解析到的 pwsh')
-      assert.ok(tr.includes('-NoProfile') && tr.includes('-File'))
-      assert.ok(tr.includes('-WindowStyle Hidden'), '任务会话内控制台创建即隐藏')
-      assert.ok(tr.includes(guiScriptPath()), '/TR 目标文件为 GUI 脚本')
+      assert.ok(tr.includes('cmd.exe') && tr.includes('/c'), '/TR 应经 cmd.exe /c 跑批处理')
+      const batch = path.join(os.tmpdir(), 'bgjobs-gui-launch.cmd')
+      assert.ok(tr.includes(batch), '/TR 指向 %TEMP% 短路径批处理')
+      const batchText = readFileSync(batch, 'utf8')
+      assert.ok(batchText.includes('start ""'), '批处理用 start 起 GUI（独立控制台）')
+      assert.ok(batchText.includes('"C:\\Fake\\pwsh.exe"'), '批处理目标为解析到的 pwsh')
+      assert.ok(batchText.includes('-NoProfile') && batchText.includes('-File'))
+      assert.ok(batchText.includes('-WindowStyle Hidden'), '控制台创建即隐藏')
+      assert.ok(batchText.includes(guiScriptPath()), '批处理目标文件为 GUI 脚本')
       assert.ok(create.includes('/SC') && create.includes('ONCE') && create.includes('/F'))
       assert.ok(calls.some((a) => a[1] === '/Run' && a[3] === 'dsh-bgj-gui'), '应有 /Run 立即触发')
       assert.ok(calls.some((a) => a[1] === '/Change' && a.includes('/DISABLE')), '触发后立即 /DISABLE 防整分双跑')
+      await fsp.rm(batch, { force: true }).catch(() => {})
     } finally {
       dispose()
     }
