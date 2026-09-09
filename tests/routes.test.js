@@ -602,10 +602,44 @@ test('webServer: /bgjobs/uiprefs 缺省 false；POST 后 GET 与磁盘回读一�
   }
 })
 
-test('webServer: /bgjobs/gui GET 报工具脚本信息；POST open/reveal 走注入 spawn', async () => {
+test('webServer: /bgjobs/gui GET 报工具脚本信息与版本', async () => {
+  const home = await makeDshHome()
+  try {
+    const { ctx, injectCallbacks } = makeCtx({ services: {} })
+    const dispose = apply(ctx)
+    try {
+      const getJobs = attachWebServer(ctx, injectCallbacks)
+      const call = (url) => new Promise((resolve) => {
+        let body = ''
+        getJobs().handler({ url }, { writeHead: () => {}, end: (b) => { resolve(JSON.parse(b || '{}')) } })
+      })
+      const info = await call('/bgjobs/gui')
+      assert.equal(info.ok, true)
+      assert.equal(info.path, guiScriptPath())
+      assert.ok(info.path.replace(/\\/g, '/').endsWith('tools/dsh-bgjobs-gui.ps1'))
+      assert.equal(info.exists, true)
+      assert.equal(typeof info.version, 'string')
+      assert.match(info.version, /^\d+\.\d+\.\d+/)
+    } finally {
+      dispose()
+    }
+  } finally {
+    delete process.env.DSH_HOME
+    await fsp.rm(home, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+test('webServer: /bgjobs/gui POST open/reveal 走注入 spawn（spawn 确认后 ok）', async () => {
   const home = await makeDshHome()
   const spawned = []
-  setGuiSpawn((file, args) => { spawned.push({ file, args }); return { unref() {} } })
+  const { EventEmitter } = await import('node:events')
+  setGuiSpawn((file, args) => {
+    spawned.push({ file, args })
+    const child = new EventEmitter()
+    child.unref = () => {}
+    queueMicrotask(() => child.emit('spawn'))
+    return child
+  })
   setShellResolver(async () => ({ exe: 'C:\\Fake\\pwsh.exe', engine: 'pwsh' }))
   try {
     const { ctx, injectCallbacks } = makeCtx({ services: {} })
@@ -616,29 +650,54 @@ test('webServer: /bgjobs/gui GET 报工具脚本信息；POST open/reveal 走注
         let body = ''
         getJobs().handler({ url, method: method || 'GET' }, { writeHead: () => {}, end: (b) => { resolve(JSON.parse(b || '{}')) } })
       })
-      // GET：包内 tools 脚本路径 + 存在
-      const info = await call('/bgjobs/gui')
-      assert.equal(info.ok, true)
-      assert.equal(info.path, guiScriptPath())
-      assert.ok(info.path.replace(/\\/g, '/').endsWith('tools/dsh-bgjobs-gui.ps1'))
-      assert.equal(info.exists, true)
-      // POST open：pwsh -WindowStyle Hidden -File <脚本>，detached spawn
+      // POST open：pwsh -WindowStyle Hidden -File <脚本>
       const r1 = await call('/bgjobs/gui?action=open', 'POST')
       assert.equal(r1.ok, true)
-      assert.equal(r1.path, guiScriptPath())
       const openSpawn = spawned.find((s) => String(s.file).toLowerCase().endsWith('pwsh.exe'))
       assert.ok(openSpawn, 'open 应 spawn 解析到的 pwsh')
       assert.ok(openSpawn.args.includes('-WindowStyle') && openSpawn.args.includes('Hidden'))
       assert.ok(openSpawn.args.includes('-File'))
       assert.ok(openSpawn.args.includes(guiScriptPath()))
-      // POST reveal：explorer /select, <脚本>
+      // POST reveal：explorer 单参数 `/select,<file>`（官方形态）
       spawned.length = 0
       const r2 = await call('/bgjobs/gui?action=reveal', 'POST')
       assert.equal(r2.ok, true)
       const revealSpawn = spawned.find((s) => s.file.toLowerCase().endsWith('explorer.exe'))
       assert.ok(revealSpawn, 'reveal 应 spawn explorer.exe')
-      assert.ok(revealSpawn.args.includes('/select,'))
-      assert.ok(revealSpawn.args.includes(guiScriptPath()))
+      assert.equal(revealSpawn.args.length, 1, 'explorer 用单参数 /select,<file>')
+      assert.ok(revealSpawn.args[0].startsWith('/select,'))
+      assert.ok(revealSpawn.args[0].includes(guiScriptPath()))
+    } finally {
+      dispose()
+    }
+  } finally {
+    delete process.env.DSH_HOME
+    await fsp.rm(home, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+test('webServer: /bgjobs/gui POST 启动失败（spawn error）→ {ok:false,error} 透出', async () => {
+  const home = await makeDshHome()
+  const { EventEmitter } = await import('node:events')
+  setGuiSpawn(() => {
+    const child = new EventEmitter()
+    child.unref = () => {}
+    queueMicrotask(() => child.emit('error', new Error('boom')))
+    return child
+  })
+  setShellResolver(async () => ({ exe: 'C:\\Fake\\pwsh.exe', engine: 'pwsh' }))
+  try {
+    const { ctx, injectCallbacks } = makeCtx({ services: {} })
+    const dispose = apply(ctx)
+    try {
+      const getJobs = attachWebServer(ctx, injectCallbacks)
+      const call = (url) => new Promise((resolve) => {
+        let body = ''
+        getJobs().handler({ url, method: 'POST' }, { writeHead: () => {}, end: (b) => { resolve(JSON.parse(b || '{}')) } })
+      })
+      const r = await call('/bgjobs/gui?action=open')
+      assert.equal(r.ok, false)
+      assert.ok(r.error && String(r.error).includes('boom'), 'spawn error 应透出：' + r.error)
     } finally {
       dispose()
     }
