@@ -44,6 +44,51 @@ function Convert-BgjobsPathStrip([string]$Path) {
     return $s
 }
 
+# 读取日志尾部 N 行，编码自适应：优先严格 UTF-8，失败回退系统 ANSI 代码页
+# （中文系统 = GBK/936，MATLAB 等子进程常以 ANSI 输出；硬编码 UTF-8 会乱码）。
+# 追加鲁棒性：任务仍在运行、日志末尾可能带未写完的半个 UTF-8 字符——整文件严格解码
+# 会失败并误回退 GBK 造成全文件乱码。处理顺序：
+#   1) 整文件严格 UTF-8（成功即用）；
+#   2) 去掉尾部 ≤3 字节后严格 UTF-8（覆盖"尾部半个字符"场景，成功即用）；
+#   3) 宽容 UTF-8（非法处替换为 U+FFFD），替换数很少（≤3）说明基本是 UTF-8，采用；
+#   4) 否则按系统 ANSI(GBK) 解码。
+function Read-BgjobsLogTail([string]$Path, [int]$Tail) {
+    if (-not (Test-Path -LiteralPath $Path)) { return @() }
+    try {
+        $bytes = [System.IO.File]::ReadAllBytes($Path)
+        if ($bytes.Length -eq 0) { return @() }
+        $strict = New-Object System.Text.UTF8Encoding($false, $true)   # 非法字节即抛异常
+        $text = $null
+        $ok = $false
+        # 1) 整文件严格解码
+        try { $text = $strict.GetString($bytes); $ok = $true } catch { }
+        # 2) 去掉尾部 ≤3 字节再严格解码（文件正在被写入，末尾可能是半个多字节字符）
+        if (-not $ok) {
+            $cut = [Math]::Min(3, $bytes.Length)
+            for ($i = 1; $i -le $cut -and -not $ok; $i++) {
+                try {
+                    $text = $strict.GetString($bytes, 0, $bytes.Length - $i)
+                    $ok = $true
+                } catch { }
+            }
+        }
+        if (-not $ok) {
+            # 3) 宽容 UTF-8：替换数很少时按 UTF-8 处理（只末尾一个 �，主体可读）
+            $lenient = New-Object System.Text.UTF8Encoding($false, $false)
+            $candidate = $lenient.GetString($bytes)
+            $rep = ([regex]::Matches($candidate, [string][char]0xFFFD)).Count
+            if ($rep -le 3) { $text = $candidate; $ok = $true }
+        }
+        if (-not $ok) {
+            # 4) 非 UTF-8（如纯 GBK）：按系统 ANSI 解码
+            $text = [System.Text.Encoding]::Default.GetString($bytes)
+        }
+        $lines = @($text -split "`r?`n")
+        if ($lines.Count -gt $Tail) { $lines = @($lines | Select-Object -Last $Tail) }
+        return @($lines)
+    } catch { return @() }
+}
+
 # ── central index ─────────────────────────────────────────────────────────
 function Get-BgjobsIndex {
     if (-not (Test-Path -LiteralPath $script:BgjobsIndexPath)) {
@@ -127,6 +172,7 @@ function Get-BgjobsJobs {
                 createdAt = if ($meta.createdAt) { $meta.createdAt } else { 0 }
                 finishedAt = if ($meta.finishedAt) { $meta.finishedAt } else { $null }
                 taskName = if ($meta.taskName) { $meta.taskName } else { '' }
+                command = if ($meta.command) { [string]$meta.command } else { '' }
                 createdBySession = if ($meta.createdBySession) { $meta.createdBySession } else { $entry.createdBySession }
                 # notify（交付）标记：notifiedAt/notifiedBy 与宿主 job.json 同源
                 notified = if ($null -ne $meta.notifiedAt) { $true } else { $false }
@@ -186,6 +232,7 @@ function New-BgjobsPwshRunner([object]$Job) {
     $tpl = @'
 # bgjobs pwsh runner: 重定向 + exitcode + 自删任务计划
 try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch { }
+try { Add-Type -Namespace BgjobsCon -Name ConCp -MemberDefinition '[DllImport("kernel32.dll")]public static extern bool SetConsoleOutputCP(uint w);[DllImport("kernel32.dll")]public static extern bool SetConsoleCP(uint w);' -ErrorAction SilentlyContinue; [void][BgjobsCon.ConCp]::SetConsoleOutputCP(65001); [void][BgjobsCon.ConCp]::SetConsoleCP(65001) } catch { }
 $utf8 = New-Object System.Text.UTF8Encoding($false)
 Set-Location -LiteralPath '__WORKDIR__'
 $logPath = '__LOGPATH__'
@@ -218,6 +265,7 @@ function New-BgjobsPs1([object]$Job) {
     $preamble = @(
         '# bgjobs: 强制 UTF-8 输出（Windows PowerShell 5.1 重定向默认 UTF-16 会乱码）',
         'try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch { }',
+        'try { Add-Type -Namespace BgjobsCon -Name ConCp -MemberDefinition ''[DllImport("kernel32.dll")]public static extern bool SetConsoleOutputCP(uint w);[DllImport("kernel32.dll")]public static extern bool SetConsoleCP(uint w);'' -ErrorAction SilentlyContinue; [void][BgjobsCon.ConCp]::SetConsoleOutputCP(65001); [void][BgjobsCon.ConCp]::SetConsoleCP(65001) } catch { }',
         '$OutputEncoding = [System.Text.UTF8Encoding]::new($false)'
     ) -join "`r`n"
     return $preamble + "`r`n" + (([string]$Job.meta.command -split "\r?\n") -join "`r`n") + "`r`n"
@@ -469,6 +517,7 @@ $script:BgjobsText = @{
     'status.count' = if ($script:BgjobsLangZh) { '任务数：{0}    索引：{1}' } else { 'Jobs: {0}    Index: {1}' }
     'detail.log' = if ($script:BgjobsLangZh) { '-- 最近日志 --' } else { '-- recent log --' }
     'detail.nolog' = '(no log yet)'
+    'detail.garbled' = if ($script:BgjobsLangZh) { '（⚠ 此日志在写入时发生编码损坏：任务进程以 GBK 输出却被按 UTF-8 记录，中文已不可恢复。pwsh 引擎的新任务已修复此问题。）' } else { '(⚠ This log was corrupted while being written: the job emitted GBK but it was recorded as UTF-8, so Chinese is unrecoverable. New pwsh-engine jobs are fixed.)' }
     'mutex.already' = if ($script:BgjobsLangZh) { 'bgjobs 管理面板已在运行（可能最小化到了托盘）。' } else { 'bgjobs manager is already running (maybe minimized to tray).' }
     'dlg.submit.title' = if ($script:BgjobsLangZh) { '提交后台任务' } else { 'Submit Background Job' }
     'dlg.example' = if ($script:BgjobsLangZh) { '示例：' } else { 'Example: ' }

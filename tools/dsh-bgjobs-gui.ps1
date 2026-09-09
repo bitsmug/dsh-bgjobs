@@ -114,14 +114,25 @@ function Show-GuiDetail {
     [void]$sb.AppendLine("Notify:   $notifyTxt")
     [void]$sb.AppendLine("Workdir:  $($j.workdir)")
     [void]$sb.AppendLine("JobDir:   $($j.jobDir)")
+    [void]$sb.AppendLine("Command:  $($j.command)")     # 任务命令，便于用户观察
     [void]$sb.AppendLine('')
     [void]$sb.AppendLine((Get-BgjobsText 'detail.log'))
     if (Test-Path -LiteralPath $j.logPath) {
-        foreach ($l in (Get-Content -LiteralPath $j.logPath -Tail 200 -Encoding UTF8)) { [void]$sb.AppendLine($l) }
+        $logLines = @(Read-BgjobsLogTail $j.logPath 200)
+        # 写侧损坏检测：日志里大量 U+FFFD（替换符）= 任务以 GBK 输出却被按 UTF-8 记录，
+        # 中文已不可逆丢失——给出提示而非只显示 �（读侧无法还原）。
+        $ffdd = 0
+        foreach ($ll in $logLines) { $ffdd += ([regex]::Matches($ll, [string][char]0xFFFD)).Count }
+        if ($ffdd -ge 6) { [void]$sb.AppendLine((Get-BgjobsText 'detail.garbled')) }
+        foreach ($l in $logLines) { [void]$sb.AppendLine($l) }
     } else {
         [void]$sb.AppendLine((Get-BgjobsText 'detail.nolog'))
     }
     $script:detail.Text = $sb.ToString()
+    # 自动滚动到日志最底部，便于查看最新输出
+    $script:detail.SelectionStart = $script:detail.TextLength
+    $script:detail.SelectionLength = 0
+    $script:detail.ScrollToCaret()
 }
 
 # ── 示例：倒计时（每 1 秒打印剩余时间，15 秒后发 Toast 系统通知）─────────
@@ -642,6 +653,11 @@ $script:split.Panel2.Controls.Add($script:detail)
 # 参数越界异常（静默后间距停在默认值、布局畸形）——改在 Shown（布局就绪）时赋值。
 $script:form.Add_Shown({
     try { $script:split.SplitterDistance = 300 } catch { /* 保持默认，仍可拖动分界 */ }
+    # 初始自动滚动到列表最底部，便于查看最新任务（列表按 createdAt 升序，最新在底部）
+    try {
+        $n = $script:list.Items.Count
+        if ($n -gt 0) { $script:list.Items[$n - 1].EnsureVisible() }
+    } catch { /* 无任务或布局未就绪：忽略 */ }
 })
 $script:form.Controls.Add($script:split)
 # 关键：把 Fill 的 SplitContainer 提到控件树最前（z-order index 0）。WinForms

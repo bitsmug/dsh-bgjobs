@@ -1,4 +1,4 @@
-﻿# dsh-bgjobs.ps1 - offline bgjobs management CLI (works WITHOUT DSH running).
+# dsh-bgjobs.ps1 - offline bgjobs management CLI (works WITHOUT DSH running).
 #
 # Usage:
 #   .\dsh-bgjobs.ps1 list                              # all jobs (id/name/status/exit/time/workdir)
@@ -60,6 +60,7 @@ switch ($Command) {
         Write-Host "Finished: $(Format-BgjobsTime $j.finishedAt)"
         Write-Host "Workdir:  $($j.workdir)"
         Write-Host "JobDir:   $($j.jobDir)"
+        Write-Host "Command:  $($j.command)"
         Write-Host "Log:      $($j.logPath)"
         # exitcode.txt raw
         if (Test-Path -LiteralPath $j.exitcodePath) {
@@ -67,7 +68,7 @@ switch ($Command) {
         }
         # log tail
         if (Test-Path -LiteralPath $j.logPath) {
-            $lines = Get-Content -LiteralPath $j.logPath -Tail $Tail -Encoding UTF8
+            $lines = Read-BgjobsLogTail $j.logPath $Tail
             Write-Host ''
             Write-Host "-- last $($lines.Count) log lines --"
             foreach ($l in $lines) { Write-Host $l }
@@ -81,7 +82,7 @@ switch ($Command) {
         $j = Get-BgjobsJob $Id
         if ($null -eq $j) { Write-Host "job not found: $Id (index stale? try: index rebuild)"; exit 1 }
         if (-not (Test-Path -LiteralPath $j.logPath)) { Write-Host '(no log yet)'; break }
-        $lines = Get-Content -LiteralPath $j.logPath -Tail $Tail -Encoding UTF8
+        $lines = Read-BgjobsLogTail $j.logPath $Tail
         foreach ($l in $lines) { Write-Host $l }
     }
     'submit' {
