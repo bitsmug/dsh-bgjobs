@@ -19,7 +19,8 @@ lib/
   util.js / index-store.js / sandbox.js / scripts.js / notify-policy.js / guidance.js
                       纯函数叶子模块（按功能拆分）
   runners.js          schtasks / PowerShell / 沙箱 runner 执行层（测试替身 seam）
-  gui-launch.js       网页侧启动离线 GUI / 资源管理器定位（resolveShell + spawn，可注入替身）
+  gui-launch.js       网页侧启动离线 GUI / 打开所在文件夹（载体 pwsh + Start-Process 起 GUI，
+                      目录用 powershell Invoke-Item；resolveShell + spawn/execFile，可注入替身）
   core/               host 域模块（store/notify/registry/watch/wait/jobs/web/tools + apply 装配）
   client.js           Web 面板 bundle（产物，提交入库；由 lib/client-src 构建而来）
   client-src/         网页面板源码（index/i18n/ui/panel/apply/monitor/sidebar-action/
