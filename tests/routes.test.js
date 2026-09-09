@@ -7,6 +7,7 @@ import { promises as fsp } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
+import { guiScriptPath, setGuiSpawn } from '../lib/gui-launch.js'
 import {
   apply, strip, buildBat, buildCmdBat, buildPwshRunner, buildPs1, buildLaunchVbs, parseExitCode,
   jobSandboxDecision, shouldNotifyForExit,
@@ -565,3 +566,84 @@ test('bgjob_status: 磁盘回退 —— 未知 id 仍返回 job not found', asyn
 // ── 沙箱联动（v0.1.29）──
 
 /** 写 full access 开关（false 时受限会话宽请求须审批 / 无服务须拒绝）。 */
+
+// ── UI 偏好 + GUI 启动路由（v0.1.65）──
+
+test('webServer: /bgjobs/uiprefs 缺省 false；POST 后 GET 与磁盘回读一致；缺参 400', async () => {
+  const home = await makeDshHome()
+  try {
+    const { ctx, injectCallbacks } = makeCtx({ services: {} })
+    const dispose = apply(ctx)
+    try {
+      const getJobs = attachWebServer(ctx, injectCallbacks)
+      const call = (url, method) => new Promise((resolve) => {
+        let body = ''
+        getJobs().handler({ url, method: method || 'GET' }, { writeHead: () => {}, end: (b) => { resolve(JSON.parse(b || '{}')) } })
+      })
+      let r = await call('/bgjobs/uiprefs')
+      assert.equal(r.ok, true)
+      assert.equal(r.sidebarEntry, false, '无文件/旧版升级缺省 false（入口默认隐藏）')
+      r = await call('/bgjobs/uiprefs?sidebarEntry=1', 'POST')
+      assert.equal(r.ok, true)
+      assert.equal(r.sidebarEntry, true)
+      r = await call('/bgjobs/uiprefs')
+      assert.equal(r.sidebarEntry, true, 'POST 后 GET 回读缓存')
+      const onDisk = JSON.parse(await fsp.readFile(path.join(home, 'bgjobs', 'ui-prefs.json'), 'utf8'))
+      assert.equal(onDisk.sidebarEntry, true, '偏好应落盘 ui-prefs.json')
+      let status400 = 0
+      await getJobs().handler({ url: '/bgjobs/uiprefs', method: 'POST' }, { writeHead: (c) => { status400 = c }, end: () => {} })
+      assert.equal(status400, 400, 'POST 缺 sidebarEntry 参数应 400')
+    } finally {
+      dispose()
+    }
+  } finally {
+    delete process.env.DSH_HOME
+    await fsp.rm(home, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+test('webServer: /bgjobs/gui GET 报工具脚本信息；POST open/reveal 走注入 spawn', async () => {
+  const home = await makeDshHome()
+  const spawned = []
+  setGuiSpawn((file, args) => { spawned.push({ file, args }); return { unref() {} } })
+  setShellResolver(async () => ({ exe: 'C:\\Fake\\pwsh.exe', engine: 'pwsh' }))
+  try {
+    const { ctx, injectCallbacks } = makeCtx({ services: {} })
+    const dispose = apply(ctx)
+    try {
+      const getJobs = attachWebServer(ctx, injectCallbacks)
+      const call = (url, method) => new Promise((resolve) => {
+        let body = ''
+        getJobs().handler({ url, method: method || 'GET' }, { writeHead: () => {}, end: (b) => { resolve(JSON.parse(b || '{}')) } })
+      })
+      // GET：包内 tools 脚本路径 + 存在
+      const info = await call('/bgjobs/gui')
+      assert.equal(info.ok, true)
+      assert.equal(info.path, guiScriptPath())
+      assert.ok(info.path.replace(/\\/g, '/').endsWith('tools/dsh-bgjobs-gui.ps1'))
+      assert.equal(info.exists, true)
+      // POST open：pwsh -WindowStyle Hidden -File <脚本>，detached spawn
+      const r1 = await call('/bgjobs/gui?action=open', 'POST')
+      assert.equal(r1.ok, true)
+      assert.equal(r1.path, guiScriptPath())
+      const openSpawn = spawned.find((s) => String(s.file).toLowerCase().endsWith('pwsh.exe'))
+      assert.ok(openSpawn, 'open 应 spawn 解析到的 pwsh')
+      assert.ok(openSpawn.args.includes('-WindowStyle') && openSpawn.args.includes('Hidden'))
+      assert.ok(openSpawn.args.includes('-File'))
+      assert.ok(openSpawn.args.includes(guiScriptPath()))
+      // POST reveal：explorer /select, <脚本>
+      spawned.length = 0
+      const r2 = await call('/bgjobs/gui?action=reveal', 'POST')
+      assert.equal(r2.ok, true)
+      const revealSpawn = spawned.find((s) => s.file.toLowerCase().endsWith('explorer.exe'))
+      assert.ok(revealSpawn, 'reveal 应 spawn explorer.exe')
+      assert.ok(revealSpawn.args.includes('/select,'))
+      assert.ok(revealSpawn.args.includes(guiScriptPath()))
+    } finally {
+      dispose()
+    }
+  } finally {
+    delete process.env.DSH_HOME
+    await fsp.rm(home, { recursive: true, force: true }).catch(() => {})
+  }
+})

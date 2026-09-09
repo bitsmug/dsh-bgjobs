@@ -19,9 +19,11 @@ lib/
   util.js / index-store.js / sandbox.js / scripts.js / notify-policy.js / guidance.js
                       纯函数叶子模块（按功能拆分）
   runners.js          schtasks / PowerShell / 沙箱 runner 执行层（测试替身 seam）
+  gui-launch.js       网页侧启动离线 GUI / 资源管理器定位（resolveShell + spawn，可注入替身）
   core/               host 域模块（store/notify/registry/watch/wait/jobs/web/tools + apply 装配）
   client.js           Web 面板 bundle（产物，提交入库；由 lib/client-src 构建而来）
-  client-src/         网页面板源码（index/i18n/ui/panel/apply；改后需 pnpm build:client）
+  client-src/         网页面板源码（index/i18n/ui/panel/apply/monitor/sidebar-action/
+                      gui-prefs/settings-section；改后需 pnpm build:client）
 scripts/
   build-client.mjs    esbuild：lib/client-src → lib/client.js（产物提交，防漂移由 CI 把关）
 tests/
@@ -40,7 +42,7 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
 
 ### host 域模型（v0.1.61 起，依赖无环）
 
-- 入口只做聚合；`apply(ctx)`（`lib/core/apply.js`）按依赖序创建各域：`store`（per-apply 状态：registry 注册表 + full access）← `notify` ← `registry` ← `watch` ← `wait`/`jobs` ← `web`/`tools`。
+- 入口只做聚合；`apply(ctx)`（`lib/core/apply.js`）按依赖序创建各域：`store`（per-apply 状态：registry 注册表 + full access + **ui-prefs**（v0.1.65，左栏入口显隐偏好））← `notify` ← `registry` ← `watch` ← `wait`/`jobs` ← `web`/`tools`。
 - 每个域 = `createX(ctx, store, deps)` 工厂，返回 `{ api, dispose }`；跨域调用经 `deps` 注入的 `api` 解析（纯函数直接 import 叶子模块）。
 - 规则：凡「每插件实例一份」的可变状态必须在 `store` 或域工厂闭包内，**严禁模块级**（多 apply/测试隔离）。
 
@@ -149,6 +151,8 @@ submit ─► [pending-running] ──done──► [pending-done]
 - 状态：`open`（展开）/ 折叠（仅任务列表，fit-content 自适应宽、按行高、锚定到折叠按钮位置）；`minimized`（悬浮球，落在最小化按钮位置）。清理菜单 = 🧹 下拉二选一。
 - 宿主集成（v0.1.64）：面板 occupant 在 `shell.overlay`（root/list，id `bgjobs-monitor`，order 50）；**新增左侧栏脚部入口** occupant（`sidebar.footer.action` root/list，id `bgjobs-monitor-toggle`，order 60），ui-cordis 同款 best-effort——宿主组合无 ui-sidebar 时该 inject 静默等待、不注册，面板照常、boot 不失败；入口无需 import 任何 harness 包（slot 名 = 字符串契约），不新增 external。
 - 显隐共享 store（v0.1.64）：`lib/client-src/monitor.js` 的 apply 级 `createMonitorStore`（`getVisible`/`toggle`/`subscribe` 对齐 `useSyncExternalStore`）+ `useMonitorVisible` hook（monitor 缺位恒 true）。面板「隐藏」用 **display:none 保持挂载**（几何/折叠/悬浮球/jobs 状态保留，轮询照常）；toast 独立不受影响。入口组件 `lib/client-src/sidebar-action.js`：宽栏 = 图标 + 「后台任务」行，rail（56px）= 仅图标；`aria-expanded`/键盘可用。
+- DSH 设置 section（v0.1.65）：新增 occupant 注册进 `settings.section`（root/list，id `bgjobs`、order 30、label thunk `settings.nav`），组件 `lib/client-src/settings-section.js` 自绘：① `Switch`（primitives，缺位自绘退化）控制**左栏入口显隐**（偏好持久化 `$DSH_HOME/bgjobs/ui-prefs.json`，缺省 false → 入口默认隐藏）；② 「打开离线 GUI / 打开所在文件夹」走 host `/bgjobs/gui` POST（`gui-launch.js`：`resolveShell()` 解析解释器 + `spawn -WindowStyle Hidden -File tools/dsh-bgjobs-gui.ps1`，或 `explorer /select,` 定位）；③ 展示 GUI 脚本路径（GET 回显）。偏好共享 store `lib/client-src/gui-prefs.js`（`createGuiPrefsStore`/`loadGuiPrefs`/`useGuiPrefsEnabled`），sidebar-action 空渲染门控、设置开关即时生效。
+- 路由扩展（v0.1.65）：`/bgjobs/uiprefs`（GET/POST `?sidebarEntry=0|1`）与 `/bgjobs/gui`（GET 信息 / POST `?action=open|reveal`）；spawn 经 `gui-launch.setGuiSpawn` 注入（测试替身同 runners 模式）。
 - Toggle：轨道/滑块组件，`onColor` 自定义开启色——「全权限」用 `--dsw-alias-state-warn-primary`（与 dsh 审批提升面板同色）；「仅当前会话」默认 `--dsw-alias-state-business-primary`。
 
 ## 测试与发布

@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿# dsh-bgjobs-gui.ps1 - bgjobs standalone management window (works WITHOUT DSH).
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿# dsh-bgjobs-gui.ps1 - bgjobs standalone management window (works WITHOUT DSH).
 # Mirrors dsh-undo-savepoint-gui.ps1: single-instance mutex, hidden console,
 # WinForms list with refresh/submit/kill/cleanup, live log tail panel.
 # Open via dsh-bgjobs-gui.bat or a desktop shortcut.
@@ -532,6 +532,32 @@ function Read-AutoDoneStatus {
     }
 }
 
+# ── 桌面快捷方式：在当前用户桌面创建指向本 GUI 的 .lnk（v0.1.65）─────────
+function New-GuiDesktopShortcut {
+    try {
+        $desktop = [Environment]::GetFolderPath('Desktop')
+        if (-not $desktop) {
+            [System.Windows.Forms.MessageBox]::Show(((Get-BgjobsText 'gui.shortcut.fail') -f 'Desktop folder unavailable'), 'bgjobs', 'OK', 'Error')
+            return
+        }
+        $lnk = Join-Path $desktop 'bgjobs 后台任务.lnk'
+        # 启动器 = 当前解释器（5.1 → powershell.exe；7 → pwsh.exe），参数与 .bat 同款：
+        # -WindowStyle Hidden + -File <本脚本>（GUI 自身还会 ShowWindow 隐藏控制台兜底）。
+        if ($PSVersionTable.PSEdition -eq 'Core') { $exe = Join-Path $PSHOME 'pwsh.exe' } else { $exe = Join-Path $PSHOME 'powershell.exe' }
+        $argsLine = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $PSCommandPath + '"'
+        $ws = New-Object -ComObject WScript.Shell
+        $sc = $ws.CreateShortcut($lnk)
+        $sc.TargetPath = $exe
+        $sc.Arguments = $argsLine
+        $sc.WorkingDirectory = $PSScriptRoot
+        $sc.Description = 'bgjobs 后台任务管理'
+        $sc.Save()
+        [System.Windows.Forms.MessageBox]::Show((((Get-BgjobsText 'gui.shortcut.done') + [Environment]::NewLine + $lnk)), 'bgjobs', 'OK', 'Information')
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show(((Get-BgjobsText 'gui.shortcut.fail') -f $_.Exception.Message), 'bgjobs', 'OK', 'Error')
+    }
+}
+
 # ── main window ───────────────────────────────────────────────────────────
 $script:form = New-Object System.Windows.Forms.Form
 $script:form.Text = (Get-BgjobsText 'gui.title')
@@ -549,6 +575,7 @@ $script:btnIndex = New-Object System.Windows.Forms.ToolStripButton((Get-BgjobsTe
 $script:btnAutoDone = New-Object System.Windows.Forms.ToolStripButton((Get-BgjobsText 'gui.autodone'))
 $script:btnCancelAutoDone = New-Object System.Windows.Forms.ToolStripButton((Get-BgjobsText 'gui.autodone.cancel'))
 $script:btnCancelAutoDone.Enabled = $false
+$script:btnShortcut = New-Object System.Windows.Forms.ToolStripButton((Get-BgjobsText 'gui.shortcut'))
 $script:toolbar.Items.Add($script:btnRefresh) | Out-Null
 $script:toolbar.Items.Add($script:btnSubmit) | Out-Null
 $script:toolbar.Items.Add($script:btnKill) | Out-Null
@@ -556,6 +583,7 @@ $script:toolbar.Items.Add($script:btnCleanup) | Out-Null
 $script:toolbar.Items.Add($script:btnIndex) | Out-Null
 $script:toolbar.Items.Add($script:btnAutoDone) | Out-Null
 $script:toolbar.Items.Add($script:btnCancelAutoDone) | Out-Null
+$script:toolbar.Items.Add($script:btnShortcut) | Out-Null
 $script:toolbar.Dock = 'Top'
 $script:form.Controls.Add($script:toolbar)
 
@@ -671,6 +699,7 @@ $script:btnCancelAutoDone.Add_Click({
     Disarm-AutoDone
     $script:autoDoneStatus.Text = (Get-BgjobsText 'status.autodone.cancelled')
 })
+$script:btnShortcut.Add_Click({ New-GuiDesktopShortcut })
 
 # auto-refresh every 2s (cheap: reads index + small job.json files)
 $script:timer = New-Object System.Windows.Forms.Timer

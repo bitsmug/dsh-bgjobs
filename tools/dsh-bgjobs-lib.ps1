@@ -1,4 +1,4 @@
-﻿# dsh-bgjobs-lib.ps1 - shared logic for the bgjobs offline management CLI.
+﻿﻿# dsh-bgjobs-lib.ps1 - shared logic for the bgjobs offline management CLI.
 # Dot-source this from dsh-bgjobs.ps1 (CLI). Works WITHOUT DSH running:
 # reads/writes the same job.json / stdout.log / exitcode.txt files and the
 # same central index ($DSH_HOME/bgjobs/index.json) as the bgjobs DSH plugin.
@@ -526,6 +526,10 @@ $script:BgjobsText = @{
     'status.autodone.done' = if ($script:BgjobsLangZh) { '已完成动作：{0}' } else { 'Action done: {0}' }
     'dlg.autodone.ok' = if ($script:BgjobsLangZh) { '确定' } else { 'OK' }
     'msg.autodone.armed' = if ($script:BgjobsLangZh) { '已在预约中，请先取消预约再重新设定。' } else { 'Already scheduled. Cancel it first to reschedule.' }
+    # desktop shortcut (v0.1.65)
+    'gui.shortcut' = if ($script:BgjobsLangZh) { '📌 桌面快捷方式' } else { '📌 Desktop shortcut' }
+    'gui.shortcut.done' = if ($script:BgjobsLangZh) { '已在桌面创建快捷方式：' } else { 'Shortcut created on your desktop:' }
+    'gui.shortcut.fail' = if ($script:BgjobsLangZh) { '创建快捷方式失败：{0}' } else { 'Failed to create shortcut: {0}' }
 }
 
 # Resolve a UI text key. Templates with placeholders are formatted by the
