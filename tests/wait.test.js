@@ -613,3 +613,72 @@ test('bgjob_submit wait= 参数共享中断：提交后原地等待被 signal ab
 })
 
 
+// ── v0.1.72 新入站消息自动让路（exec.agent.inbox 差分 → stoppedBy:'message'）─────────────────
+
+/** 构造带可变 inbox 的 fake exec（nextStep/nextTurn 由外部数组承载，模拟 send_message steer）。 */
+function inboxExec(stepArr, turnArr) {
+  const controller = new AbortController()
+  return {
+    agent: {
+      inbox: {
+        get nextStep() { return stepArr },
+        get nextTurn() { return turnArr },
+      },
+    },
+    signal: controller.signal,
+  }
+}
+
+test('bgjob_wait: 等待中 inbox 出现新消息（send_message steer）→ stoppedBy:\'message\', 不置 delivered', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  const workdir = await makeWorkdir()
+  const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
+  const dispose = apply(ctx)
+  try {
+    const { jobId, jobDir } = await submitRunning(workdir, tools)
+    const wait = tools.find((t) => t.name === 'bgjob_wait')
+    const stepArr = []
+    const turnArr = []
+    const exec = inboxExec(stepArr, turnArr)
+    const started = Date.now()
+    const p = wait.execute({ jobId, timeoutSeconds: 30 }, exec)
+    setTimeout(() => stepArr.push({ id: 'agent-msg-1', content: [{ type: 'text', text: 'hi' }] }), 300)
+    const w = await p
+    assert.equal(w.ok, true)
+    assert.equal(w.stopped, true)
+    assert.equal(w.stoppedBy, 'message')
+    assert.equal(w.timedOut, false)
+    assert.equal(w.status, 'running')
+    assert.ok(Date.now() - started < 3000, '新消息让路应尽快返回（waitedMs=' + w.waitedMs + '）')
+    const meta = JSON.parse(await fsp.readFile(path.join(jobDir, 'job.json'), 'utf8'))
+    assert.ok(meta.notifiedAt === undefined || meta.notifiedAt === null, 'stopped(message) 不置已交付')
+  } finally {
+    dispose()
+    await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+test('bgjob_wait: wait 起点已排队的旧消息不触发让路（只响应新消息）', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  const workdir = await makeWorkdir()
+  const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
+  const dispose = apply(ctx)
+  try {
+    const { jobId } = await submitRunning(workdir, tools)
+    const wait = tools.find((t) => t.name === 'bgjob_wait')
+    // 旧消息在 wait 开始前已在 next-step（不应让 wait 立即返回）
+    const stepArr = [{ id: 'old-msg', content: [{ type: 'text', text: 'stale' }] }]
+    const exec = inboxExec(stepArr, [])
+    const started = Date.now()
+    const w = await wait.execute({ jobId, timeoutSeconds: 1 }, exec)
+    assert.equal(w.ok, true)
+    assert.equal(w.timedOut, true, '旧消息不触发，应等到超时')
+    assert.equal(w.stopped, undefined)
+    assert.ok(Date.now() - started >= 900, '应等满 timeoutSeconds（waitedMs=' + w.waitedMs + '）')
+  } finally {
+    dispose()
+    await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+
