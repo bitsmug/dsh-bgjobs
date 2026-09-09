@@ -19,8 +19,9 @@ lib/
   util.js / index-store.js / sandbox.js / scripts.js / notify-policy.js / guidance.js
                       纯函数叶子模块（按功能拆分）
   runners.js          schtasks / PowerShell / 沙箱 runner 执行层（测试替身 seam）
-  gui-launch.js       网页侧启动离线 GUI / 打开所在文件夹（cmd start 批处理载体起独立控制台 GUI；
-                      目录用 explorer.exe 直开；resolveShell + spawn，可注入替身）
+  gui-launch.js       网页侧启动离线 GUI / 打开所在文件夹（schtasks 一次性任务拉起 GUI——脱离宿主
+                      job，Ctrl+C/宿主退出不杀；目录用 powershell Invoke-Item；resolveShell +
+                      execFile，可注入替身）
   core/               host 域模块（store/notify/registry/watch/wait/jobs/web/tools + apply 装配）
   client.js           Web 面板 bundle（产物，提交入库；由 lib/client-src 构建而来）
   client-src/         网页面板源码（index/i18n/ui/panel/apply/monitor/sidebar-action/
@@ -156,6 +157,7 @@ submit ─► [pending-running] ──done──► [pending-done]
 - 路由扩展（v0.1.65）：`/bgjobs/uiprefs`（GET/POST `?sidebarEntry=0|1`）与 `/bgjobs/gui`（GET 信息 / POST `?action=open|reveal`）；spawn 经 `gui-launch.setGuiSpawn` 注入（测试替身同 runners 模式）。
 - 设置页修复与增强（v0.1.66）：`/bgjobs/gui` GET 附 `version`（`lib/meta.js` 读包版本，模块级缓存）；「打开所在文件夹」客户端**优先第一方 `POST /open-in-app/open`**（`{app:'explorer', path:<tools 目录>}`，DSH 已验证的 explorer 打开机制；官方端点只收现存目录），不可用回退宿主 reveal；spawn 等 `'spawn'` 事件确认真实拉起（`'error'` → `{ok:false,error}`），失败一律透出到设置页结果行；监控面板显隐开关复用 monitor store 的 `setVisible`。附带修复：tools 三个 ps1 曾被反复写入**双 BOM**（运行时首行解析噪音，pwsh 报 `'works' 不是命令`），已规范为单一 UTF-8 BOM（字节级 EF BB BF + `#`）。
 - 启动/打开机制收敛（v0.1.67→v0.1.68）：真根因 **DETACHED_PROCESS 让 pwsh 秒退不执行**（§56），且 Start-Process 载体下 GUI 仍与宿主共享控制台（Ctrl+C 会杀 GUI）→ **打开离线 GUI = 写临时 UTF-8 .cmd（`chcp 65001` + `start "" <pwsh> -WindowStyle Hidden -File <gui.ps1>`，引号语义在文件内规避 Node 对 argv 内嵌引号的 `\"` 转义）+ spawn cmd.exe `/d /c` 判活**；**打开所在文件夹 = `explorer.exe <目录>` 直开**（Invoke-Item 实证对本机目录静默 exit 0 不弹窗；explorer 单实例握手后 exit 1，判活忽略退出码、只看 spawn 是否成功），客户端 reveal 不再走第一方 open-in-app 端点。
+- 机制最终形态（v0.1.69）：用户实证 **宿主在 Job Object 内——Ctrl+C 连第一方 open-in-app 拉起的 VS Code/资源管理器都一并消失**，独立控制台/进程组均逃不掉；且 explorer.exe 直开在其 Win10 **堆积 explorer 进程不弹窗** → **打开离线 GUI = schtasks 一次性任务**（`/Create /TN dsh-bgj-gui /F /SC ONCE /ST now+60s /TR "<pwsh> ... -WindowStyle Hidden -File gui.ps1"` → `/Run` → `/Change /DISABLE` 防整分双跑；Task Scheduler 服务起进程，不在宿主 job 内，Ctrl+C/宿主退出不杀；固定任务名 /F 覆盖不堆积）；reveal 回退为**第一方原语 powershell Invoke-Item + 客户端优先官方 open-in-app 端点**（不再 spawn explorer.exe）。
 - Toggle：轨道/滑块组件，`onColor` 自定义开启色——「全权限」用 `--dsw-alias-state-warn-primary`（与 dsh 审批提升面板同色）；「仅当前会话」默认 `--dsw-alias-state-business-primary`。
 
 ## 测试与发布

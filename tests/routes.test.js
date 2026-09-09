@@ -3,11 +3,11 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, promises as fsp } from 'node:fs'
+import { promises as fsp } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { guiScriptPath, setGuiSpawn } from '../lib/gui-launch.js'
+import { guiScriptPath, setGuiExec } from '../lib/gui-launch.js'
 import {
   apply, strip, buildBat, buildCmdBat, buildPwshRunner, buildPs1, buildLaunchVbs, parseExitCode,
   jobSandboxDecision, shouldNotifyForExit,
@@ -629,23 +629,12 @@ test('webServer: /bgjobs/gui GET 报工具脚本信息与版本', async () => {
   }
 })
 
-test('webServer: /bgjobs/gui POST open —— cmd start 载体（独立新控制台、env 清洗、exit0 判 ok）', async () => {
+test('webServer: /bgjobs/gui POST open —— schtasks 一次性任务拉起（脱离宿主 job、任务调用成功即 ok）', async () => {
   const home = await makeDshHome()
-  const spawned = []
+  const calls = []
   setShellResolver(async () => ({ exe: 'C:\\Fake\\pwsh.exe', engine: 'pwsh' }))
-  process.env.BGJOBS_TEST_TOKEN = 'secret-should-be-scrubbed'
   try {
-    setGuiSpawn((file, args, options) => {
-      spawned.push({ file, args, options })
-      const listeners = {}
-      const child = {
-        once: (e, cb) => { listeners[e] = cb },
-        unref: () => {},
-        _fire: (e, arg) => { if (listeners[e]) listeners[e](arg) },
-      }
-      queueMicrotask(() => child._fire('exit', 0))
-      return child
-    })
+    setSchtasksRunner((argv) => { calls.push(argv); return Promise.resolve({ exitCode: 0, stdout: '', stderr: '' }) })
     const { ctx, injectCallbacks } = makeCtx({ services: {} })
     const dispose = apply(ctx)
     try {
@@ -656,44 +645,30 @@ test('webServer: /bgjobs/gui POST open —— cmd start 载体（独立新控制
       })
       const r = await call('/bgjobs/gui?action=open')
       assert.equal(r.ok, true)
-      const openSpawn = spawned.find((s) => String(s.file).toLowerCase().endsWith('cmd.exe'))
-      assert.ok(openSpawn, 'open 应 spawn cmd.exe（start 载体）')
-      assert.deepEqual(openSpawn.args.slice(0, 2), ['/d', '/c'], 'cmd 应经 /d /c 跑批处理')
-      assert.ok(/bgjobs-gui-launch-\d+-\d+\.cmd$/.test(String(openSpawn.args[2])), 'argv 只带唯一临时批处理路径（引号不进 argv）')
-      // 引号语义在批处理文件里（Node 会把 argv 内嵌引号转义成 \"，cmd 解析错乱）
-      const batch = String(openSpawn.args[2])
-      const batchText = readFileSync(batch, 'utf8')
-      assert.ok(batchText.includes('start ""'), '批处理用 cmd start 分配独立新控制台')
-      assert.ok(batchText.includes('"C:\\Fake\\pwsh.exe"'), 'start 目标为解析到的 pwsh')
-      assert.ok(batchText.includes('-NoProfile') && batchText.includes('-File'))
-      assert.ok(batchText.includes('-WindowStyle Hidden'), 'pwsh 新控制台创建即隐藏')
-      assert.ok(batchText.includes(guiScriptPath()), 'start 目标文件为 GUI 脚本')
-      assert.equal(openSpawn.options.windowsHide, true, 'cmd 自身控制台 windowsHide')
-      assert.notEqual(openSpawn.options.detached, true, '不能 detached（DETACHED_PROCESS 会让 pwsh 秒退不执行）')
-      assert.ok(!('BGJOBS_TEST_TOKEN' in openSpawn.options.env), 'env 应清洗掉含 TOKEN 的变量')
+      assert.equal(r.launcher, 'schtasks')
+      const create = calls.find((a) => a[1] === '/Create')
+      assert.ok(create, '应有 schtasks /Create')
+      assert.equal(create[3], 'dsh-bgj-gui', '固定任务名 dsh-bgj-gui（/F 覆盖，不堆积）')
+      const tr = create[create.indexOf('/TR') + 1]
+      assert.ok(tr.includes('C:\\Fake\\pwsh.exe'), '/TR 目标为解析到的 pwsh')
+      assert.ok(tr.includes('-NoProfile') && tr.includes('-File'))
+      assert.ok(tr.includes('-WindowStyle Hidden'), '任务会话内控制台创建即隐藏')
+      assert.ok(tr.includes(guiScriptPath()), '/TR 目标文件为 GUI 脚本')
+      assert.ok(create.includes('/SC') && create.includes('ONCE') && create.includes('/F'))
+      assert.ok(calls.some((a) => a[1] === '/Run' && a[3] === 'dsh-bgj-gui'), '应有 /Run 立即触发')
+      assert.ok(calls.some((a) => a[1] === '/Change' && a.includes('/DISABLE')), '触发后立即 /DISABLE 防整分双跑')
     } finally {
       dispose()
     }
   } finally {
-    delete process.env.BGJOBS_TEST_TOKEN
     delete process.env.DSH_HOME
     await fsp.rm(home, { recursive: true, force: true }).catch(() => {})
   }
 })
 
-test('webServer: /bgjobs/gui POST open —— 窗口内非零退出 / spawn error → ok:false 透出', async () => {
+test('webServer: /bgjobs/gui POST open —— schtasks /Create / /Run 失败 → ok:false 透出', async () => {
   const home = await makeDshHome()
   setShellResolver(async () => ({ exe: 'C:\\Fake\\pwsh.exe', engine: 'pwsh' }))
-  const makeChild = (fire) => {
-    const listeners = {}
-    const child = {
-      once: (e, cb) => { listeners[e] = cb },
-      unref: () => {},
-      _fire: (e, arg) => { if (listeners[e]) listeners[e](arg) },
-    }
-    queueMicrotask(() => fire(child))
-    return child
-  }
   try {
     const { ctx, injectCallbacks } = makeCtx({ services: {} })
     const dispose = apply(ctx)
@@ -703,18 +678,17 @@ test('webServer: /bgjobs/gui POST open —— 窗口内非零退出 / spawn erro
         let body = ''
         getJobs().handler({ url: '/bgjobs/gui?action=open', method: 'POST' }, { writeHead: () => {}, end: (b) => { resolve(JSON.parse(b || '{}')) } })
       })
-      // ① 窗口内非零退出 → 失败
-      let mode = 'exit-nonzero'
-      setGuiSpawn(() => makeChild((c) => c._fire('exit', 7)))
+      // ① /Create 失败 → 透出 stderr
+      setSchtasksRunner(() => Promise.resolve({ exitCode: 1, stdout: '', stderr: 'access is denied' }))
       let r = await call()
       assert.equal(r.ok, false)
-      assert.ok(r.error && r.error.includes('exit 7'), '非零退出应透出：' + r.error)
-      // ② spawn error（ENOENT 等）
-      setGuiSpawn(() => makeChild((c) => c._fire('error', new Error('boom'))))
+      assert.ok(r.error && r.error.includes('create failed') && r.error.includes('access is denied'), 'create 失败应透出：' + r.error)
+      // ② /Create 成功、/Run 失败 → 透出
+      let n = 0
+      setSchtasksRunner(() => Promise.resolve(++n === 1 ? { exitCode: 0, stdout: '', stderr: '' } : { exitCode: 2, stdout: '', stderr: 'run error' }))
       r = await call()
       assert.equal(r.ok, false)
-      assert.ok(r.error && r.error.includes('boom'), 'spawn error 应透出：' + r.error)
-      mode = 'unused'
+      assert.ok(r.error && r.error.includes('run failed') && r.error.includes('run error'), 'run 失败应透出：' + r.error)
     } finally {
       dispose()
     }
@@ -724,20 +698,13 @@ test('webServer: /bgjobs/gui POST open —— 窗口内非零退出 / spawn erro
   }
 })
 
-test('webServer: /bgjobs/gui POST reveal —— explorer.exe <tools 目录> 直开（v0.1.68）', async () => {
+test('webServer: /bgjobs/gui POST reveal —— powershell Invoke-Item 目录打开（第一方原语）', async () => {
   const home = await makeDshHome()
-  const spawned = []
+  const execCalls = []
   try {
-    setGuiSpawn((file, args, options) => {
-      spawned.push({ file, args, options })
-      const listeners = {}
-      const child = {
-        once: (e, cb) => { listeners[e] = cb },
-        unref: () => {},
-        _fire: (e, arg) => { if (listeners[e]) listeners[e](arg) },
-      }
-      queueMicrotask(() => child._fire('exit', 0))
-      return child
+    setGuiExec((file, args, options, cb) => {
+      execCalls.push({ file, args, options })
+      cb(null, '', '')
     })
     const { ctx, injectCallbacks } = makeCtx({ services: {} })
     const dispose = apply(ctx)
@@ -749,31 +716,19 @@ test('webServer: /bgjobs/gui POST reveal —— explorer.exe <tools 目录> 直�
       })
       const r = await call('/bgjobs/gui?action=reveal')
       assert.equal(r.ok, true)
-      assert.equal(spawned.length, 1)
-      const sp = spawned[0]
-      assert.ok(String(sp.file).toLowerCase().endsWith('explorer.exe'), '应 spawn explorer.exe 直开目录')
-      assert.equal(sp.args.length, 1, '单参数 = 目录绝对路径')
-      assert.equal(sp.args[0], path.dirname(guiScriptPath()), '打开的是 tools 目录（脚本父目录）')
-      assert.equal(sp.options.windowsHide, true)
-      // 退出码忽略（explorer 单实例握手后常 exit 1）：exit 1 也应 ok
-      setGuiSpawn(() => {
-        const listeners = {}
-        const child = { once: (e, cb) => { listeners[e] = cb }, unref: () => {}, _fire: (e, arg) => { if (listeners[e]) listeners[e](arg) } }
-        queueMicrotask(() => child._fire('exit', 1))
-        return child
-      })
-      const r1 = await call('/bgjobs/gui?action=reveal')
-      assert.equal(r1.ok, true, 'explorer 退出码不可靠，exit 1 也应判 ok')
-      // 失败：spawn 'error'（explorer 缺失等）→ ok:false 透出
-      setGuiSpawn(() => {
-        const listeners = {}
-        const child = { once: (e, cb) => { listeners[e] = cb }, unref: () => {}, _fire: (e, arg) => { if (listeners[e]) listeners[e](arg) } }
-        queueMicrotask(() => child._fire('error', new Error('ENOENT')))
-        return child
-      })
+      assert.equal(execCalls.length, 1)
+      const ec = execCalls[0]
+      assert.ok(String(ec.file).toLowerCase().endsWith('powershell.exe'))
+      assert.ok(ec.args.includes('-NoProfile'))
+      const cmd = ec.args.find((a) => String(a).startsWith('Invoke-Item'))
+      assert.ok(cmd, '命令应为 Invoke-Item -LiteralPath')
+      assert.ok(cmd.includes('tools'), '打开的是 tools 目录（脚本父目录）')
+      assert.equal(ec.options.windowsHide, true)
+      // 失败：execFile error → ok:false 透出
+      setGuiExec((file, args, options, cb) => cb(new Error('denied'), '', 'access denied'))
       const r2 = await call('/bgjobs/gui?action=reveal')
       assert.equal(r2.ok, false)
-      assert.ok(r2.error && r2.error.includes('ENOENT'), 'explorer spawn error 应透出：' + r2.error)
+      assert.ok(r2.error && (r2.error.includes('denied') || r2.error.includes('access denied')), 'exec 错误应透出：' + r2.error)
     } finally {
       dispose()
     }
