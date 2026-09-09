@@ -147,6 +147,8 @@ submit ─► [pending-running] ──done──► [pending-done]
 - 层叠：面板 z-index 接近上限仍会被 `shell.overlay`（z-index 20 层叠上下文）困住 → `react-dom` **createPortal 到 document.body**（v0.1.27 实测）；`PANEL_Z = 2147483000`、`TOAST_Z = +1`。
 - 交互：拖拽用 pointer 事件 + `draggedRef` 位移阈值区分拖/点（悬浮球/折叠条/行区同款）；`data-bgjobs-ctrl` 让拖拽守卫忽略控件（防 setPointerCapture 吞 click）。
 - 状态：`open`（展开）/ 折叠（仅任务列表，fit-content 自适应宽、按行高、锚定到折叠按钮位置）；`minimized`（悬浮球，落在最小化按钮位置）。清理菜单 = 🧹 下拉二选一。
+- 宿主集成（v0.1.64）：面板 occupant 在 `shell.overlay`（root/list，id `bgjobs-monitor`，order 50）；**新增左侧栏脚部入口** occupant（`sidebar.footer.action` root/list，id `bgjobs-monitor-toggle`，order 60），ui-cordis 同款 best-effort——宿主组合无 ui-sidebar 时该 inject 静默等待、不注册，面板照常、boot 不失败；入口无需 import 任何 harness 包（slot 名 = 字符串契约），不新增 external。
+- 显隐共享 store（v0.1.64）：`lib/client-src/monitor.js` 的 apply 级 `createMonitorStore`（`getVisible`/`toggle`/`subscribe` 对齐 `useSyncExternalStore`）+ `useMonitorVisible` hook（monitor 缺位恒 true）。面板「隐藏」用 **display:none 保持挂载**（几何/折叠/悬浮球/jobs 状态保留，轮询照常）；toast 独立不受影响。入口组件 `lib/client-src/sidebar-action.js`：宽栏 = 图标 + 「后台任务」行，rail（56px）= 仅图标；`aria-expanded`/键盘可用。
 - Toggle：轨道/滑块组件，`onColor` 自定义开启色——「全权限」用 `--dsw-alias-state-warn-primary`（与 dsh 审批提升面板同色）；「仅当前会话」默认 `--dsw-alias-state-business-primary`。
 
 ## 测试与发布
