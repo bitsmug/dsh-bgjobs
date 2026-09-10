@@ -478,6 +478,7 @@ test('client bundle: 含 MCP 区块文案与端点（构建产物与源码同步
     '/bgjobs/mcpprefs', '/bgjobs/mcpservers', '/bgjobs/dsh-mcp', 'MCP 服务器', 'DSH 已有 MCP',
     'bgjobs-mcp', 'settings.mcp.nav', 'settings.mcp.prewarmHint', 'settings.mcp.exportTitle', 'settings.mcp.importTitle',
     'settings.mcp.modeHint', 'settings.mcp.modeCold', 'settings.mcp.modeDisabled',
+    'element.mcpSettingsButton', 'gearbtn.mcpTitle', 'IconDataOutline16',
   ]) {
     assert.ok(bundle.includes(needle), 'bundle 缺少：' + needle)
   }

@@ -665,7 +665,7 @@ test('webServer: /bgjobs/uiprefs display 默认/持久化/一键恢复默认/非
 
       // 界面元素显隐（v0.1.71）：默认全显示；POST body {elements} 改单个；一键恢复同时重置
       r = await call('/bgjobs/uiprefs')
-      assert.deepEqual(r.elements, { settingsButton: true, onlySession: true, fullAccess: true, groupHeader: true, notify: true }, '缺省 elements = 全显示')
+      assert.deepEqual(r.elements, { settingsButton: true, mcpSettingsButton: true, onlySession: true, fullAccess: true, groupHeader: true, notify: true }, '缺省 elements = 全显示')
       assert.deepEqual(r.defaultElements, r.elements, 'defaultElements 与默认一致')
       r = await callWith('/bgjobs/uiprefs', 'POST', { elements: { notify: false } })
       assert.equal(r.elements.notify, false, 'POST body 改 elements.notify=false')
@@ -678,8 +678,13 @@ test('webServer: /bgjobs/uiprefs display 默认/持久化/一键恢复默认/非
       // 齿轮设置入口也可单独隐藏（v0.1.72）
       r = await callWith('/bgjobs/uiprefs', 'POST', { elements: { settingsButton: false } })
       assert.equal(r.elements.settingsButton, false, '可隐藏设置入口齿轮')
+      // MCP 设置入口（数据齿轮）是独立开关，同样可单独隐藏
+      r = await callWith('/bgjobs/uiprefs', 'POST', { elements: { mcpSettingsButton: false } })
+      assert.equal(r.elements.mcpSettingsButton, false, '可单独隐藏 MCP 设置入口')
+      assert.equal(r.elements.settingsButton, false, '改 MCP 入口不影响设置入口齿轮的现值')
       r = await call('/bgjobs/uiprefs?action=resetDisplay', 'POST')
       assert.equal(r.elements.settingsButton, true, '一键恢复默认恢复设置入口齿轮')
+      assert.equal(r.elements.mcpSettingsButton, true, '一键恢复默认恢复 MCP 设置入口')
       assert.equal(r.elements.notify, true, '一键恢复默认同时重置 elements')
       assert.equal(r.display.name, 'list', '一键恢复默认重置 display')
     } finally {
