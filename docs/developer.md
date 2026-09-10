@@ -32,6 +32,8 @@ lib/
   client.js           Web 面板 bundle（产物，提交入库；由 lib/client-src 构建而来）
   client-src/         网页面板源码（index/i18n/ui/panel/apply/monitor/sidebar-action/
                       gui-prefs/settings-section/mcp-section；改后需 pnpm build:client）
+                      设置页注册**两页**（settings.section 是 list seat）：settings-section.js=「后台任务」、
+                      mcp-section.js=「MCP 任务」（总开关 / server 登记含编辑 / 导入导出 / 从 DSH 导入）
 scripts/
   build-client.mjs    esbuild：lib/client-src → lib/client.js（产物提交，防漂移由 CI 把关）
   fix-bom.mjs         清理「多余（重复）的 UTF-8 BOM」（只去重、绝不新增 BOM；--write/--check）
@@ -170,12 +172,24 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
 
 - `GET/POST /bgjobs/mcpprefs`（`mcp-prefs.json`，默认 `{enabled:false}`，联动预热）。
 - `GET/POST /bgjobs/mcpservers`（`mcp-servers.json` = `{ servers: { <name>: <config + prewarm> } }`）：GET 列表**不回传 env/headers 的值**（只回键名）；POST 新增/覆盖（`?config=<urlencoded JSON>` 或 JSON body）、`?delete=1`、`?prewarm=0|1`、`?probe=1`。写入经 `normalizeConfig` 校验（fail loud），未显式给 `prewarm` 时保留原值。
+- **编辑用单条明细**：`GET /bgjobs/mcpservers?name=<n>` → `{ ok, name, config }`，**含 env/headers 值**（设置页「编辑」用，回填表单后再 `POST` 覆盖）。口径：列表不回值（防翻看面板时泄漏），单条明细按需回值（本机回环网页、用户显式点击）——两处都要写进文档，改前端别误用列表做编辑回填。
+- **导出**：`GET /bgjobs/mcpservers?export=yaml|json[&name=<n|*>]` → `{ ok, format, names, text }`。实现在 `lib/dsh-profiles.js#serializeServers`：
+  - `yaml` = **DSH 兼容片段**（`- insert: [{ id: 'mcp-<name>', name: '@deepseek-ai/dsh-mcp-client', config: { serverName, transport, … } }]`，每条一个 `insert`，与 DSH 侧实际写法一致；`timeoutMs` → `toolCallTimeoutMs`；文件头注明明文密钥与用法）；
+  - `json` = bgjobs 原生 `{ "servers": { … } }`（含 `prewarm`），可被导入原样吃回。
+- **导入**：`POST /bgjobs/mcpservers?import=1`，body `{ text, mode:'skip'|'overwrite', force }` → `{ ok, source, hasJsTag, imported[], skipped[], rejected[] }`。解析在 `lib/dsh-profiles.js#parseServerImport`，自动识别四种形态（DSH patch 片段 / `{servers:{…}}` / 单个配置对象 / 配置数组），并**不 eval 任何表达式**：`!!js` 先替换为占位符；若整份文本含 `!!js` 却没有任何一条被逐条命中，则**整批**标 `needsAttention`（安全网，避免表达式被当普通字符串静默导入）；`needsAttention` 条目默认进 `rejected`，`force` 才写。逐条写入仍走 `setMcpServer`（校验失败进 `rejected` 并透出原因）。
 - `GET /bgjobs/dsh-mcp`（活动 profile + 各 scope 条目 + 已登记名）、`POST /bgjobs/dsh-mcp?action=import&scope=…&name=…&force=…`。
 - store 的 MCP 懒读是**单飞 + 读回填不覆盖期间写入**：并发读共享同一次文件读，且若读回填时缓存已被 `setMcp*` 写入，保留写入值（否则用户点开关/登记的那几毫秒里会被在读的旧值覆盖——实测过的竞态）。
 - 离线 CLI/GUI **不做 MCP 提交**（`Submit-BgjobsJob` 的 `-Engine` 仍是 `bat|pwsh`），只要求只读查看/删除对未知 `engine` 不报错（`engine` 只是展示字段，不参与分支）。
 
-### 本地 demo server（测试/自测）
+### 设置页结构与凭据口径（client / 安全）
 
+- **两页**：`settings.section` 是 list seat，本插件注册两项 —— `bgjobs`（「后台任务」：入口/面板/离线 GUI/字段显示）与 `bgjobs-mcp`（「MCP 任务」：总开关 / server 登记（含编辑）/ 导出导入 / 从 DSH 导入）。拆页是为了避免单页过长；导航 label 走 i18n `settings.nav` / `settings.mcp.nav`。
+- **「编辑」**：`GET /bgjobs/mcpservers?name=<n>` 取单条明细（含值）回填表单 → 保存仍走同一个 `POST /bgjobs/mcpservers`（同名覆盖）。列表用列表端点（不含值），**不要**用列表数据做编辑回填，否则会把 env/headers 清空。
+- 提示文案：预热说明与明文密钥提示写在各区块的说明行（i18n `settings.mcp.prewarmHint` / `settings.mcp.secretHint`）。
+- **凭据落盘面（明文，三处）**：`$DSH_HOME/bgjobs/mcp-servers.json`（登记表）、任务目录 `<jobDir>/mcp.json`（任务自包含，随任务一起存在）、导出的 YAML/JSON 文本。README「已知限制」已提示分享/归档前脱敏（任务目录最容易被连带打包）。
+- **回归**：`tests/mcp-web.test.js` 用桩 React 加载 `lib/client.js`，断言注册了 `bgjobs` + `bgjobs-mcp` 两页且两页都能渲染；改过 `lib/client-src/` 必须先 `pnpm build:client`，否则该用例读到的仍是旧产物（同时 CI 的产物漂移检查会拦）。
+
+### 本地 demo server（测试/自测）
 `tests/fixtures/demo-mcp-server.mjs` 是零依赖纯 stdio NDJSON 的最小 MCP server，提供 `echo {text}` / `sleep {seconds}`（上限 30s）/ `fail {message?}`；环境开关 `DEMO_MCP_STALL_MS`（每请求前延迟）、`DEMO_MCP_BROKEN=1`（不响应 `initialize`）。自动化测试与手工验证**一律用它**（不触网、不依赖付费 MCP）。手工自测可登记为：
 
 ```json
