@@ -28,6 +28,7 @@ lib/
                       gui-prefs/settings-section；改后需 pnpm build:client）
 scripts/
   build-client.mjs    esbuild：lib/client-src → lib/client.js（产物提交，防漂移由 CI 把关）
+  fix-bom.mjs         清理「多余（重复）的 UTF-8 BOM」（只去重、绝不新增 BOM；--write/--check）
 tests/
   helpers/common.js   共享测试工具与套件隔离（installSuiteHooks）
   unit/tools/submit/watch/routes/sandbox/notify/wait.test.js
@@ -174,6 +175,13 @@ submit ─► [pending-running] ──done──► [pending-done]
 
 > 测试脚本中不得出现个人用户名或本机路径。
 
+### 文本文件 BOM 规约与清理工具
+
+- **坑**：PowerShell 用 `[System.IO.File]::WriteAllText($p, $text, [System.Text.UTF8Encoding]::new($true))` 写一个**已带 BOM** 的文件时，BOM 会**叠加**（实测累积到 8 个）。PowerShell 只剥第一个，其余变成首行内容里的 U+FEFF → 首行注释被当命令执行（报 `'works' 不是命令` 之类），而 `Parser::ParseFile` 语法检查正常，极难定位。
+- **规约**：含中文的 `.ps1/.bat` 保持 **UTF-8 with BOM**；改写时**只去掉多余 BOM，不要无条件补写 BOM**（无 BOM 的文件保持无 BOM，避免污染 diff）。
+- **工具**：`pnpm fix:bom`（=`node scripts/fix-bom.mjs --write`，实测归一 ×N → ×1）、`pnpm check:bom`（只检查，发现多余 BOM 时退出码 1，可用于提交前/CI 把关）；支持 `node scripts/fix-bom.mjs <目录|文件>` 指定范围、`--all` 关闭扩展名白名单。纯字节级操作（UTF-8 BOM = `EF BB BF`），不解码文本。
+- 改完 `.ps1` 后建议核对首字节恰为一组 `EF BB BF`（`[System.IO.File]::ReadAllBytes($p)[0..2]`）。
+
 ### 依赖与本地安装
 
 - 沙箱 runner 依赖 + koffi（原生）需在**插件目录内** `pnpm install`（Node 从插件真实路径向上解析 require；宿主 `link:` 装不进插件目录）。
@@ -184,7 +192,7 @@ submit ─► [pending-running] ──done──► [pending-done]
 1. 递增 `package.json` 版本（默认只升末位）；
 2. 若改过 `lib/client-src/`：先 `pnpm build:client` 再确认 `git diff --exit-code -- lib/client.js`（产物已提交、无漂移；CI 发布前也会重建并比对）；
 3. 更新 `README.md` / `docs/developer.md` 如有用户/开发者可读变化；
-4. `pnpm test` 全绿 → `git add`（按文件）→ commit。
+4. `pnpm test` 全绿 + `pnpm check:bom` 无「多余 BOM」→ `git add`（按文件）→ commit。
 
 > 发布前抽查发布面：`npm pack --dry-run 2>&1 | Select-String "tools/dsh-bgjobs|client-src"`——应含 `tools/`（离线 CLI/GUI/toast 随包）、**不含** `lib/client-src`（构建源）。
 

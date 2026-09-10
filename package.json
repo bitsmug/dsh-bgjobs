@@ -45,7 +45,9 @@
   },
   "scripts": {
     "test": "node --test \"tests/**/*.test.js\"",
-    "build:client": "node scripts/build-client.mjs"
+    "build:client": "node scripts/build-client.mjs",
+    "fix:bom": "node scripts/fix-bom.mjs --write",
+    "check:bom": "node scripts/fix-bom.mjs --check"
   },
   "devDependencies": {
     "esbuild": "^0.25.0"
