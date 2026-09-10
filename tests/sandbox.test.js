@@ -65,6 +65,21 @@ test('jobSandboxDecision: 非法参数 fail loud', () => {
 })
 
 
+test('jobSandboxDecision: mcp 引擎恒 off 且不受会话模式/full access 影响（与 DSH 对 MCP 的现状一致）', () => {
+  // DSH 的 sandbox policy 只作用于 shell 沙箱执行器 / fs-sandbox / terminal-bash；MCP server
+  // 由 SDK 自持 spawn，不经 ctx.subprocess / ctx.sandbox → 受限会话不限制 MCP。故 mcp 引擎在
+  // 任意会话态与 full access 开关下都直接 off、不抛错（含 state='none' 未挂载策略服务）。
+  for (const state of ['none', 'full', 'read-only', 'workspace-write']) {
+    for (const fullAccess of [true, false]) {
+      assert.deepEqual(jobSandboxDecision(state, undefined, 'mcp', fullAccess), { mode: 'off', escalate: false })
+      // requested 对 MCP 任务无意义：显式传入同样被忽略（不抛错，仍 off）
+      assert.deepEqual(jobSandboxDecision(state, 'read-only', 'mcp', fullAccess), { mode: 'off', escalate: false })
+      assert.deepEqual(jobSandboxDecision(state, 'off', 'mcp', fullAccess), { mode: 'off', escalate: false })
+    }
+  }
+})
+
+
 test('buildPwshRunner: 沙箱任务把用户命令经 runner 包装（受限子进程），外层职责不变', () => {
   const base = {
     workdir: 'C:\\work', scriptPath: 'C:\\work\\job.ps1', jsonPath: 'C:\\work\\job.json',
