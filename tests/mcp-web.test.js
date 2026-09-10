@@ -74,7 +74,10 @@ async function seedDshProfile() {
 
 test('web: /bgjobs/mcpprefs 默认关闭、可切换并持久化；联动预热（开启预连、关闭断开）', async () => {
   await fsp.mkdir(path.dirname(bgjobsFile('mcp-servers.json')), { recursive: true })
-  await fsp.writeFile(bgjobsFile('mcp-servers.json'), JSON.stringify({ servers: { demo: { ...demoConfig(), prewarm: true } } }), 'utf8')
+  await fsp.writeFile(bgjobsFile('mcp-servers.json'), JSON.stringify({ servers: {
+    demo: { ...demoConfig(), prewarm: true },
+    off: { ...demoConfig(), prewarm: true, enabled: false },
+  } }), 'utf8')
   setSchtasksRunner(makeFakeRunner([]))
   let captured = null
   setPrewarmFactory((deps) => { captured = createMcpPrewarm(deps); return captured })
@@ -88,6 +91,8 @@ test('web: /bgjobs/mcpprefs 默认关闭、可切换并持久化；联动预热�
     // 开启 → 对已登记且 prewarm 的 server 预连
     await waitFor(async () => captured !== null && captured.api.status().some((s) => s.name === 'demo' && s.warm), 5000)
     assert.equal((await call('/bgjobs/mcpservers')).servers[0].warm, true)
+    // 被设为「禁用」的 server 即使 prewarm: true 也不预连
+    assert.equal(captured.api.status().some((s) => s.name === 'off'), false, '禁用 server 不进入预热域')
     // 关闭 → 全部断开
     assert.equal((await call('/bgjobs/mcpprefs?enabled=0', 'POST')).enabled, false)
     await waitFor(async () => captured.api.status().length === 0, 5000)
@@ -161,6 +166,33 @@ test('web: /bgjobs/mcpservers 增删改查（列表不回传 env/headers 值）+
     assert.equal(pre.prewarm, true)
     assert.equal((await readJson(bgjobsFile('mcp-servers.json'))).servers.demo.prewarm, true)
     assert.equal((await call('/bgjobs/mcpservers?name=nope&prewarm=1', 'POST')).ok, false, '未登记 server 不能开预热')
+    // 三态：?enabled=0 → 禁用（只改 enabled，保留 prewarm 原值 true）
+    const off = await call('/bgjobs/mcpservers?name=demo&enabled=0', 'POST')
+    assert.equal(off.ok, true)
+    assert.equal(off.enabled, false)
+    assert.equal(off.prewarm, true, '禁用只改 enabled，保留 prewarm')
+    let row = (await call('/bgjobs/mcpservers')).servers.find((s) => s.name === 'demo')
+    assert.equal(row.enabled, false)
+    assert.equal(row.prewarm, true)
+    let disk = (await readJson(bgjobsFile('mcp-servers.json'))).servers.demo
+    assert.equal(disk.enabled, false)
+    assert.equal(disk.prewarm, true)
+    // 禁用后「列出工具」仍可用（用户显式操作，不受每 server 禁用约束）
+    const probedOff = await call('/bgjobs/mcpservers?name=demo&probe=1', 'POST')
+    assert.equal(probedOff.ok, true)
+    assert.deepEqual(probedOff.tools.map((t) => t.name).sort(), ['echo', 'fail', 'sleep'])
+    // ?prewarm=1 不改 enabled（仍是禁用，便于一键切回）
+    const stillOff = await call('/bgjobs/mcpservers?name=demo&prewarm=1', 'POST')
+    assert.equal(stillOff.enabled, false)
+    assert.equal(stillOff.prewarm, true)
+    // 一次请求落两个字段（冷启动）：?enabled=1&prewarm=0
+    const cold = await call('/bgjobs/mcpservers?name=demo&enabled=1&prewarm=0', 'POST')
+    assert.equal(cold.enabled, true)
+    assert.equal(cold.prewarm, false)
+    disk = (await readJson(bgjobsFile('mcp-servers.json'))).servers.demo
+    assert.equal(disk.enabled, true)
+    assert.equal(disk.prewarm, false)
+    assert.equal((await call('/bgjobs/mcpservers?name=nope&enabled=0', 'POST')).ok, false, '未登记 server 不能禁用')
     const del = await call('/bgjobs/mcpservers?name=demo&delete=1', 'POST')
     assert.equal(del.ok, true)
     assert.equal((await call('/bgjobs/mcpservers')).servers.some((s) => s.name === 'demo'), false)
@@ -445,6 +477,7 @@ test('client bundle: 含 MCP 区块文案与端点（构建产物与源码同步
   for (const needle of [
     '/bgjobs/mcpprefs', '/bgjobs/mcpservers', '/bgjobs/dsh-mcp', 'MCP 服务器', 'DSH 已有 MCP',
     'bgjobs-mcp', 'settings.mcp.nav', 'settings.mcp.prewarmHint', 'settings.mcp.exportTitle', 'settings.mcp.importTitle',
+    'settings.mcp.modeHint', 'settings.mcp.modeCold', 'settings.mcp.modeDisabled',
   ]) {
     assert.ok(bundle.includes(needle), 'bundle 缺少：' + needle)
   }

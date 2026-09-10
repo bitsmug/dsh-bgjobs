@@ -163,14 +163,14 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
 - 形态对齐第一方 mcp-client：`onclose` 触发重连 + 有界指数退避（500ms 起、上限 30s、最多 10 次）、**不做 ping**；空闲 TTL 10 分钟回收（每 60s 扫一次，定时器 `unref`）。连接尝试**按 server 去重（单飞）**——否则并发 `warm` 会重复 spawn 同一 stdio server，未记录的那些成为孤儿进程（实测会把测试进程卡住）；连接期间被 `unwarm`/dispose 则立即关闭。
 - 回环代理：`http.createServer` 自绑 `127.0.0.1:0`（**不依赖 DSH webServer 端口 API**），`POST /call`（调用）与 `POST /tools`（列工具），鉴权 = 每次 apply 随机 `randomUUID()` token（`x-bgjobs-token`）；同一 server 的调用经一条串行队列。
 - token 与端口**只写进该任务的 `mcp.json`**（`prewarm:{url,token}`），不写设置文件、不进日志。代理生命周期挂在插件 dispose 链上。
-- 开关联动：MCP 总开关开启 → 对 `prewarm:true` 的 server 预连；关闭 → `unwarmAll()`。host 不在/代理不可达/坏 token → runner 回退冷启动，**任务照常成功**（"任务脱离 DSH 也能跑"的保证不变）。
+- 开关联动：MCP 总开关开启 → 对**启用且 `prewarm:true`** 的 server 预连；关闭 → `unwarmAll()`。被设为「禁用」（`enabled:false`）的 server **不预连**，且切到禁用时立即 `unwarm`。host 不在/代理不可达/坏 token → runner 回退冷启动，**任务照常成功**（"任务脱离 DSH 也能跑"的保证不变）。
 - runner 与 supervisor 共用 `lib/mcp-connect.js`（env 清洗 `/KEY|PASSWORD|SECRET|TOKEN/i` 与 `DSH_*`、transport 构造、`tools/list` 分页、结果投影），避免两套实现漂移。
 
 ### 工具列表与缓存（`lib/core/mcp.js`）
 
 - 来源优先级：live 工具注册表 `ctx.tools.schemas()` 的 `mcp__<server>__*`（**零启动开销**，DSH 已连接就免 spawn）→ `mcp-tools-cache.json`（TTL 10 分钟）→ 实际连接探测。探测**优先复用预热常驻连接**（该 server 已在预热表且 `warm` 时走 `prewarm.listTools`，`channel:'prewarm'`；失败才回退冷启动 `channel:'cold'`）——stateful MCP server 只允许一个会话，另开第二个会让第一会话的请求挂死（实测 Template-Nodejs-MCP-Server 复现）。返回 `source: 'registry'|'cache'|'probe'` 与 `channel`。
 - 只回传工具名/描述（截断 200 字符）/必填字段名摘要，避免上下文膨胀。
-- 口径差异（有意为之）：agent 侧 `bgjob_mcp_tools` **受 MCP 开关限制**（防模型在未开启时反复 spawn）；设置页「列出工具」（`POST /bgjobs/mcpservers?probe=1`）是用户显式操作，**不受限制**。
+- 口径差异（有意为之）：agent 侧 `bgjob_mcp_tools` **受 MCP 开关限制**（防模型在未开启时反复 spawn）；设置页「列出工具」（`POST /bgjobs/mcpservers?probe=1`）是用户显式操作，**不受限制**——总开关关闭、乃至该 server 被设为「禁用」时仍可手动探测（`resolveServer` 传 `allowDisabled:true` 放行）。
 - `bgjob_submit_mcp` 提交前会先取一次工具清单做**工具名纠错**：清单拿到了但没有该 tool 名 → 直接拒绝并附可用清单（截断 30 个）；探测失败不阻断提交（任务里会重新连接并报真实原因）。
 
 ### DSH 配置导入（`lib/dsh-profiles.js`）
@@ -186,11 +186,12 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
 ### 端点与持久化
 
 - `GET/POST /bgjobs/mcpprefs`（`mcp-prefs.json`，默认 `{enabled:false}`，联动预热）。
-- `GET/POST /bgjobs/mcpservers`（`mcp-servers.json` = `{ servers: { <name>: <config + prewarm> } }`）：GET 列表**不回传 env/headers 的值**（只回键名）；POST 新增/覆盖（`?config=<urlencoded JSON>` 或 JSON body）、`?delete=1`、`?prewarm=0|1`、`?probe=1`。写入经 `normalizeConfig` 校验（fail loud），未显式给 `prewarm` 时保留原值。
+- `GET/POST /bgjobs/mcpservers`（`mcp-servers.json` = `{ servers: { <name>: <config + prewarm + enabled> } }`，`enabled` 缺省 `true`、`prewarm` 缺省 `false`）：GET 列表**不回传 env/headers 的值**（只回键名）；POST 新增/覆盖（`?config=<urlencoded JSON>` 或 JSON body）、`?delete=1`、`?enabled=0|1` 与/或 `?prewarm=0|1`（状态补丁，只改请求里出现的键；两者可一次带上，如 `?enabled=1&prewarm=0`）、`?probe=1`。写入经 `normalizeConfig` 校验（fail loud），未显式给 `prewarm` / `enabled` 时保留原值。
+  - 状态口径（设置页三态按钮）：`预热` = `enabled:1&prewarm:1`；`冷启动` = `enabled:1&prewarm:0`；`禁用` = `enabled:0`（只写 `enabled`，保留 `prewarm` 原值以便一键切回）。被禁用的 server：`bgjob_submit_mcp` / `bgjob_mcp_tools` **硬拒绝**（错误文案由 `mcpServerDisabledError` 生成，与总开关的 `MCP_DISABLED_ERROR` 区分），并断开其常驻连接、不再预连；`?probe=1` 仍可用。老文件缺 `enabled` 视为启用（`raw.enabled !== false`，不改写磁盘直到下次写入）。
 - **编辑用单条明细**：`GET /bgjobs/mcpservers?name=<n>` → `{ ok, name, config }`，**含 env/headers 值**（设置页「编辑」用，回填表单后再 `POST` 覆盖）。口径：列表不回值（防翻看面板时泄漏），单条明细按需回值（本机回环网页、用户显式点击）——两处都要写进文档，改前端别误用列表做编辑回填。
 - **导出**：`GET /bgjobs/mcpservers?export=yaml|json[&name=<n|*>]` → `{ ok, format, names, text }`。实现在 `lib/dsh-profiles.js#serializeServers`：
   - `yaml` = **DSH 兼容片段**（`- insert: [{ id: 'mcp-<name>', name: '@deepseek-ai/dsh-mcp-client', config: { serverName, transport, … } }]`，每条一个 `insert`，与 DSH 侧实际写法一致；`timeoutMs` → `toolCallTimeoutMs`；文件头注明明文密钥与用法）；
-  - `json` = bgjobs 原生 `{ "servers": { … } }`（含 `prewarm`），可被导入原样吃回。
+  - `json` = bgjobs 原生 `{ "servers": { … } }`（含 `prewarm` / `enabled`），可被导入原样吃回。
 - **导入**：`POST /bgjobs/mcpservers?import=1`，body `{ text, mode:'skip'|'overwrite', force }` → `{ ok, source, hasJsTag, imported[], skipped[], rejected[] }`。解析在 `lib/dsh-profiles.js#parseServerImport`，自动识别四种形态（DSH patch 片段 / `{servers:{…}}` / 单个配置对象 / 配置数组），并**不 eval 任何表达式**：`!!js` 先替换为占位符；若整份文本含 `!!js` 却没有任何一条被逐条命中，则**整批**标 `needsAttention`（安全网，避免表达式被当普通字符串静默导入）；`needsAttention` 条目默认进 `rejected`，`force` 才写。逐条写入仍走 `setMcpServer`（校验失败进 `rejected` 并透出原因）。
 - `GET /bgjobs/dsh-mcp`（活动 profile + 各 scope 条目 + 已登记名）、`POST /bgjobs/dsh-mcp?action=import&scope=…&name=…&force=…`。
 - store 的 MCP 懒读是**单飞 + 读回填不覆盖期间写入**：并发读共享同一次文件读，且若读回填时缓存已被 `setMcp*` 写入，保留写入值（否则用户点开关/登记的那几毫秒里会被在读的旧值覆盖——实测过的竞态）。
@@ -200,7 +201,8 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
 
 - **两页**：`settings.section` 是 list seat，本插件注册两项 —— `bgjobs`（「后台任务」：入口/面板/离线 GUI/字段显示）与 `bgjobs-mcp`（「MCP 任务」：总开关 / server 登记（含编辑）/ 导出导入 / 从 DSH 导入）。拆页是为了避免单页过长；导航 label 走 i18n `settings.nav` / `settings.mcp.nav`。
 - **「编辑」**：`GET /bgjobs/mcpservers?name=<n>` 取单条明细（含值）回填表单 → 保存仍走同一个 `POST /bgjobs/mcpservers`（同名覆盖）。列表用列表端点（不含值），**不要**用列表数据做编辑回填，否则会把 env/headers 清空。
-- 提示文案：预热说明与明文密钥提示写在各区块的说明行（i18n `settings.mcp.prewarmHint` / `settings.mcp.secretHint`）。
+- 提示文案：预热说明与明文密钥提示写在各区块的说明行（i18n `settings.mcp.prewarmHint` / `settings.mcp.secretHint`）；每行的三态说明走 `settings.mcp.modeHint`（另有 `modeCold` / `modeDisabled` / `modeTitlePrewarm|Cold|Disabled`）。
+- **每行三态按钮**：不用 `Switch`（右侧的 36×20 开关易被误认成总开关），改为带文字的互斥按钮 `预热` / `冷启动` / `禁用`，以「文字 + 语义色」双重区分（预热=琥珀 `--dsw-alias-state-warn-label`、冷启动=绿 `--dsw-alias-state-success-primary`、禁用=灰 `--dsw-alias-label-secondary`，激活态另加 `--dsw-specific-selector` 底色与描边）；点击分别发 `?enabled=1&prewarm=1` / `?enabled=1&prewarm=0` / `?enabled=0`。总开关仍用 `Switch`。
 - **凭据落盘面（明文，三处）**：`$DSH_HOME/bgjobs/mcp-servers.json`（登记表）、任务目录 `<jobDir>/mcp.json`（任务自包含，随任务一起存在）、导出的 YAML/JSON 文本。README「已知限制」已提示分享/归档前脱敏（任务目录最容易被连带打包）。
 - **回归**：`tests/mcp-web.test.js` 用桩 React 加载 `lib/client.js`，断言注册了 `bgjobs` + `bgjobs-mcp` 两页且两页都能渲染；改过 `lib/client-src/` 必须先 `pnpm build:client`，否则该用例读到的仍是旧产物（同时 CI 的产物漂移检查会拦）。
 

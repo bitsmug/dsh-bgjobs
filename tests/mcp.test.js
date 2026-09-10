@@ -217,6 +217,63 @@ test('mcp: 登记 server 名解析；tool 名不存在时附可用清单', async
   }
 })
 
+// ── 4b. 单 server 禁用（enabled: false） ─────────────────────────────────
+
+test('mcp: 已登记 server 被设为「禁用」→ 两工具拒绝且不建 jobDir；内联配置不受影响', async () => {
+  await enableMcp()
+  await registerServer('demo', { ...demoConfig(), prewarm: false, enabled: false })
+  const calls = []
+  setSchtasksRunner(makeFakeRunner(calls))
+  const workdir = await makeWorkdir()
+  const { ctx, tools } = makeCtx({ services: {} })
+  const dispose = apply(ctx)
+  try {
+    const submit = tools.find((t) => t.name === 'bgjob_submit_mcp')
+    const res = await submit.execute({ name: 't', workdir, tool: 'echo', server: 'demo' }, execWithSession())
+    assert.equal(res.ok, false)
+    assert.match(res.error, /"demo" is disabled/)
+    const mcpTools = tools.find((t) => t.name === 'bgjob_mcp_tools')
+    const listing = await mcpTools.execute({ server: 'demo' })
+    assert.equal(listing.ok, false)
+    assert.match(listing.error, /"demo" is disabled/)
+    assert.deepEqual(calls, [], '禁用 server 不得触发 schtasks')
+    assert.equal(await fsp.readdir(jobsRootOf(workdir)).catch(() => []).then((n) => n.length), 0, '禁用 server 不得创建 jobDir')
+
+    // 内联 server_config 不受单 server 禁用约束（禁用只针对登记名）。
+    const inline = await submit.execute({ name: 't2', workdir, tool: 'echo', server_config: demoConfig(), arguments: { text: 'x' } }, execWithSession())
+    assert.equal(inline.ok, true, '内联配置仍可用（禁用只作用于已登记 server）')
+  } finally {
+    dispose()
+    await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+test('mcp: disabled + prewarm:true 的 server 不进入预热域', async () => {
+  await enableMcp()
+  await fsp.mkdir(path.dirname(bgjobsFile('mcp-servers.json')), { recursive: true })
+  await fsp.writeFile(bgjobsFile('mcp-servers.json'), JSON.stringify({ servers: {
+    on: { ...demoConfig(), prewarm: true },
+    off: { ...demoConfig(), prewarm: true, enabled: false },
+  } }), 'utf8')
+  setSchtasksRunner(makeFakeRunner([]))
+  let captured = null
+  setPrewarmFactory((deps) => { captured = createMcpPrewarm(deps); return captured })
+  const { ctx } = makeCtx({ services: {} })
+  const dispose = apply(ctx)
+  try {
+    const deadline = Date.now() + 5000
+    while (Date.now() < deadline && (captured === null || captured.api.endpoint() === null)) {
+      await new Promise((r) => setTimeout(r, 10))
+    }
+    assert.ok(captured !== null, 'apply 应创建预热域（经 seam 捕获）')
+    const names = captured.api.status().map((s) => s.name)
+    assert.deepEqual(names, ['on'], '被设为「禁用」的 server 即使 prewarm: true 也不进入预热域')
+  } finally {
+    setPrewarmFactory((deps) => createMcpPrewarm(deps))
+    dispose()
+  }
+})
+
 // ── 5. 与 DSH 一致：会话访问模式不限制 MCP ───────────────────────────────
 
 test('mcp: 受限会话（read-only）+ full access 关 → 仍可提交；对照 bat 被拒', async () => {
