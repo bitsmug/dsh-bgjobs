@@ -512,7 +512,7 @@ async function submitRunning(workdir, tools) {
   return { jobId: res.jobId, jobDir: workdir + '\\.dsh\\bgjobs\\' + res.jobId }
 }
 
-test('bgjob_wait: 等待中 signal abort → 立即返回 stopped（不置 delivered、waitedMs 小）', async () => {
+test('bgjob_wait: 等待中 signal abort → 抛 BGJOB_WAIT_STOPPED（不置 delivered、快速结束、任务仍可查）', async () => {
   setSchtasksRunner(makeFakeRunner([]))
   const workdir = await makeWorkdir()
   const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
@@ -520,25 +520,31 @@ test('bgjob_wait: 等待中 signal abort → 立即返回 stopped（不置 deliv
   try {
     const { jobId, jobDir } = await submitRunning(workdir, tools)
     const wait = tools.find((t) => t.name === 'bgjob_wait')
+    const status = tools.find((t) => t.name === 'bgjob_status')
     const controller = new AbortController()
     const started = Date.now()
     const p = wait.execute({ jobId, timeoutSeconds: 30 }, { agent: undefined, signal: controller.signal })
     setTimeout(() => controller.abort(new Error('stopped by user')), 300)
-    const w = await p
-    assert.equal(w.ok, true)
-    assert.equal(w.stopped, true)
-    assert.equal(w.timedOut, false)
-    assert.equal(w.status, 'running')
-    assert.ok(Date.now() - started < 3000, '打断后应 ~1s 内返回（waitedMs=' + w.waitedMs + '）')
+    // 停止 → 抛工具自有错误（DSH 取消不变式会把成功结果换成合成 ABORTED；抛错才送得到模型）。
+    await assert.rejects(p, (e) => {
+      assert.equal(e.code, 'BGJOB_WAIT_STOPPED')
+      assert.match(e.message, /was stopped by the user/)
+      assert.match(e.message, new RegExp(jobId), '错误文案带任务 id 与当前状态')
+      assert.match(e.message, /call bgjob_wait again to continue waiting/, '错误文案带续等指引')
+      return true
+    })
+    assert.ok(Date.now() - started < 3000, '打断后应 ~1s 内以错误结束')
     const meta = JSON.parse(await fsp.readFile(path.join(jobDir, 'job.json'), 'utf8'))
-    assert.ok(meta.notifiedAt === undefined || meta.notifiedAt === null, 'stopped 不置已交付')
+    assert.ok(meta.notifiedAt === undefined || meta.notifiedAt === null, '停止不置已交付')
+    const st = await status.execute({ jobId }, { agent: undefined })
+    assert.equal(st.status, 'running', '任务仍在后台运行（错误只结束本次等待）')
   } finally {
     dispose()
     await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
   }
 })
 
-test('bgjob_wait jobIds(any): signal abort → stopped:true + 各任务当前状态（不置 delivered）', async () => {
+test('bgjob_wait jobIds(any): signal abort → 抛 BGJOB_WAIT_STOPPED（文案含各任务当前状态、不置 delivered）', async () => {
   setSchtasksRunner(makeFakeRunner([]))
   const workdir = await makeWorkdir()
   const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
@@ -550,12 +556,12 @@ test('bgjob_wait jobIds(any): signal abort → stopped:true + 各任务当前状
     const controller = new AbortController()
     const p = wait.execute({ jobIds: [a.jobId, b.jobId], timeoutSeconds: 30 }, { agent: undefined, signal: controller.signal })
     setTimeout(() => controller.abort(), 300)
-    const w = await p
-    assert.equal(w.ok, true)
-    assert.equal(w.stopped, true)
-    assert.equal(w.anyDone, false)
-    assert.equal(w.timedOut, false)
-    assert.ok(Array.isArray(w.results) && w.results.length === 2, 'stopped 返回全部当前状态')
+    await assert.rejects(p, (e) => {
+      assert.equal(e.code, 'BGJOB_WAIT_STOPPED')
+      assert.match(e.message, new RegExp(a.jobId), 'stopped 错误里含 a 的当前状态')
+      assert.match(e.message, new RegExp(b.jobId), 'stopped 错误里含 b 的当前状态')
+      return true
+    })
     const metaA = JSON.parse(await fsp.readFile(path.join(a.jobDir, 'job.json'), 'utf8'))
     assert.ok(metaA.notifiedAt === undefined || metaA.notifiedAt === null, 'any stopped 不置已交付')
   } finally {
@@ -564,7 +570,7 @@ test('bgjob_wait jobIds(any): signal abort → stopped:true + 各任务当前状
   }
 })
 
-test('bgjob_wait_all: signal abort → stopped:true + results 当前状态（不置 delivered）', async () => {
+test('bgjob_wait_all: signal abort → 抛 BGJOB_WAIT_STOPPED（不置 delivered、任务仍可查）', async () => {
   setSchtasksRunner(makeFakeRunner([]))
   const workdir = await makeWorkdir()
   const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
@@ -572,24 +578,26 @@ test('bgjob_wait_all: signal abort → stopped:true + results 当前状态（不
   try {
     const { jobId, jobDir } = await submitRunning(workdir, tools)
     const all = tools.find((t) => t.name === 'bgjob_wait_all')
+    const status = tools.find((t) => t.name === 'bgjob_status')
     const controller = new AbortController()
     const p = all.execute({ jobIds: [jobId], timeoutSeconds: 30 }, { agent: undefined, signal: controller.signal })
     setTimeout(() => controller.abort(), 300)
-    const w = await p
-    assert.equal(w.ok, true)
-    assert.equal(w.stopped, true)
-    assert.equal(w.allDone, false)
-    assert.equal(w.timedOut, false)
-    assert.ok(Array.isArray(w.results) && w.results.length === 1)
+    await assert.rejects(p, (e) => {
+      assert.equal(e.code, 'BGJOB_WAIT_STOPPED')
+      assert.match(e.message, /bgjob_wait_all was stopped by the user/, '错误文案点名 bgjob_wait_all')
+      return true
+    })
     const meta = JSON.parse(await fsp.readFile(path.join(jobDir, 'job.json'), 'utf8'))
     assert.ok(meta.notifiedAt === undefined || meta.notifiedAt === null, 'wait_all stopped 不置已交付')
+    const st = await status.execute({ jobId }, { agent: undefined })
+    assert.equal(st.status, 'running', '任务仍在后台运行')
   } finally {
     dispose()
     await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
   }
 })
 
-test('bgjob_submit wait= 参数共享中断：提交后原地等待被 signal abort → stopped', async () => {
+test('bgjob_submit wait= 参数共享中断：提交后原地等待被 signal abort → 抛 BGJOB_WAIT_STOPPED', async () => {
   setSchtasksRunner(makeFakeRunner([]))
   const workdir = await makeWorkdir()
   const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
@@ -600,12 +608,12 @@ test('bgjob_submit wait= 参数共享中断：提交后原地等待被 signal ab
     const started = Date.now()
     const p = submit.execute({ name: 't', command: 'echo x', workdir, wait: 30 }, { agent: undefined, signal: controller.signal })
     setTimeout(() => controller.abort(), 300)
-    const res = await p
-    assert.equal(res.ok, true)
-    assert.equal(res.stopped, true)
-    assert.equal(res.timedOut, false)
-    assert.equal(res.status, 'running')
-    assert.ok(Date.now() - started < 3000, 'submit wait 打断应尽快返回（waitedMs=' + res.waitedMs + '）')
+    await assert.rejects(p, (e) => {
+      assert.equal(e.code, 'BGJOB_WAIT_STOPPED')
+      assert.match(e.message, /bgjob_wait was stopped by the user/)
+      return true
+    })
+    assert.ok(Date.now() - started < 3000, 'submit wait 打断应尽快以错误结束')
   } finally {
     dispose()
     await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})

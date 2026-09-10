@@ -355,6 +355,29 @@ test('web: 导入文本（bgjobs JSON / DSH patch / 单个配置；同名跳过 
     const r5 = await call('/bgjobs/mcpservers?import=1', 'POST', { text: patch, force: true })
     assert.deepEqual(r5.imported, ['dsh1'])
 
+    // ②b 无引号 !!js（`Authorization: !!js process.env.K`）→ 同样按需人工处理（默认拒导）；
+    //     旧写法会把它当普通字符串静默导入，这条用例锁住回归。
+    const barePatch = [
+      '- insert:',
+      "    - name: '@deepseek-ai/dsh-mcp-client'",
+      '      config:',
+      '        serverName: dsh-bare',
+      '        transport: streamable-http',
+      '        url: https://example.invalid/mcp',
+      '        headers:',
+      '          Authorization: !!js process.env.BARE_KEY',
+      '',
+    ].join('\n')
+    const r4b = await call('/bgjobs/mcpservers?import=1', 'POST', { text: barePatch })
+    assert.equal(r4b.source, 'dsh-patch')
+    assert.equal(r4b.hasJsTag, true)
+    assert.deepEqual(r4b.rejected.map((s) => s.name), ['dsh-bare'], '无引号 !!js 也必须默认拒导')
+    assert.match(r4b.rejected[0].reason, /!!js/)
+    const r5b = await call('/bgjobs/mcpservers?import=1', 'POST', { text: barePatch, force: true })
+    assert.deepEqual(r5b.imported, ['dsh-bare'])
+    assert.doesNotMatch(String((await call('/bgjobs/mcpservers?name=dsh-bare')).config.headers.Authorization),
+      /process\.env\.BARE_KEY/, '表达式不得被当普通字符串导入（应只留占位符）')
+
     // ③ 单个配置对象（无名字 → 报错提示）
     const single = await call('/bgjobs/mcpservers?import=1', 'POST', { text: JSON.stringify({ transport: 'stdio', command: 'node', serverName: 'solo' }) })
     assert.deepEqual(single.imported, ['solo'])

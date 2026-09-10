@@ -4,7 +4,7 @@
 // 协议：JSON-RPC over stdin/stdout，一行一条（MCP SDK 的 stdio transport 用换行分隔）。
 // 工具：
 //   echo  { text }            → 原样回显文本（成功路径 / content 投影）
-//   sleep { seconds }         → 延迟后返回（wait 命中、超时、停止、消息让路等"在途"场景）
+//   sleep { seconds }         → 延迟后返回（wait 命中、超时、停止、消息让路、跨 agent 回合的打断回归等"在途"场景）
 //   fail  { message? }        → isError:true（退出码 1 路径）
 // 参数（env 或 argv 均可）：
 //   DEMO_MCP_STALL_MS=0      → 每个请求前额外延迟（模拟慢 server）
@@ -23,7 +23,7 @@ const TOOLS = [
   },
   {
     name: 'sleep',
-    description: '等待 seconds 秒后返回（demo；上限 30 秒）',
+    description: '等待 seconds 秒后返回（demo；上限 300 秒）',
     inputSchema: { type: 'object', properties: { seconds: { type: 'number' } }, required: ['seconds'] },
   },
   {
@@ -50,7 +50,7 @@ async function handleCall(id, params) {
     return
   }
   if (name === 'sleep') {
-    const sec = Math.min(Math.max(Number(args.seconds) || 0, 0), 30)
+    const sec = Math.min(Math.max(Number(args.seconds) || 0, 0), 300)
     await sleep(sec * 1000)
     ok(id, { content: [{ type: 'text', text: `slept ${sec}s` }] })
     return

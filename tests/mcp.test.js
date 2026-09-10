@@ -423,6 +423,15 @@ const PATCH_WITH_MCP = [
   "        serverName: off-srv",
   "        transport: stdio",
   "        command: node",
+  // 无引号 !!js（r3/res 的真实写法）：同样必须标红——否则 yaml 会把它当普通字符串字面量静默导入。
+  "- insert:",
+  "    - name: '@deepseek-ai/dsh-mcp-client'",
+  "      config:",
+  "        serverName: bare-js",
+  "        transport: stdio",
+  "        command: node",
+  "        env:",
+  "          METASO_API_KEY: !!js process.env.METASO_API_KEY",
   "",
 ].join('\n')
 
@@ -491,7 +500,7 @@ test('dsh-profiles: patch 解析（stdio / http / !!js 不求值标红 / disable
     const active = await readMcpConfigs('active', { home, argv: ['node', 'dsh', '--profile', 'r4'], modulePath: path.join(home, 'nope.js') })
     assert.equal(active.exists, true)
     assert.equal(active.hasJsTag, true)
-    assert.equal(active.servers.length, 3)
+    assert.equal(active.servers.length, 4)
     const matlab = active.servers.find((s) => s.serverName === 'matlab')
     assert.equal(matlab.transport, 'stdio')
     assert.equal(matlab.enabled, true)
@@ -506,6 +515,12 @@ test('dsh-profiles: patch 解析（stdio / http / !!js 不求值标红 / disable
     assert.equal(metaso.config.url, 'https://example.invalid/mcp')
     const off = active.servers.find((s) => s.serverName === 'off-srv')
     assert.equal(off.enabled, false, 'disabled: true → enabled false')
+    // 无引号写法：`METASO_API_KEY: !!js process.env.METASO_API_KEY`
+    const bare = active.servers.find((s) => s.serverName === 'bare-js')
+    assert.equal(bare.needsAttention, true, '无引号 !!js 也必须标红（不 eval）')
+    assert.match(bare.attentionReason, /!!js/)
+    assert.match(String(bare.config.env.METASO_API_KEY), /__BGJOBS_JS_EXPRESSION__/,
+      '表达式须被替换为占位符，而不是退化成普通字符串字面量（否则会静默错导）')
 
     const global = await readMcpConfigs('global', { home })
     assert.deepEqual(global.servers.map((s) => s.serverName), ['global-srv'])

@@ -124,7 +124,7 @@ allowBuilds:
 - **MCP 任务开关**：控制 agent 能否用 `bgjob_submit_mcp` / `bgjob_mcp_tools` 提交（关闭时一律拒绝并提示来开启）；开启后即时生效，无需重启 DSH。与 DSH 一致，会话访问模式（read-only 等）不限制 MCP 任务；
 - **MCP 服务器**：登记 agent 可按名引用的 server（名字 + JSON 配置）。每行可开「预热」、**编辑**（把该 server 的完整配置载入下方表单，含 env/headers 明文）、点「列出工具」看工具名（点击复制）、删除；列表只回传 env/headers 的键名，不回传值。**预热**＝在 DSH 进程内为该 server 保持一条常驻连接（任务复用它、省去每次冷启动），仅 DSH 存活期有效，连接失败/host 不在时任务自动回退冷启动，**不影响正确性**（stdio 收益最明显；http 传输本身不启动子进程，提速有限）；
 - **导出 / 导入**：导出格式二选一 —— **DSH YAML**（`@deepseek-ai/dsh-mcp-client` 条目，可直接并入 `cordis.patch.yml`）或 **bgjobs JSON**（备份/迁移，可被导入原样吃回）；导入支持粘贴或选文件，自动识别 DSH patch 片段 / bgjobs JSON / 单个或多个 server 配置对象（需带 `serverName`），可选「同名跳过 / 同名覆盖」，含 `!!js` 的条目默认拒导（勾选后强制导入，且不会求值——需手工补全 env/headers）。**导出文本与 `mcp.json` 都含明文密钥，分享前请脱敏**；
-- **DSH 已有 MCP（导入）**：读取**当前 profile** 或全局 `cordis.patch.yml` 里已配好的 `@deepseek-ai/dsh-mcp-client` 条目，一键导入成 bgjobs 登记（只读 DSH 配置、不改它）。顶部显示「当前 profile」及判定来源（命令行 `--profile` / 模块路径比对 / 唯一 profile）；含 `!!js` 表达式的条目**不会求值**，默认不导入（需手动补全 env/headers）。
+- **DSH 已有 MCP（导入）**：读取**当前 profile** 或全局 `cordis.patch.yml` 里已配好的 `@deepseek-ai/dsh-mcp-client` 条目，一键导入成 bgjobs 登记（只读 DSH 配置、不改它）。顶部显示「当前 profile」及判定来源（命令行 `--profile` / 模块路径比对 / 唯一 profile）；含 `!!js` 表达式的条目**不会求值**，默认不导入（需手动补全 env/headers）。带引号（`!!js '"Bearer " + process.env.X'`）与**无引号**（`KEY: !!js process.env.X`）两种写法都会识别为需人工处理；万一表达式写在无法逐条定位的位置，整批条目都会被标红提示核对，不会把 JS 表达式当普通字符串静默导入。
 
 ## 离线管理 CLI（DSH 不运行也能用）
 
@@ -157,6 +157,8 @@ allowBuilds:
 - **沙箱**：`sandbox` 只约束文件效果（写工作区/临时区外会被拒），网络不受限；它是"尽力而为"而非数学边界——工作目录若落在 Everyone 可写的位置会失效；沙箱任务的任务目录会授 Everyone 只读（脚本文本对本地用户可见）；bat 引擎任务恒为全权限，受限会话需开启「全权限」才能提交；
 - 受限会话里请求超出会话模式的权限会弹窗审批，`justification` 说明理由即可。
 - **MCP 任务**：默认关闭（设置页开启）；被删除/强杀的任务，其 stdio MCP server 子进程可能残留（正常完成后由 host 清理，见「删除」时的 pid 回收）；「预热」连接只在 DSH 存活期有效，不改变"任务脱离 DSH 也能跑"；离线 CLI/GUI 只读查看与删除 MCP 任务，不在离线侧提交 MCP；`mcp-servers.json`、导出文本与任务目录的 `mcp.json` 都含**明文密钥**，分享/归档前请脱敏。
+- **等待被停止 ≠ 任务失败**：agent 等待任务时你点「停止/打断」，本次等待会**以错误结束**（错误文案写明各任务当前状态并提示可续等）。这是 DSH 的取消语义——调用方取消后，成功返回的东西送不到模型，只能以错误形态呈现；任务本身继续后台运行、不标记已交付，agent 可再次 `bgjob_wait` 续等。等待期间收到其它 agent 的消息则正常返回让路（`stoppedBy: 'message'`）。
+- **MCP 超时收尾有 1–2 秒宽限**：MCP 任务超时/失败后 host 会关闭连接并回收 server 子进程（SDK `close()` 内部会先等约 2 秒再升级），所以 `result.json` 里的 `durationMs` 可能比 `timeoutMs` 多 1–2 秒（同文件也记了 `timeoutMs` 便于对照）。
 
 ## 维护与开发
 

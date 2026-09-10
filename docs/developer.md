@@ -68,6 +68,12 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
 - **bat 引擎**（`bgjob_submit`）：用户命令原样写入 `cmd.bat`；`run.bat` 用 `call cmd.bat >> log 2>&1` **整体重定向**（逐行重定向会破坏 `for/if` 块）；开头 `chcp 65001` 保 UTF-8；末尾写 exitcode、自删任务；`/TR` 经 `wscript.exe` + 纯 ASCII `launch.vbs`（SW_HIDE）隐藏窗口、零 PowerShell 依赖。
 - **pwsh 引擎**（`bgjob_submit_pwsh`）：`/TR` 直接调解释器（pwsh 7 优先，5.1 兜底；提交时解析烘焙绝对路径）执行 `run.ps1`，由它完成 `& job.ps1 *> stdout.log`、5.1 UTF-16LE 日志转 UTF-8、写 exitcode、自删任务。命令写入 `job.ps1`（UTF-8 with BOM + 编码 preamble）。沙箱任务另见下文。
 - 退出码 = `exitcode.txt` 首数字（`parseExitCode`），负值允许；done 后再 `fire-and-forget /Delete` 兜底（bat 已自删，幂等）。
+- **任务计划残留与手工清理**（O-3）：正常路径由任务自删 + done 兜底 `/Delete` 清理，但进程被强杀、`/Create` 成功却未 `/Run`、或 `watch` 未及兜底时会留下 `dsh-bgj-*` 计划。host **刻意不做**「启动时枚举清扫」：清扫窗口会和「已 `/Create` + `/Run` 但尚未 `indexUpsert`」的提交竞争，误删会让该任务**永不启动**（比残留更难查）。手工清理：
+  ```powershell
+  schtasks /Query  /FO LIST /TN "dsh-bgj-*"      # 列出残留
+  schtasks /Delete /TN "<上一步的名字>" /F       # 逐个删除
+  ```
+  也可在「任务计划程序」GUI 里按名字筛 `dsh-bgj-`。
 
 ### 完成检测 / 读日志 / 恢复
 
@@ -80,6 +86,11 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
 - 目的：agent 需要「等结果继续」时不再用前台 `pwsh sleep` 反复轮询；`bgjob_wait(jobId, timeoutSeconds?)` 等到任务 done 立即返回退出码/日志尾。
 - 实现：轮询 `waitSnapshot(jobId)`——注册表命中时对 running 任务复用既有 `checkCompletion(job)`（幂等收尾：置 done/写盘/通知），未命中回退 `statusFromDisk`；间隔与**任务自身已运行时长**成正比（`clamp(250ms, taskAge×10%, 1s)`，上限 1s 保证检测延迟 ≤~1s；v0.1.51 起，废弃按等待时长的档位退避），默认 120s、clamp 1–600s。
 - 语义：未知 id 立即返回 `not found` 不空等；等待期间任务被清理 → `status:'removed'`；超时返回 `timedOut:true` 的当前快照供 agent 再次调用；不替代 `notify`（异步收结果仍用 submit 的 notify）。
+- **停止路径 = 抛工具自有错误，不是返回快照**（v0.1.74）：用户点停止/打断 → `exec.signal` abort → 本次等待**抛** `Error`（`err.code = 'BGJOB_WAIT_STOPPED'`，文案含最多 3 条 `id=status(exit n)` 摘要 + `…(+N more)` + 续等指引）。
+  - **为什么不能返回快照**：DSH 的取消不变式会把「caller 取消后 settle 的**成功**结果」替换成合成错误 `Error: tool call aborted`——`packages/core/tools/src/index.ts:1539-1543` 的 `isAborted(signal) ? toolAbortedResult(result) : result`，以及 `:1580-1585` / `:1599-1607` 两处也是同样处理（`callerCancelled(exec) && !result.isError`）。所以「停止时返回 stopped 快照」在结构上**送达不了模型**；反之**抛出的错误不会被替换**（复核条件都带 `!isError`），first-party 工具（`tool-bash` / `tool-pwsh` / `jobs-local`）也是这个范式。
+  - 结构化信息写在 message 文本里（`errorInfo()` 只对 harness 的 `HarnessError` 实例产出 `{name, code}`，见 `:635-641`；本插件不引 harness 依赖，`err.code` 仅供插件侧测试/日志）。语义不变：任务继续后台跑、不置 delivered（抛错路径**不得**调 `finishWaitResult`/`markDeliveredId`）、可再次 `bgjob_wait` 续等。
+  - **不采用 `deferContext` 注入消息**：那会把工具结果改成"稍后注入"，破坏 wait 的本义（同步拿结果），且注入时机/顺序不受调用方控制；错误形态已能携带全部可操作信息。
+- **新入站消息让路仍是正常返回**（`stoppedBy:'message'`，v0.1.72）：不涉及 abort，值能正常送达，保持 `stopped:true` 快照（`stoppedSingle` 只服务这条路径）。`stoppedBy:'signal'` 不再出现在返回值里（输出 schema 保留该字段给 message 用）。
 - submit 糖（v0.1.52）：`bgjob_submit` / `bgjob_submit_pwsh` 传 `wait: <秒>`（1–600）会在提交成功后自动等待任务结束（内部同一 `waitJobDone`，超时返回 timedOut 快照）；提交失败不进入等待。
 
 ### 保留策略（v0.1.32 起）
@@ -143,7 +154,8 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
   - `mcp.json` = `{ server, transport:'stdio'|'streamable-http', command/args/env/cwd 或 url/headers, tool, arguments, timeoutMs, prewarm? }`；
   - 先试预热通道（`prewarm.url` + `x-bgjobs-token`，3s 短超时），任何失败写 `[BGJOB] prewarm unavailable: …; falling back to cold start` 并**回退冷启动**；
   - 退出码：`0` 成功 / `1` 工具 `isError` / `2` 配置·连接·调用失败 / `3` 超时；日志首行 `[BGJOB] mcp call: …`、末行 `[BGJOB] channel: prewarm|cold`；
-  - 产物：stdout 投影文本（→ `stdout.log`）、`result.json`（`{ ok, exitCode?, isError, channel, content, structuredContent?, server, tool, durationMs, error? }`）、冷启动时 `mcp-server.pid`（供删除时 `taskkill /PID /T /F` 回收）。
+  - 产物：stdout 投影文本（→ `stdout.log`）、`result.json`（`{ ok, exitCode?, isError, channel, content, structuredContent?, server, tool, durationMs, timeoutMs, error? }`）、冷启动时 `mcp-server.pid`（供删除时 `taskkill /PID /T /F` 回收）。
+- **超时收尾宽限（O-1）**：超时/失败路径会 `client.close()` 回收 server 子进程（SDK 的 close = stdin end → 等 2s → SIGTERM → 再等 2s），所以 `result.json` 的 `durationMs` 可能比 `timeoutMs` 多 1–2 秒（故同文件记录 `timeoutMs` 供对照）。这是「保证不残留 server 子进程」的代价，**不加 `process.exit` 抢跑**。
 - done 收尾时（`watch.js` 的 `checkCompletion`）对 mcp 任务补读 `result.json` 的 `channel` 落进 `meta.mcpChannel`，面板详情显示「执行通道：预热/冷启动」。
 
 ### 预热（`lib/mcp-prewarm.js`，只做加速）
@@ -156,7 +168,7 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
 
 ### 工具列表与缓存（`lib/core/mcp.js`）
 
-- 来源优先级：live 工具注册表 `ctx.tools.schemas()` 的 `mcp__<server>__*`（**零启动开销**，DSH 已连接就免 spawn）→ `mcp-tools-cache.json`（TTL 10 分钟）→ 实际连接探测（该 server 预热开启时走常驻连接，否则冷启动一次）。返回 `source: 'registry'|'cache'|'probe'` 与 `channel`。
+- 来源优先级：live 工具注册表 `ctx.tools.schemas()` 的 `mcp__<server>__*`（**零启动开销**，DSH 已连接就免 spawn）→ `mcp-tools-cache.json`（TTL 10 分钟）→ 实际连接探测。探测**优先复用预热常驻连接**（该 server 已在预热表且 `warm` 时走 `prewarm.listTools`，`channel:'prewarm'`；失败才回退冷启动 `channel:'cold'`）——stateful MCP server 只允许一个会话，另开第二个会让第一会话的请求挂死（实测 Template-Nodejs-MCP-Server 复现）。返回 `source: 'registry'|'cache'|'probe'` 与 `channel`。
 - 只回传工具名/描述（截断 200 字符）/必填字段名摘要，避免上下文膨胀。
 - 口径差异（有意为之）：agent 侧 `bgjob_mcp_tools` **受 MCP 开关限制**（防模型在未开启时反复 spawn）；设置页「列出工具」（`POST /bgjobs/mcpservers?probe=1`）是用户显式操作，**不受限制**。
 - `bgjob_submit_mcp` 提交前会先取一次工具清单做**工具名纠错**：清单拿到了但没有该 tool 名 → 直接拒绝并附可用清单（截断 30 个）；探测失败不阻断提交（任务里会重新连接并报真实原因）。
@@ -165,7 +177,10 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
 
 - **活动 profile 三级判定**（`detectActiveProfile`，返回 `detectedBy` 供设置页显示依据）：① `process.argv` 的 `--profile <name>`；② **realpath 比对**——本插件包根（`<root>/lib/<file>` 上溯两级）的 realpath == `profiles/<n>/node_modules/bgjobs` 的 realpath（兼容 `link:` 与 pnpm 软链安装）；③ 只有一个 profile 目录。都不成立 → `{ name: null, reason }` 并给出 `candidates`，**绝不兜底 web**（参考插件 `@xxxyz/dsh-mcp-manager` 2.2.7 的「先 web 再 headless 再任意」在 r4 下会展示错 profile，本模块不复制该缺陷）。
 - `readMcpConfigs(scope)`：`active` / `global`（`$DSH_HOME/cordis.patch.yml`）/ 具体 profile 名；抽出 `name: '@deepseek-ai/dsh-mcp-client'` 的条目（支持 `- insert: [...]` 与顶层直挂两种写法），映射成 `{ id, serverName, transport, enabled, needsAttention, config }`。
-- **不 eval 任何表达式**：解析前把 `!!js '…'` 整体替换为占位符再交给 `yaml`（未知 tag 不抛错）；含占位符的条目标 `needsAttention: true` + `attentionReason`；`disabled: true` 映射为 `enabled:false`。
+- **不 eval 任何表达式**：解析前把 `!!js` 表达式整体替换为占位符再交给 `yaml`（未知 tag 不抛错）；含占位符的条目标 `needsAttention: true` + `attentionReason`；`disabled: true` 映射为 `enabled:false`。
+  - **两种写法都要吃掉**：带引号（`Authorization: !!js '"Bearer " + process.env.X'`）与**无引号**（`METASO_API_KEY: !!js process.env.X`，r3/res 的真实写法）。占位替换用 `/!!js\b[^\n]*/g` 全吃整行——只匹配带引号形式时，无引号写法会落到 yaml 的未知 tag 分支，值退化成**普通字符串字面量**（静默错导 + 控制台刷 `TAG_RESOLVE_FAILED`）。
+  - **scope 级安全网**：文件里确有 `!!js` 却没有任何一条被逐条命中时，**整批**标 `needsAttention`（宁可让用户手工核对，也不静默导入）。`readMcpConfigs` 与 `parseServerImport` 各有一份。
+  - **已知限制**：flow 风格（`{ a: !!js x, b: 1 }`）会把同行后续内容一并吃掉，`YAML.parse` 通常直接失败并返回 `parseError`（UI 可见的显式错误，不是静默错导）。
 - 导入**只读** DSH 配置、一次性拷贝（同名不覆盖 → `skipped`；`needsAttention` 默认拒导，`force=1` 才导），不回写 DSH 的 patch，也不接管其 MCP 生命周期。
 
 ### 端点与持久化
@@ -190,7 +205,7 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
 - **回归**：`tests/mcp-web.test.js` 用桩 React 加载 `lib/client.js`，断言注册了 `bgjobs` + `bgjobs-mcp` 两页且两页都能渲染；改过 `lib/client-src/` 必须先 `pnpm build:client`，否则该用例读到的仍是旧产物（同时 CI 的产物漂移检查会拦）。
 
 ### 本地 demo server（测试/自测）
-`tests/fixtures/demo-mcp-server.mjs` 是零依赖纯 stdio NDJSON 的最小 MCP server，提供 `echo {text}` / `sleep {seconds}`（上限 30s）/ `fail {message?}`；环境开关 `DEMO_MCP_STALL_MS`（每请求前延迟）、`DEMO_MCP_BROKEN=1`（不响应 `initialize`）。自动化测试与手工验证**一律用它**（不触网、不依赖付费 MCP）。手工自测可登记为：
+`tests/fixtures/demo-mcp-server.mjs` 是零依赖纯 stdio NDJSON 的最小 MCP server，提供 `echo {text}` / `sleep {seconds}`（上限 300s，够跨 agent 回合做停止/让路回归）/ `fail {message?}`；环境开关 `DEMO_MCP_STALL_MS`（每请求前延迟）、`DEMO_MCP_BROKEN=1`（不响应 `initialize`）。自动化测试与手工验证**一律用它**（不触网、不依赖付费 MCP）。手工自测可登记为：
 
 ```json
 { "transport": "stdio", "command": "<node 绝对路径>", "args": ["<repo>/tests/fixtures/demo-mcp-server.mjs"] }
