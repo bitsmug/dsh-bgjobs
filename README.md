@@ -21,11 +21,14 @@
 | 断线续跟 | DSH 重启自动恢复跟踪；旧任务 id 也能从磁盘查询状态 |
 | 离线管理 | 不依赖 DSH 的 CLI / GUI：list / status / log / submit / kill / cleanup |
 | 可选沙箱 | `bgjob_submit_pwsh` 可选 `sandbox` 约束后台任务文件权限，权限不高于当前会话模式 |
+| MCP 调用托管 | `bgjob_submit_mcp` 把一次 MCP 工具调用提交为后台任务（**设置页开关，默认关闭**）；可登记 server 或从 DSH 配置一键导入；可选「预热」常驻连接加速 |
 | 零残留 | 任务跑完自删任务计划；done 任务默认保留展示，用户手动清理 |
 
 ## 安装 / 卸载
 
 前置：已安装 DSH（`@deepseek-ai/dsh`）、PowerShell 7 与 Node.js（≥22），Windows 系统。
+
+> MCP 引擎（`bgjob_submit_mcp`）由插件自带的 Node 依赖跑：`@modelcontextprotocol/sdk` 与 `yaml` 随包发布，`dsh plugin add` 会自动装上；本地源码开发需先在该目录执行一次 `pnpm install`。DSH 自带的 Node 即可，无需另装。
 
 **方式 A（推荐，npm 发布版）**
 
@@ -69,7 +72,7 @@ allowBuilds:
 
 仅首次安装需要，装好后 koffi 已编译完毕，升级/重装无需重复。
 
-重启 DSH 后生效：网页右下角出现「后台任务监控」面板，agent 获得 `bgjob_submit` / `bgjob_submit_pwsh` / `bgjob_status` / `bgjob_wait` 工具。
+重启 DSH 后生效：网页右下角出现「后台任务监控」面板，agent 获得 `bgjob_submit` / `bgjob_submit_pwsh` / `bgjob_submit_mcp` / `bgjob_mcp_tools` / `bgjob_status` / `bgjob_wait` 工具（MCP 两个工具需先在设置页打开「MCP 任务」开关）。
 
 **方式 C（本地源码开发）**
 
@@ -89,6 +92,8 @@ allowBuilds:
 
 - `bgjob_submit(name, command, workdir, [wait], [notify], [notify_mode])` — 提交后台任务（command 为 **bat** 语法）；`wait`=提交后原地等待的秒数（0/缺省不等待；>0 语义同 bgjob_wait 全缺省——等本会话任一任务先结束，无会话信息时回退等刚提交任务）；
 - `bgjob_submit_pwsh(name, command, workdir, [wait], [sandbox], [justification], [notify], [notify_mode])` — 提交后台任务（command 为 **PowerShell** 语法，UTF-8 日志、`exit <code>` 语义安全）；`wait` 同上；
+- `bgjob_submit_mcp(name, workdir, tool, [arguments], server | server_config, [timeout_seconds], [wait], [notify], [notify_mode])` — 把一次 **MCP 工具调用**提交为后台任务（第三引擎，同样由 schtasks 托管、面板可见、可 wait/notify）。`server` 是设置页登记的 server 名，`server_config` 是内联配置（`{transport:"stdio",command,args,env,cwd}` 或 `{transport:"streamable-http",url,headers}`），二者二选一。任务里连接该 server 调用一次工具，结果写日志与 `<jobDir>/result.json`（`channel` 记录本次是命中预热常驻连接还是冷启动），退出码 `0` 成功 / `1` 工具报错 / `2` 连接或调用失败 / `3` 超时。**默认关闭，需先在设置页打开「MCP 任务」开关**（未开启时调用会被拒绝）；与 DSH 一致，会话访问模式（read-only 等）**不限制** MCP 任务。建议先用 `bgjob_mcp_tools` 确认工具名；
+- `bgjob_mcp_tools(server | server_config, [refresh])` — 列出该 MCP server 的注册工具（工具名/描述/必填字段名），提交前用它确认工具名与参数形状；`refresh: true` 绕过 10 分钟缓存。优先用 DSH 已注册的 `mcp__<server>__*` 工具（零启动开销），未命中才真正连接/启动 server 探测；同样受「MCP 任务」开关限制；
 - `bgjob_status(jobId)` — 查询状态 / 退出码 / 日志尾部；
 - `bgjob_wait(jobId | jobIds, [timeoutSeconds])` — 等待后台任务结束并**立即返回**退出码与日志尾部（默认最多 120s）。三种用法：单个 `jobId` 等该任务；`jobIds` 数组 = **任一先结束即返回**（any 竞速，返回完成者 + 其余 pending）；两者都缺省 = 等**本会话**任务任一结束；
 - `bgjob_wait_all(jobIds, [timeoutSeconds])` — 等一批任务**全部**结束，返回每个任务的退出码/日志尾 + `allDone`（超时返回部分状态可续等）；`jobIds` 缺省 = 本会话全部任务；
@@ -110,6 +115,12 @@ allowBuilds:
 **接入 DSH 侧边栏**：左侧栏（聊天列表列）底部有 bgjobs 入口（宽栏显示「后台任务」，收起成窄栏时仅图标）——点击可整体隐藏/唤出右侧浮动面板；面板隐藏期间任务照跑、完成照弹 Toast。该入口可在 **DSH 设置 → 后台任务**里开关（**默认隐藏**）。
 
 **DSH 设置里的 bgjobs**：打开 DSH 设置（左下角齿轮），左侧出现「后台任务」页（顶部显示当前插件版本）：① 开关「左侧栏显隐按钮」（默认关，打开后左栏底部出现入口）；② 开关「监控面板」（直接显示/隐藏右下角监控面板与悬浮球，与入口开关相互独立）；③ 「打开离线 GUI」一键启动独立管理窗口，附 GUI 脚本路径；「打开所在文件夹」经 DSH 自身的文件资源管理器机制打开离线工具目录（找不到 GUI 就到这里找 dsh-bgjobs-gui.bat）。
+
+**MCP 任务（设置页同一页下方，默认关闭）**：
+
+- **MCP 任务开关**：控制 agent 能否用 `bgjob_submit_mcp` / `bgjob_mcp_tools` 提交（关闭时一律拒绝并提示来开启）；开启后即时生效，无需重启 DSH。与 DSH 一致，会话访问模式（read-only 等）不限制 MCP 任务；
+- **MCP 服务器**：登记 agent 可按名引用的 server（名字 + JSON 配置）。每行可开「预热」、点「列出工具」看工具名（点击复制）、删除；列表只回传 env/headers 的键名，不回传值。**预热**为常驻连接加速（仅 DSH 存活期有效，host 不在或连接失败时任务自动回退冷启动，不影响正确性）；
+- **DSH 已有 MCP（导入）**：读取**当前 profile** 或全局 `cordis.patch.yml` 里已配好的 `@deepseek-ai/dsh-mcp-client` 条目，一键导入成 bgjobs 登记（只读 DSH 配置、不改它）。顶部显示「当前 profile」及判定来源（命令行 `--profile` / 模块路径比对 / 唯一 profile）；含 `!!js` 表达式的条目**不会求值**，默认不导入（需手动补全 env/headers）。
 
 ## 离线管理 CLI（DSH 不运行也能用）
 
@@ -141,6 +152,7 @@ allowBuilds:
 - 命令不要自带 `> log` 类重定向（插件已整体重定向并保证 UTF-8）；
 - **沙箱**：`sandbox` 只约束文件效果（写工作区/临时区外会被拒），网络不受限；它是"尽力而为"而非数学边界——工作目录若落在 Everyone 可写的位置会失效；沙箱任务的任务目录会授 Everyone 只读（脚本文本对本地用户可见）；bat 引擎任务恒为全权限，受限会话需开启「全权限」才能提交；
 - 受限会话里请求超出会话模式的权限会弹窗审批，`justification` 说明理由即可。
+- **MCP 任务**：默认关闭（设置页开启）；被删除/强杀的任务，其 stdio MCP server 子进程可能残留（正常完成后由 host 清理，见「删除」时的 pid 回收）；「预热」连接只在 DSH 存活期有效，不改变"任务脱离 DSH 也能跑"；离线 CLI/GUI 只读查看与删除 MCP 任务，不在离线侧提交 MCP。
 
 ## 维护与开发
 

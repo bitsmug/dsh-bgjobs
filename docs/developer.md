@@ -7,6 +7,7 @@
 - [目录结构](#目录结构)
 - [架构与关键机制](#架构与关键机制)
 - [可选沙箱（bgjob_submit_pwsh）](#可选沙箱bgjob_submit_pwsh复用-dsh-windows-acl-runner)
+- [MCP 引擎（bgjob_submit_mcp / bgjob_mcp_tools）](#mcp-引擎bgjob_submit_mcp--bgjob_mcp_tools)
 - [完成通知创建者 Agent（可选 notify）](#完成通知创建者agentv0131可选-notify)
 - [Web 面板（client-src / 构建产物）](#web-面板libclient-src--构建产物-libclientjs可维护要点)
 - [测试与发布](#测试与发布)
@@ -22,30 +23,37 @@ lib/
   gui-launch.js       网页侧启动离线 GUI / 打开所在文件夹（schtasks 一次性任务拉起 GUI——脱离宿主
                       job，Ctrl+C/宿主退出不杀；目录用 powershell Invoke-Item；resolveShell +
                       execFile，可注入替身）
-  core/               host 域模块（store/notify/registry/watch/wait/jobs/web/tools + apply 装配）
+  mcp-connect.js      MCP 连接构造（环境清洗 / SDK transport / tools.list / 结果投影）——runner 与预热共用一个实现点
+  mcp-runner.mjs      任务内 MCP 调用执行体（node lib/mcp-runner.mjs <jobDir>\mcp.json；预热通道优先 + 回退冷启动）
+  mcp-prewarm.js      host 侧预热域：常驻连接 supervisor + 127.0.0.1 回环代理（onclose 重连 / 有界退避 / 空闲 TTL）
+  dsh-profiles.js     DSH profile 判定 + cordis.patch.yml 的 MCP 条目解析/导入（不 eval !!js）
+  meta.js             包版本读取（设置页显示）
+  core/               host 域模块（store/notify/registry/watch/wait/jobs/mcp/web/tools + apply 装配）
   client.js           Web 面板 bundle（产物，提交入库；由 lib/client-src 构建而来）
   client-src/         网页面板源码（index/i18n/ui/panel/apply/monitor/sidebar-action/
-                      gui-prefs/settings-section；改后需 pnpm build:client）
+                      gui-prefs/settings-section/mcp-section；改后需 pnpm build:client）
 scripts/
   build-client.mjs    esbuild：lib/client-src → lib/client.js（产物提交，防漂移由 CI 把关）
   fix-bom.mjs         清理「多余（重复）的 UTF-8 BOM」（只去重、绝不新增 BOM；--write/--check）
 tests/
   helpers/common.js   共享测试工具与套件隔离（installSuiteHooks）
-  unit/tools/submit/watch/routes/sandbox/notify/wait.test.js
-                      node:test（零依赖，按功能分文件）：纯函数/提交/完成/恢复/路由/沙箱/通知
+  fixtures/demo-mcp-server.mjs
+                      本地 demo MCP server（零依赖纯 stdio；echo/sleep/fail；测试与手工自测用，不触网）
+  unit/tools/submit/watch/routes/sandbox/notify/wait/mcp/mcp-web.test.js
+                      node:test（零依赖，按功能分文件）：纯函数/提交/完成/恢复/路由/沙箱/通知/MCP
 tools/
   dsh-bgjobs.ps1 / dsh-bgjobs-lib.ps1   离线 CLI（DSH 不运行时管理任务；暂单文件，决策保留）
   dsh-bgjobs-gui.ps1 / dsh-bgjobs-gui.bat   WinForms GUI
   dsh-bgjobs-toast.ps1                   系统 Toast（WinRT，pwsh 7 自切 5.1）
   smoke-test.ps1                          离线 CLI 冒烟（pwsh 7 + 5.1）
 docs/developer.md   本文档
-package.json  版本即发布号；依赖 @deepseek-ai/dsh-sandbox-windows-acl + react；devDep esbuild
+package.json  版本即发布号；依赖 @deepseek-ai/dsh-sandbox-windows-acl + @modelcontextprotocol/sdk + yaml + react；devDep esbuild
 pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependencies: koffi + esbuild）
 ```
 
 ### host 域模型（v0.1.61 起，依赖无环）
 
-- 入口只做聚合；`apply(ctx)`（`lib/core/apply.js`）按依赖序创建各域：`store`（per-apply 状态：registry 注册表 + full access + **ui-prefs**（v0.1.65，左栏入口显隐偏好））← `notify` ← `registry` ← `watch` ← `wait`/`jobs` ← `web`/`tools`。
+- 入口只做聚合；`apply(ctx)`（`lib/core/apply.js`）按依赖序创建各域：`store`（per-apply 状态：registry 注册表 + full access + **ui-prefs**（v0.1.65，左栏入口显隐偏好）+ **MCP 开关/server 登记**）与 `prewarm`（MCP 常驻连接域，先于其它域创建）← `mcp` ← `notify` ← `registry` ← `watch` ← `wait`/`jobs` ← `web`/`tools`。
 - 每个域 = `createX(ctx, store, deps)` 工厂，返回 `{ api, dispose }`；跨域调用经 `deps` 注入的 `api` 解析（纯函数直接 import 叶子模块）。
 - 规则：凡「每插件实例一份」的可变状态必须在 `store` 或域工厂闭包内，**严禁模块级**（多 apply/测试隔离）。
 
@@ -110,6 +118,70 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
 - Windows ACL 沙箱是"尽力而为"非数学边界：workdir 落在 Everyone 可写树（如系统临时目录）会失效。
 - cmd 对被拒重定向不置 errorlevel（exit=0 但实际被拒，denial 只体现在输出文本 `Access is denied.`/「拒绝访问。」）——v1 不特判，日志可见即可。
 
+## MCP 引擎（bgjob_submit_mcp / bgjob_mcp_tools）
+
+把「MCP server + tool + 参数」当成第三种后台任务：仍由 schtasks 托管（关 DSH 继续跑）、面板可见、可 `wait`/`notify`，收尾仍靠 `exitcode.txt`。**MCP 任务独立开关控制，默认关闭**，且**不受会话访问模式限制**。
+
+### 三引擎对照
+
+| | bat（bgjob_submit） | pwsh（bgjob_submit_pwsh） | mcp（bgjob_submit_mcp） |
+|---|---|---|---|
+| 执行载体 | `cmd.bat` + `run.bat` + `launch.vbs`（wscript 隐藏窗口） | `run.ps1` 直接 `/TR` 调解释器 | **同 bat 管线**：`cmd.bat` 一行调 Node runner |
+| 权限/沙箱 | 恒全权限、不可沙箱化 | 可 `read-only`/`workspace-write`/`off` | 恒 `off`（无文件系统沙箱概念） |
+| 会话模式约束 | 受限会话仅 full access 开启时可提交 | 权限不高于会话模式（更宽需审批） | **不受限**（`jobSandboxDecision` 对 mcp 早退，见下） |
+| 依赖 | 无 | PowerShell | 插件自带 Node 依赖（SDK + yaml，随包发布） |
+
+**为什么 mcp 不受会话模式限制**（与 DSH 一致）：DSH 的 sandbox policy 只被**实施隔离的执行通道**消费——shell 沙箱执行器 `ctx.sandbox.confine`、`fs-sandbox`、`terminal-bash`；MCP server 由官方 SDK 的 `StdioClientTransport` 直接 spawn，**不经** `ctx.subprocess`/`ctx.sandbox`，MCP 工具注册与执行路径上也没有策略/审批门控。故 `jobSandboxDecision` 在 state 校验与 full access 判定**之前**对 `engine === 'mcp'` 直接返回 `{ mode:'off', escalate:false }`（`lib/sandbox.js`），`requested` 被忽略。
+
+### 提交与任务产物
+
+- `submitJob(..., engine='mcp', ..., extra)`：`extra = { mcpSpec, serverName }`。提交时解析 Node 解释器（优先 `process.execPath`，否则 `where.exe node`）、烘焙 `meta.mcpRunnerPath`（`lib/mcp-runner.mjs` 绝对路径）/`meta.nodeExe`/`meta.mcpSpecPath`，写 `jobDir\mcp.json`（任务自包含，不依赖设置文件），`meta.engine='mcp'`、`meta.mcp={server,tool,transport,prewarm}`、展示用 `meta.command = 'mcp: <server> → <tool>'`。
+- **双层开关校验**：① 工具 `execute` 入口（开关即时生效、无需重启，工具常驻注册以避免动态注册时序问题）；② `submitJob` 内 `engine==='mcp'` 时再校验（防程序直调绕过）——关闭时连 jobDir 都不创建。开关文案统一为 `store.js` 的 `MCP_DISABLED_ERROR`。
+- **runner 契约**（`lib/mcp-runner.mjs`，`node lib/mcp-runner.mjs <jobDir>\mcp.json`）：
+  - `mcp.json` = `{ server, transport:'stdio'|'streamable-http', command/args/env/cwd 或 url/headers, tool, arguments, timeoutMs, prewarm? }`；
+  - 先试预热通道（`prewarm.url` + `x-bgjobs-token`，3s 短超时），任何失败写 `[BGJOB] prewarm unavailable: …; falling back to cold start` 并**回退冷启动**；
+  - 退出码：`0` 成功 / `1` 工具 `isError` / `2` 配置·连接·调用失败 / `3` 超时；日志首行 `[BGJOB] mcp call: …`、末行 `[BGJOB] channel: prewarm|cold`；
+  - 产物：stdout 投影文本（→ `stdout.log`）、`result.json`（`{ ok, exitCode?, isError, channel, content, structuredContent?, server, tool, durationMs, error? }`）、冷启动时 `mcp-server.pid`（供删除时 `taskkill /PID /T /F` 回收）。
+- done 收尾时（`watch.js` 的 `checkCompletion`）对 mcp 任务补读 `result.json` 的 `channel` 落进 `meta.mcpChannel`，面板详情显示「执行通道：预热/冷启动」。
+
+### 预热（`lib/mcp-prewarm.js`，只做加速）
+
+- 形态对齐第一方 mcp-client：`onclose` 触发重连 + 有界指数退避（500ms 起、上限 30s、最多 10 次）、**不做 ping**；空闲 TTL 10 分钟回收（每 60s 扫一次，定时器 `unref`）。连接尝试**按 server 去重（单飞）**——否则并发 `warm` 会重复 spawn 同一 stdio server，未记录的那些成为孤儿进程（实测会把测试进程卡住）；连接期间被 `unwarm`/dispose 则立即关闭。
+- 回环代理：`http.createServer` 自绑 `127.0.0.1:0`（**不依赖 DSH webServer 端口 API**），`POST /call`（调用）与 `POST /tools`（列工具），鉴权 = 每次 apply 随机 `randomUUID()` token（`x-bgjobs-token`）；同一 server 的调用经一条串行队列。
+- token 与端口**只写进该任务的 `mcp.json`**（`prewarm:{url,token}`），不写设置文件、不进日志。代理生命周期挂在插件 dispose 链上。
+- 开关联动：MCP 总开关开启 → 对 `prewarm:true` 的 server 预连；关闭 → `unwarmAll()`。host 不在/代理不可达/坏 token → runner 回退冷启动，**任务照常成功**（"任务脱离 DSH 也能跑"的保证不变）。
+- runner 与 supervisor 共用 `lib/mcp-connect.js`（env 清洗 `/KEY|PASSWORD|SECRET|TOKEN/i` 与 `DSH_*`、transport 构造、`tools/list` 分页、结果投影），避免两套实现漂移。
+
+### 工具列表与缓存（`lib/core/mcp.js`）
+
+- 来源优先级：live 工具注册表 `ctx.tools.schemas()` 的 `mcp__<server>__*`（**零启动开销**，DSH 已连接就免 spawn）→ `mcp-tools-cache.json`（TTL 10 分钟）→ 实际连接探测（该 server 预热开启时走常驻连接，否则冷启动一次）。返回 `source: 'registry'|'cache'|'probe'` 与 `channel`。
+- 只回传工具名/描述（截断 200 字符）/必填字段名摘要，避免上下文膨胀。
+- 口径差异（有意为之）：agent 侧 `bgjob_mcp_tools` **受 MCP 开关限制**（防模型在未开启时反复 spawn）；设置页「列出工具」（`POST /bgjobs/mcpservers?probe=1`）是用户显式操作，**不受限制**。
+- `bgjob_submit_mcp` 提交前会先取一次工具清单做**工具名纠错**：清单拿到了但没有该 tool 名 → 直接拒绝并附可用清单（截断 30 个）；探测失败不阻断提交（任务里会重新连接并报真实原因）。
+
+### DSH 配置导入（`lib/dsh-profiles.js`）
+
+- **活动 profile 三级判定**（`detectActiveProfile`，返回 `detectedBy` 供设置页显示依据）：① `process.argv` 的 `--profile <name>`；② **realpath 比对**——本插件包根（`<root>/lib/<file>` 上溯两级）的 realpath == `profiles/<n>/node_modules/bgjobs` 的 realpath（兼容 `link:` 与 pnpm 软链安装）；③ 只有一个 profile 目录。都不成立 → `{ name: null, reason }` 并给出 `candidates`，**绝不兜底 web**（参考插件 `@xxxyz/dsh-mcp-manager` 2.2.7 的「先 web 再 headless 再任意」在 r4 下会展示错 profile，本模块不复制该缺陷）。
+- `readMcpConfigs(scope)`：`active` / `global`（`$DSH_HOME/cordis.patch.yml`）/ 具体 profile 名；抽出 `name: '@deepseek-ai/dsh-mcp-client'` 的条目（支持 `- insert: [...]` 与顶层直挂两种写法），映射成 `{ id, serverName, transport, enabled, needsAttention, config }`。
+- **不 eval 任何表达式**：解析前把 `!!js '…'` 整体替换为占位符再交给 `yaml`（未知 tag 不抛错）；含占位符的条目标 `needsAttention: true` + `attentionReason`；`disabled: true` 映射为 `enabled:false`。
+- 导入**只读** DSH 配置、一次性拷贝（同名不覆盖 → `skipped`；`needsAttention` 默认拒导，`force=1` 才导），不回写 DSH 的 patch，也不接管其 MCP 生命周期。
+
+### 端点与持久化
+
+- `GET/POST /bgjobs/mcpprefs`（`mcp-prefs.json`，默认 `{enabled:false}`，联动预热）。
+- `GET/POST /bgjobs/mcpservers`（`mcp-servers.json` = `{ servers: { <name>: <config + prewarm> } }`）：GET 列表**不回传 env/headers 的值**（只回键名）；POST 新增/覆盖（`?config=<urlencoded JSON>` 或 JSON body）、`?delete=1`、`?prewarm=0|1`、`?probe=1`。写入经 `normalizeConfig` 校验（fail loud），未显式给 `prewarm` 时保留原值。
+- `GET /bgjobs/dsh-mcp`（活动 profile + 各 scope 条目 + 已登记名）、`POST /bgjobs/dsh-mcp?action=import&scope=…&name=…&force=…`。
+- store 的 MCP 懒读是**单飞 + 读回填不覆盖期间写入**：并发读共享同一次文件读，且若读回填时缓存已被 `setMcp*` 写入，保留写入值（否则用户点开关/登记的那几毫秒里会被在读的旧值覆盖——实测过的竞态）。
+- 离线 CLI/GUI **不做 MCP 提交**（`Submit-BgjobsJob` 的 `-Engine` 仍是 `bat|pwsh`），只要求只读查看/删除对未知 `engine` 不报错（`engine` 只是展示字段，不参与分支）。
+
+### 本地 demo server（测试/自测）
+
+`tests/fixtures/demo-mcp-server.mjs` 是零依赖纯 stdio NDJSON 的最小 MCP server，提供 `echo {text}` / `sleep {seconds}`（上限 30s）/ `fail {message?}`；环境开关 `DEMO_MCP_STALL_MS`（每请求前延迟）、`DEMO_MCP_BROKEN=1`（不响应 `initialize`）。自动化测试与手工验证**一律用它**（不触网、不依赖付费 MCP）。手工自测可登记为：
+
+```json
+{ "transport": "stdio", "command": "<node 绝对路径>", "args": ["<repo>/tests/fixtures/demo-mcp-server.mjs"] }
+```
+
 ## 完成通知创建者Agent（v0.1.31，可选 notify）
 
 - 参数：`notify` = `off`（缺省，仅 toast）/ `on-completion`（仅 exit 0）/ `on-fail`（仅非零）/ `on-exit`（任何退出）；`notify_mode` = `wakeup`（缺省）/ `quiet` / `always`。
@@ -166,11 +238,13 @@ submit ─► [pending-running] ──done──► [pending-done]
 
 ### 测试
 
-- `pnpm test`（=`node --test "tests/**/*.test.js"`，不依赖 DSH）。用例按功能分布在 `tests/*.test.js`（unit / tools / submit / watch / routes / sandbox / notify / wait），共享工具与套件隔离在 `tests/helpers/common.js`。覆盖：纯函数、工具注册契约、提交/完成/恢复/保留、webServer 路由、沙箱决策矩阵与审批、notify 矩阵与送达路由、wait/交付标记。
+- `pnpm test`（=`node --test "tests/**/*.test.js"`，不依赖 DSH）。用例按功能分布在 `tests/*.test.js`（unit / tools / submit / watch / routes / sandbox / notify / wait / mcp / mcp-web），共享工具与套件隔离在 `tests/helpers/common.js`。覆盖：纯函数、工具注册契约、提交/完成/恢复/保留、webServer 路由、沙箱决策矩阵与审批、notify 矩阵与送达路由、wait/交付标记、MCP（开关双层拦截 / 提交与 mcp.json 落盘 / server 登记解析 / runner 端到端 / 工具列表与缓存 / 预热通道与回退 / profile 判定与 DSH 导入 / 端点）。MCP 用例一律用 `tests/fixtures/demo-mcp-server.mjs`（本地、离线）。
+- 测试替身 seam（模块级，测试内成对恢复）：`setSchtasksRunner`（schtasks/icacls/taskkill 都走它）、`setShellResolver`、`setSandboxRunnerResolver`、`setPrewarmFactory`（捕获本 apply 的预热域以驱动 warm/endpoint 断言）。
 - 回归注意：
   - `/bgjobs/state` 路由含 `await readFullAccess()` → 测试调 `handler` 必须 `await`；
   - makeCtx mock 需提供 `ctx.on`（apply 注册了 `agent/inbox/claimed`）；触发事件 = `onCallbacks.find(...)?.fn(payload)`；
-  - 视图是**附加字段宽容**的（`finishedAt` 等），但新增依赖字段的 UI 要显式断言其存在。
+  - 视图是**附加字段宽容**的（`finishedAt` 等），但新增依赖字段的 UI 要显式断言其存在；
+  - MCP 预热相关用例会真起 `127.0.0.1` 回环代理与子进程：代理监听已 `unref`、定时器已 `unref`，用例结束务必 `dispose()`/恢复 `setPrewarmFactory`，否则残留子进程会拖住测试进程退出。
 - `tools/smoke-test.ps1`：离线 CLI 冒烟，**pwsh 7 与 powershell 5.1 各跑一遍**。
 
 > 测试脚本中不得出现个人用户名或本机路径。

@@ -21,11 +21,14 @@ Built for long-running work — large downloads, batch scripts, compilation, dat
 | Reconnect & track | Auto-recovers after a DSH restart; old job ids can still be queried from disk |
 | Offline management | CLI / GUI that don't need DSH: list / status / log / submit / kill / cleanup |
 | Optional sandbox | `bgjob_submit_pwsh` optional `sandbox` constrains job file permissions to no more than the current session mode |
+| MCP tool calls | `bgjob_submit_mcp` submits one MCP tool call as a background job (**settings-page switch, off by default**); register servers by hand or import them from the DSH config; optional "pre-warm" resident connection for speed |
 | No residue | A finished job removes its own scheduled task; done jobs stay visible until you clean them up |
 
 ## Install / uninstall
 
 Prereqs: DSH (`@deepseek-ai/dsh`), PowerShell 7, and Node.js (≥22 for docs below; package requires ^22.19.0 or >=24), Windows.
+
+> The MCP engine (`bgjob_submit_mcp`) runs on the plugin's own Node dependencies: `@modelcontextprotocol/sdk` and `yaml` ship with the package and are installed by `dsh plugin add`; a local source checkout needs one `pnpm install`. DSH's bundled Node is enough — nothing else to install.
 
 **Method A (recommended, npm release)**
 
@@ -69,7 +72,7 @@ allowBuilds:
 
 Only the first install needs this — once koffi is compiled it stays compiled, and upgrades/reinstalls don't repeat the step.
 
-Restart DSH afterwards: the "Background Jobs Monitor" panel appears bottom-right of the web page and the agent gains `bgjob_submit` / `bgjob_submit_pwsh` / `bgjob_status` / `bgjob_wait` tools.
+Restart DSH afterwards: the "Background Jobs Monitor" panel appears bottom-right of the web page and the agent gains `bgjob_submit` / `bgjob_submit_pwsh` / `bgjob_submit_mcp` / `bgjob_mcp_tools` / `bgjob_status` / `bgjob_wait` tools (the two MCP tools require turning on the "MCP jobs" switch in Settings first).
 
 **Method C (local source)**
 
@@ -89,6 +92,8 @@ Restart DSH afterwards: the "Background Jobs Monitor" panel appears bottom-right
 
 - `bgjob_submit(name, command, workdir, [wait], [notify], [notify_mode])` — submit a background job (`command` is **bat** syntax); `wait` = seconds to wait in place after submitting (0/omitted = return immediately; >0 behaves like `bgjob_wait` with no ids — wait for any of the current session's jobs to finish, falling back to the just-submitted job when no session info);
 - `bgjob_submit_pwsh(name, command, workdir, [wait], [sandbox], [justification], [notify], [notify_mode])` — submit a background job (`command` is **PowerShell** syntax, UTF-8 logs, safe `exit <code>` semantics); `wait` same as above;
+- `bgjob_submit_mcp(name, workdir, tool, [arguments], server | server_config, [timeout_seconds], [wait], [notify], [notify_mode])` — submit one **MCP tool call** as a background job (third engine, also `schtasks`-hosted, visible in the panel, wait/notify supported). `server` is a name registered on the settings page, `server_config` is an inline config (`{transport:"stdio",command,args,env,cwd}` or `{transport:"streamable-http",url,headers}`) — give exactly one. The job connects to that server and calls the tool once; the result lands in the log and `<jobDir>/result.json` (`channel` records whether it hit a pre-warmed resident connection or did a cold start). Exit codes: `0` success / `1` tool reported an error / `2` connect or call failed / `3` timeout. **Off by default — turn on the "MCP jobs" switch in Settings first** (calls are refused otherwise). As in DSH, the session access mode (read-only, …) does **not** restrict MCP jobs. Check tool names with `bgjob_mcp_tools` first;
+- `bgjob_mcp_tools(server | server_config, [refresh])` — list that MCP server's tools (name/description/required fields) to confirm tool names and argument shape before submitting; `refresh: true` bypasses the 10-minute cache. DSH's already-registered `mcp__<server>__*` tools are used first (zero startup cost); only on a miss does it actually connect/spawn the server to probe. Also gated by the "MCP jobs" switch;
 - `bgjob_status(jobId)` — query status / exit code / log tail;
 - `bgjob_wait(jobId | jobIds, [timeoutSeconds])` — wait for background job(s) and **return immediately** with exit codes and log tails (default up to 120s). Three modes: single `jobId` waits for that job; a `jobIds` array is **any-race** (returns as soon as one finishes, with the finisher + the rest pending); omitting both waits for **any job of the current session** to finish;
 - `bgjob_wait_all(jobIds, [timeoutSeconds])` — wait until **all** of the given jobs finish and return each one's exit code/log tail plus `allDone` (on timeout returns partial states to re-wait); omitting `jobIds` waits for all jobs of the current session;
@@ -109,6 +114,12 @@ Then:
 
 Top bar, left to right: cleanup (opens the bottom trash bar: drag a finished job to delete, or bulk-clean >24h / all), collapse (to a compact job list), minimize (floating bubble anchored at the button). Toolbar toggles: "Only this session" (show only the current session's workspace jobs) and "Full access" (pre-approve full-access jobs; off by default). Click a job row to expand its live log. Panel copy follows the DSH UI language (Chinese DSH → Chinese panel, otherwise English).
 
+**MCP jobs (further down the same Settings page, off by default)**:
+
+- **MCP jobs switch**: controls whether the agent may use `bgjob_submit_mcp` / `bgjob_mcp_tools` (refused, with a pointer to the switch, while off). Takes effect immediately, no DSH restart. As in DSH, the session access mode (read-only, …) does not restrict MCP jobs;
+- **MCP servers**: register servers the agent can reference by name (name + JSON config). Each row offers a "Pre-warm" toggle, "List tools" (expand tool names, click to copy) and "Delete"; the list only returns env/headers **key names**, never values. Pre-warming is a resident connection for speed only (valid while DSH runs; on failure the job falls back to a cold start, so correctness never depends on it);
+- **MCP in DSH (import)**: reads the `@deepseek-ai/dsh-mcp-client` entries already configured in the **active profile** or the global `cordis.patch.yml` and imports them into the bgjobs registry with one click (read-only with respect to the DSH config). The header shows the active profile and how it was detected (command-line `--profile` / module-path realpath / single profile); entries containing `!!js` expressions are **never evaluated** and are skipped by default (fill in env/headers manually).
+
 ## Offline CLI (works without DSH)
 
 ```powershell
@@ -128,8 +139,8 @@ Double-click `tools\dsh-bgjobs-gui.bat` to open a standalone window (no DSH need
 
 ## Data & storage
 
-- Job data: `<workdir>\.dsh\bgjobs\<jobId>\` (`job.json` metadata, `stdout.log` output, `exitcode.txt` exit code);
-- Global state: `$DSH_HOME\bgjobs\index.json` (job "map"), `$DSH_HOME\bgjobs\fullaccess.json` (full-access switch);
+- Job data: `<workdir>\.dsh\bgjobs\<jobId>\` (`job.json` metadata, `stdout.log` output, `exitcode.txt` exit code; MCP jobs also have `mcp.json` for the call spec and `result.json` for the outcome);
+- Global state: `$DSH_HOME\bgjobs\index.json` (job "map"), `$DSH_HOME\bgjobs\fullaccess.json` (full-access switch), `$DSH_HOME\bgjobs\ui-prefs.json` (web UI prefs), `$DSH_HOME\bgjobs\mcp-prefs.json` (MCP jobs switch), `$DSH_HOME\bgjobs\mcp-servers.json` (MCP server registry incl. per-server pre-warm flag), `$DSH_HOME\bgjobs\mcp-tools-cache.json` (tool-list cache, 10 minutes);
 - `done` jobs persist by default until you clean them (panel 🧹 / CLI cleanup / GUI).
 
 ## Notes & limits
@@ -139,6 +150,7 @@ Double-click `tools\dsh-bgjobs-gui.bat` to open a standalone window (no DSH need
 - Don't put `> log`-style redirects in your command (the plugin already redirects all output and guarantees UTF-8);
 - **Sandbox**: `sandbox` only constrains file effects (writes outside the workspace/temp area are denied), network is unrestricted; it is "best effort", not a mathematical boundary — it fails if the workdir sits in an Everyone-writable location; sandboxed job dirs get Everyone:read (the script text is visible to local users); bat-engine jobs are always full-access, so restricted sessions must enable "Full access" to submit them;
 - In a restricted session, requesting more than the session mode triggers an approval prompt — put the reason in `justification`.
+- **MCP jobs**: off by default (enable in Settings); if a job is force-killed, its stdio MCP server child may linger (a normal finish is cleaned up by the host, which also kills the pid recorded for a job when you delete it); the "pre-warm" connection is only valid while DSH runs and never changes the "jobs survive DSH" guarantee; the offline CLI/GUI only view and delete MCP jobs — they do not submit MCP calls.
 
 ## Development
 

@@ -37,6 +37,12 @@ function makeClient(ctx, injectCallbacks) {
 }
 
 const demoConfig = () => ({ transport: 'stdio', command: process.execPath, args: [DEMO] })
+
+/** 打开 MCP 总开关（默认关闭；测试直接写 prefs 文件，等价于设置页 POST /bgjobs/mcpprefs）。 */
+const enableMcp = async () => {
+  await fsp.mkdir(path.dirname(bgjobsFile('mcp-prefs.json')), { recursive: true })
+  await fsp.writeFile(bgjobsFile('mcp-prefs.json'), JSON.stringify({ enabled: true }), 'utf8')
+}
 const dshPatch = [
   "- insert:",
   "    - name: '@deepseek-ai/dsh-mcp-client'",
@@ -216,6 +222,43 @@ test('web: /bgjobs/dsh-mcp 只读列示 + 导入（同名跳过 / !!js 默认拒
     assert.match(badScope.error, /no DSH MCP config/)
   } finally {
     dispose()
+  }
+})
+
+// ── 展示与清理（引擎标签 / 通道 / pid 回收） ────────────────────────────
+
+test('web: mcp 任务 done 后 state 带 engine/channel；删除时回收 stdio server pid', async () => {
+  await enableMcp()
+  const calls = []
+  setSchtasksRunner(makeFakeRunner(calls))
+  const workdir = await makeWorkdir()
+  const { ctx, tools, intervals, injectCallbacks } = makeCtx({ services: {} })
+  const dispose = apply(ctx)
+  try {
+    const res = await tools.find((t) => t.name === 'bgjob_submit_mcp').execute(
+      { name: 't', workdir, tool: 'echo', server_config: demoConfig(), arguments: { text: 'x' } },
+      { agent: { session: { id: 's1' } } },
+    )
+    assert.equal(res.ok, true)
+    const jobDir = path.join(workdir, '.dsh', 'bgjobs', res.jobId)
+    await fsp.writeFile(path.join(jobDir, 'result.json'), JSON.stringify({ ok: true, channel: 'prewarm' }), 'utf8')
+    await fsp.writeFile(path.join(jobDir, 'mcp-server.pid'), '4242', 'utf8')
+    await fsp.writeFile(path.join(jobDir, 'exitcode.txt'), '0', 'utf8')
+    await intervals.find((i) => i.ms === 1000).fn() // 触发完成检测（tick）
+
+    const call = makeClient(ctx, injectCallbacks)
+    const job = (await call('/bgjobs/state')).jobs.find((j) => j.id === res.jobId)
+    assert.equal(job.status, 'done')
+    assert.equal(job.engine, 'mcp', 'state 视图应带引擎标签')
+    assert.equal(job.channel, 'prewarm', 'state 视图应带执行通道')
+    assert.equal((await readJson(path.join(jobDir, 'job.json'))).mcpChannel, 'prewarm', '通道落盘供离线只读展示')
+
+    const del = await call('/bgjobs/delete?id=' + res.jobId)
+    assert.equal(del.ok, true)
+    assert.ok(calls.some((argv) => String(argv[0]).includes('taskkill') && argv.includes('4242')), '删除 mcp 任务应回收 server pid')
+  } finally {
+    dispose()
+    await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
   }
 })
 
