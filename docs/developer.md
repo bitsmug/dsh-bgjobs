@@ -84,13 +84,23 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
 ### bgjob_wait（v0.1.51）
 
 - 目的：agent 需要「等结果继续」时不再用前台 `pwsh sleep` 反复轮询；`bgjob_wait(jobId, timeoutSeconds?)` 等到任务 done 立即返回退出码/日志尾。
+- **硬约定（v0.1.82，与 `buildBgjobsGuidance` 一致）**：等结果只用 `bgjob_wait` / `bgjob_wait_all`（或 submit* 的 `wait` 参数），**禁止**用 `sleep` / `Start-Sleep` / `timeout` 或「循环 + `bgjob_status`」代替——阻塞式等待占住回合、收不到新消息、还可能被超时打断。并行提交多个任务后默认用 `bgjob_wait` 的 any 竞速：先拿到先处理，其余用 `pending` 继续等，不必等齐。
 - 实现：轮询 `waitSnapshot(jobId)`——注册表命中时对 running 任务复用既有 `checkCompletion(job)`（幂等收尾：置 done/写盘/通知），未命中回退 `statusFromDisk`；间隔与**任务自身已运行时长**成正比（`clamp(250ms, taskAge×10%, 1s)`，上限 1s 保证检测延迟 ≤~1s；v0.1.51 起，废弃按等待时长的档位退避），默认 120s、clamp 1–600s。
 - 语义：未知 id 立即返回 `not found` 不空等；等待期间任务被清理 → `status:'removed'`；超时返回 `timedOut:true` 的当前快照供 agent 再次调用；不替代 `notify`（异步收结果仍用 submit 的 notify）。
+- **`bgjob_wait_all` = 合取语义 + 失败短路（v0.1.82）**：`allDone:true` 只在**全部成功**时为真。失败判定 `e.ok === false`（not found）|| `e.status === 'removed'`（被清理，无法确认成功）|| `e.exitCode !== 0`（含 `exitCode` 为 `null`——done 但读不到退出码，同样无法确认成功）；MCP 引擎的非 0 码（1/2/3）自然覆盖。
+  - **一旦有失败立刻返回**：`{ allDone:false, failed:true, failedJobId, timedOut:false, results, pending }`——合取已确定为假，不必再等剩余任务。判定序固定：**全部成功结束 > 让路 > 失败短路 > 超时**（让路优先于失败：有人在等，先把回合交还，失败信息随时可再查）。
+  - 短路返回里**已终态者仍置交付**（`finishWaitResult` → `delivered·wait`；否则缺省 wait 会把它们再返回一次），未结束者给 running 占位并列入 `pending`；**不调 `concludeTurn`**——失败是"有活要干"，回合应继续，agent 可立即处置。
+  - `waitAnyOf`（any 竞速）与 submit 的 `wait` 参数**不受影响**：失败也是"结束"，本来就立即返回。
 - **停止路径 = 抛工具自有错误，不是返回快照**（v0.1.74）：用户点停止/打断 → `exec.signal` abort → 本次等待**抛** `Error`（`err.code = 'BGJOB_WAIT_STOPPED'`，文案含最多 3 条 `id=status(exit n)` 摘要 + `…(+N more)` + 续等指引）。
   - **为什么不能返回快照**：DSH 的取消不变式会把「caller 取消后 settle 的**成功**结果」替换成合成错误 `Error: tool call aborted`——`packages/core/tools/src/index.ts:1539-1543` 的 `isAborted(signal) ? toolAbortedResult(result) : result`，以及 `:1580-1585` / `:1599-1607` 两处也是同样处理（`callerCancelled(exec) && !result.isError`）。所以「停止时返回 stopped 快照」在结构上**送达不了模型**；反之**抛出的错误不会被替换**（复核条件都带 `!isError`），first-party 工具（`tool-bash` / `tool-pwsh` / `jobs-local`）也是这个范式。
   - 结构化信息写在 message 文本里（`errorInfo()` 只对 harness 的 `HarnessError` 实例产出 `{name, code}`，见 `:635-641`；本插件不引 harness 依赖，`err.code` 仅供插件侧测试/日志）。语义不变：任务继续后台跑、不置 delivered（抛错路径**不得**调 `finishWaitResult`/`markDeliveredId`）、可再次 `bgjob_wait` 续等。
   - **不采用 `deferContext` 注入消息**：那会把工具结果改成"稍后注入"，破坏 wait 的本义（同步拿结果），且注入时机/顺序不受调用方控制；错误形态已能携带全部可操作信息。
-- **新入站消息让路仍是正常返回**（`stoppedBy:'message'`，v0.1.72）：不涉及 abort，值能正常送达，保持 `stopped:true` 快照（`stoppedSingle` 只服务这条路径）。`stoppedBy:'signal'` 不再出现在返回值里（输出 schema 保留该字段给 message 用）。
+- **新入站消息让路 = 正常返回 + 声明回合终结**（`stoppedBy:'message'`，v0.1.72；`concludeTurn` 自 v0.1.82）：不涉及 abort，值能正常送达，保持 `stopped:true` 快照（`stoppedSingle` 只服务这条路径）。`stoppedBy:'signal'` 不再出现在返回值里（输出 schema 保留该字段给 message 用）。
+  - 返回**不含消息正文**：`buildInboxWatch` 只对 `inbox.nextStep` / `inbox.nextTurn` 的消息 id 序列做「wait 起点基准 + 差分」，不读消息内容。
+  - 让路时另调 `concludeTurnOf(exec)` → `exec.concludeTurn()`，把本次**成功**结果标记为「终结当前 agent 回合」（dsh-tools 契约 `ToolRunContext.concludeTurn` → `ToolExecutionSuccess.concludesTurn`；一方先例：`dsh-subagent-in-process-driver` 的 `structured_output` 工具）。DSH 侧链路：`concluded` → 该 step 判 `completed` → `nextStep` 非空则**同回合立即开下一步**并领取投递；否则回合结束、`inbox.hasPending` 为真 → **自动开新回合**领取投递（见 `dsh-agent-loop/lib/index.js` 的 `turn()` 尾段与 `preStep` 的 `claim`、`dsh-agent/lib/types/inbox.js` 的 `claim`）。
+  - **为什么必须声明**：`bgjob_wait` 是步内长工具、没有步边界。agent 若在让路后继续等待或跑耗时操作，回合不结束，`inbox` 里**排在本轮之后的用户消息（next-turn）永远不会被领取**——这就是"让路后读不到消息"的根因。机制保证优于文案约定，故不再靠指引要求 agent 自觉收敛回合。
+  - **降级**：`exec.concludeTurn` 不存在（老版本 DSH / 测试替身）→ 静默跳过，退回"仅返回 stopped 快照"（try/catch 兜住冻结或异常实现）。
+  - **已评估但未采用**：① 读 `inbox.nextStep`/`nextTurn` 正文放进返回——用户明确选择不读，且 DSH 之后仍会正式投递一次，模型会看到两遍；② `inbox.remove(id)` 做 exactly-once——其语义是"取消待投递消息"（写 `outcome:'canceled'` splice），用户自己的消息将不再作为正式用户消息出现，且插件去改 agent loop 的收件箱属越界；③ `exec.deferContext` 主动注入（理由同上文停止路径：破坏 wait 的同步语义）。
 - submit 糖（v0.1.52）：`bgjob_submit` / `bgjob_submit_pwsh` 传 `wait: <秒>`（1–600）会在提交成功后自动等待任务结束（内部同一 `waitJobDone`，超时返回 timedOut 快照）；提交失败不进入等待。
 
 ### 保留策略（v0.1.32 起）
@@ -297,7 +307,7 @@ submit ─► [pending-running] ──done──► [pending-done]
 
 1. 递增 `package.json` 版本（默认只升末位）；
 2. 若改过 `lib/client-src/`：先 `pnpm build:client` 再确认 `git diff --exit-code -- lib/client.js`（产物已提交、无漂移；CI 发布前也会重建并比对）；
-3. 更新 `README.md` / `docs/developer.md` 如有用户/开发者可读变化；
+3. 更新 `README.md`（包括「近期更新」） / `docs/developer.md` 如有用户/开发者可读变化；
 4. `pnpm test` 全绿 + `pnpm check:bom` 无「多余 BOM」→ `git add`（按文件）→ commit。
 
 > 发布前抽查发布面：`npm pack --dry-run 2>&1 | Select-String "tools/dsh-bgjobs|client-src"`——应含 `tools/`（离线 CLI/GUI/toast 随包）、**不含** `lib/client-src`（构建源）。

@@ -274,7 +274,7 @@ test('bgjob_wait 缺省空视图：会话无未交付任务 → empty 空返回�
 })
 
 
-test('bgjob_wait_all：全部完成返回 allDone，含各自退出码；超时返回部分', async () => {
+test('bgjob_wait_all：全部成功才 allDone（含各自退出码）；超时返回部分', async () => {
   setSchtasksRunner(makeFakeRunner([]))
   const workdir = await makeWorkdir()
   const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
@@ -285,16 +285,17 @@ test('bgjob_wait_all：全部完成返回 allDone，含各自退出码；超时�
     const a = await submit.execute({ name: 'a', command: 'echo a', workdir }, { agent: { session: { id: 's1' } } })
     const b = await submit.execute({ name: 'b', command: 'echo b', workdir }, { agent: { session: { id: 's1' } } })
     await fsp.writeFile(workdir + '\\.dsh\\bgjobs\\' + a.jobId + '\\exitcode.txt', '0', 'utf8')
-    await fsp.writeFile(workdir + '\\.dsh\\bgjobs\\' + b.jobId + '\\exitcode.txt', '7', 'utf8')
+    await fsp.writeFile(workdir + '\\.dsh\\bgjobs\\' + b.jobId + '\\exitcode.txt', '0', 'utf8')
     const r = await all.execute({ jobIds: [a.jobId, b.jobId], timeoutSeconds: 5 })
     assert.equal(r.ok, true)
     assert.equal(r.allDone, true)
+    assert.equal(r.failed, undefined, '全部成功时不应有 failed 字段')
     assert.equal(r.timedOut, false)
     assert.equal(r.results.length, 2)
     const ra = r.results.find((x) => x.jobId === a.jobId)
     const rb = r.results.find((x) => x.jobId === b.jobId)
     assert.equal(ra.exitCode, 0)
-    assert.equal(rb.exitCode, 7)
+    assert.equal(rb.exitCode, 0)
     // 一直 running → 超时 allDone:false
     const c = await submit.execute({ name: 'c', command: 'echo c', workdir }, { agent: { session: { id: 's1' } } })
     const t = await all.execute({ jobIds: [c.jobId], timeoutSeconds: 1 })
@@ -307,6 +308,124 @@ test('bgjob_wait_all：全部完成返回 allDone，含各自退出码；超时�
     await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
   }
 })
+
+
+// ── v0.1.82 bgjob_wait_all 失败短路（合取语义：任一失败即合取为假，不必等齐）────────────────
+
+test('bgjob_wait_all: 有任务失败即刻短路返回（不等齐），已终态者置交付、其余进 pending', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  const workdir = await makeWorkdir()
+  const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
+  const dispose = apply(ctx)
+  try {
+    const all = tools.find((t) => t.name === 'bgjob_wait_all')
+    const a = await submitRunning(workdir, tools)
+    const b = await submitRunning(workdir, tools)
+    const c = await submitRunning(workdir, tools)
+    await fsp.writeFile(path.join(b.jobDir, 'exitcode.txt'), '1', 'utf8')
+    const started = Date.now()
+    const r = await all.execute({ jobIds: [a.jobId, b.jobId, c.jobId], timeoutSeconds: 30 })
+    assert.equal(r.ok, true)
+    assert.equal(r.allDone, false, '有失败 → 合取为假，不置 allDone')
+    assert.equal(r.failed, true)
+    assert.equal(r.failedJobId, b.jobId)
+    assert.equal(r.timedOut, false)
+    assert.ok(Date.now() - started < 5000, '失败应即刻返回，不等齐（waitedMs=' + r.waitedMs + '）')
+    assert.equal(r.results.length, 3)
+    const rb = r.results.find((x) => x.jobId === b.jobId)
+    assert.equal(rb.exitCode, 1)
+    assert.equal(r.results.find((x) => x.jobId === a.jobId).status, 'running', '未结束者给 running 占位')
+    assert.deepEqual([...r.pending].sort(), [a.jobId, c.jobId].sort(), '未结束者进 pending')
+    const metaB = JSON.parse(await fsp.readFile(path.join(b.jobDir, 'job.json'), 'utf8'))
+    assert.ok(metaB.notifiedAt, '短路返回里已终态者应置交付（delivered·wait）')
+    const metaA = JSON.parse(await fsp.readFile(path.join(a.jobDir, 'job.json'), 'utf8'))
+    assert.ok(metaA.notifiedAt === undefined || metaA.notifiedAt === null, '未结束者不置交付')
+  } finally {
+    dispose()
+    await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+test('bgjob_wait_all: 已失败的任务不空等（首次快照即短路）', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  const workdir = await makeWorkdir()
+  const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
+  const dispose = apply(ctx)
+  try {
+    const all = tools.find((t) => t.name === 'bgjob_wait_all')
+    const a = await submitRunning(workdir, tools)
+    const b = await submitRunning(workdir, tools)
+    await fsp.writeFile(path.join(b.jobDir, 'exitcode.txt'), '3', 'utf8')
+    const started = Date.now()
+    const r = await all.execute({ jobIds: [a.jobId, b.jobId], timeoutSeconds: 30 })
+    assert.equal(r.failed, true)
+    assert.equal(r.failedJobId, b.jobId)
+    assert.ok(Date.now() - started < 1000, '首次快照即应短路（waitedMs=' + r.waitedMs + '）')
+  } finally {
+    dispose()
+    await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+test('bgjob_wait_all: 无法确认成功也算失败（not found / 中途被清理触发短路）', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  const workdir = await makeWorkdir()
+  const { ctx, tools, injectCallbacks } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
+  const dispose = apply(ctx)
+  try {
+    const all = tools.find((t) => t.name === 'bgjob_wait_all')
+    // not found：id 不存在 → 无法确认成功
+    const miss = await all.execute({ jobIds: ['bg-nonexistent-x'], timeoutSeconds: 5 })
+    assert.equal(miss.failed, true)
+    assert.equal(miss.failedJobId, 'bg-nonexistent-x')
+    assert.equal(miss.allDone, false)
+    // removed：等待中途任务被清理（registry 移除 + 目录删除）→ status:'removed' → 短路
+    const a = await submitRunning(workdir, tools)
+    const jobs = attachWebServer(ctx, injectCallbacks)
+    const p = all.execute({ jobIds: [a.jobId], timeoutSeconds: 10 })
+    setTimeout(() => {
+      const res = { writeHead: () => {}, end: () => {} }
+      jobs().handler({ url: '/bgjobs/delete?id=' + a.jobId }, res).catch(() => {})
+    }, 300)
+    const again = await p
+    assert.equal(again.failed, true, '被清理 → 无法确认成功 → 短路')
+    assert.equal(again.failedJobId, a.jobId)
+    assert.equal(again.results[0].status, 'removed')
+  } finally {
+    dispose()
+    await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+test('bgjob_wait_all: 让路优先于失败（有新入站消息 → stoppedBy message，不算 failed）', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  const workdir = await makeWorkdir()
+  const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
+  const dispose = apply(ctx)
+  try {
+    const all = tools.find((t) => t.name === 'bgjob_wait_all')
+    const a = await submitRunning(workdir, tools)
+    const b = await submitRunning(workdir, tools)
+    const stepArr = []
+    const exec = inboxExec(stepArr, [])
+    const p = all.execute({ jobIds: [a.jobId, b.jobId], timeoutSeconds: 30 }, exec)
+    setTimeout(() => {
+      // 新消息 + 失败同时发生 → 让路优先
+      fsp.writeFile(path.join(b.jobDir, 'exitcode.txt'), '1', 'utf8').catch(() => {})
+      stepArr.push({ id: 'agent-msg-all-1', content: [{ type: 'text', text: 'hi' }] })
+    }, 300)
+    const r = await p
+    assert.equal(r.ok, true)
+    assert.equal(r.stopped, true)
+    assert.equal(r.stoppedBy, 'message')
+    assert.equal(r.failed, undefined, '让路优先于失败')
+    assert.equal(exec.concluded(), 1, '让路应声明终结回合恰好一次')
+  } finally {
+    dispose()
+    await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
 
 
 test('bgjob_list：仅返回本会话任务，字段齐全', async () => {
@@ -623,9 +742,11 @@ test('bgjob_submit wait= 参数共享中断：提交后原地等待被 signal ab
 
 // ── v0.1.72 新入站消息自动让路（exec.agent.inbox 差分 → stoppedBy:'message'）─────────────────
 
-/** 构造带可变 inbox 的 fake exec（nextStep/nextTurn 由外部数组承载，模拟 send_message steer）。 */
+/** 构造带可变 inbox 的 fake exec（nextStep/nextTurn 由外部数组承载，模拟 send_message steer）。
+ *  v0.1.82：附 `concludeTurn()` 计数桩 —— exec.concluded() 断言「让路时声明了本回合终结」的次数。 */
 function inboxExec(stepArr, turnArr) {
   const controller = new AbortController()
+  let concluded = 0
   return {
     agent: {
       inbox: {
@@ -634,10 +755,12 @@ function inboxExec(stepArr, turnArr) {
       },
     },
     signal: controller.signal,
+    concludeTurn() { concluded++ },
+    concluded() { return concluded },
   }
 }
 
-test('bgjob_wait: 等待中 inbox 出现新消息（send_message steer）→ stoppedBy:\'message\', 不置 delivered', async () => {
+test('bgjob_wait: 等待中 inbox 出现新消息（send_message steer）→ stoppedBy:\'message\', 不置 delivered, 声明回合终结', async () => {
   setSchtasksRunner(makeFakeRunner([]))
   const workdir = await makeWorkdir()
   const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
@@ -657,6 +780,8 @@ test('bgjob_wait: 等待中 inbox 出现新消息（send_message steer）→ sto
     assert.equal(w.stoppedBy, 'message')
     assert.equal(w.timedOut, false)
     assert.equal(w.status, 'running')
+    assert.equal(w.inbound, undefined, '让路返回不含消息正文')
+    assert.equal(exec.concluded(), 1, '让路应声明终结当前回合恰好一次')
     assert.ok(Date.now() - started < 3000, '新消息让路应尽快返回（waitedMs=' + w.waitedMs + '）')
     const meta = JSON.parse(await fsp.readFile(path.join(jobDir, 'job.json'), 'utf8'))
     assert.ok(meta.notifiedAt === undefined || meta.notifiedAt === null, 'stopped(message) 不置已交付')
@@ -682,7 +807,55 @@ test('bgjob_wait: wait 起点已排队的旧消息不触发让路（只响应新
     assert.equal(w.ok, true)
     assert.equal(w.timedOut, true, '旧消息不触发，应等到超时')
     assert.equal(w.stopped, undefined)
+    assert.equal(exec.concluded(), 0, '超时不声明回合终结')
     assert.ok(Date.now() - started >= 900, '应等满 timeoutSeconds（waitedMs=' + w.waitedMs + '）')
+  } finally {
+    dispose()
+    await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+test('bgjob_wait: 任务先完成 → 走 done 分支（已交付）、不声明回合终结', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  const workdir = await makeWorkdir()
+  const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
+  const dispose = apply(ctx)
+  try {
+    const { jobId, jobDir } = await submitRunning(workdir, tools)
+    await fsp.writeFile(path.join(jobDir, 'exitcode.txt'), '0', 'utf8')
+    const wait = tools.find((t) => t.name === 'bgjob_wait')
+    const stepArr = []
+    const exec = inboxExec(stepArr, [])
+    const w = await wait.execute({ jobId, timeoutSeconds: 5 }, exec)
+    assert.equal(w.status, 'done')
+    assert.equal(w.exitCode, 0)
+    assert.equal(exec.concluded(), 0, '任务已结束（done 优先）时不声明回合终结')
+    const meta = JSON.parse(await fsp.readFile(path.join(jobDir, 'job.json'), 'utf8'))
+    assert.ok(meta.notifiedAt, 'done 结果应置交付（delivered·wait）')
+  } finally {
+    dispose()
+    await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+test('bgjob_wait: exec 无 concludeTurn（老版本 DSH / 替身）→ 让路仍正常返回、不抛错', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  const workdir = await makeWorkdir()
+  const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
+  const dispose = apply(ctx)
+  try {
+    const { jobId } = await submitRunning(workdir, tools)
+    const wait = tools.find((t) => t.name === 'bgjob_wait')
+    const stepArr = []
+    const exec = {
+      agent: { inbox: { get nextStep() { return stepArr }, get nextTurn() { return [] } } },
+      signal: new AbortController().signal,
+    }
+    const p = wait.execute({ jobId, timeoutSeconds: 30 }, exec)
+    setTimeout(() => stepArr.push({ id: 'msg-no-conclude', content: [{ type: 'text', text: 'hi' }] }), 300)
+    const w = await p
+    assert.equal(w.ok, true)
+    assert.equal(w.stoppedBy, 'message', '无 concludeTurn 也不应阻断让路')
   } finally {
     dispose()
     await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})

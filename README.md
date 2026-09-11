@@ -94,10 +94,11 @@ allowBuilds:
 - `bgjob_submit_pwsh(name, command, workdir, [wait], [sandbox], [justification], [notify], [notify_mode])` — 提交后台任务（command 为 **PowerShell** 语法，UTF-8 日志、`exit <code>` 语义安全）；`wait` 同上；
 - `bgjob_submit_mcp(name, workdir, tool, [arguments], server | server_config, [timeout_seconds], [wait], [notify], [notify_mode])` — 把一次 **MCP 工具调用**提交为后台任务（第三引擎，同样由 schtasks 托管、面板可见、可 wait/notify）。`server` 是设置页登记的 server 名，`server_config` 是内联配置（`{transport:"stdio",command,args,env,cwd}` 或 `{transport:"streamable-http",url,headers}`），二者二选一。任务里连接该 server 调用一次工具，结果写日志与 `<jobDir>/result.json`（`channel` 记录本次是命中预热常驻连接还是冷启动），退出码 `0` 成功 / `1` 工具报错 / `2` 连接或调用失败 / `3` 超时。**默认关闭，需先在设置页打开「MCP 任务」开关**（未开启时调用会被拒绝）；与 DSH 一致，会话访问模式（read-only 等）**不限制** MCP 任务。建议先用 `bgjob_mcp_tools` 确认工具名；
 - `bgjob_mcp_tools(server | server_config, [refresh])` — 列出该 MCP server 的注册工具（工具名/描述/必填字段名），提交前用它确认工具名与参数形状；`refresh: true` 绕过 10 分钟缓存。优先用 DSH 已注册的 `mcp__<server>__*` 工具（零启动开销），未命中才真正连接/启动 server 探测；同样受「MCP 任务」开关限制；
-- `bgjob_status(jobId)` — 查询状态 / 退出码 / 日志尾部；
-- `bgjob_wait(jobId | jobIds, [timeoutSeconds])` — 等待后台任务结束并**立即返回**退出码与日志尾部（默认最多 120s）。三种用法：单个 `jobId` 等该任务；`jobIds` 数组 = **任一先结束即返回**（any 竞速，返回完成者 + 其余 pending）；两者都缺省 = 等**本会话**任务任一结束；
-- `bgjob_wait_all(jobIds, [timeoutSeconds])` — 等一批任务**全部**结束，返回每个任务的退出码/日志尾 + `allDone`（超时返回部分状态可续等）；`jobIds` 缺省 = 本会话全部任务；
+- `bgjob_status(jobId)` — 查询状态 / 退出码 / 日志尾部；仅用于查看当前状态，不要拿它循环轮询（等待用 `bgjob_wait`）；
+- `bgjob_wait(jobId | jobIds, [timeoutSeconds])` — 等待后台任务结束并**立即返回**退出码与日志尾部（默认最多 120s）。三种用法：单个 `jobId` 等该任务；`jobIds` 数组 = **任一先结束即返回**（any 竞速，返回完成者 + 其余 pending）——**并行提交多个任务时的默认姿势**：先拿到先处理，其余用 `pending` 继续等，不必等齐；两者都缺省 = 等**本会话**任务任一结束；
+- `bgjob_wait_all(jobIds, [timeoutSeconds])` — **合取语义**：等一批任务**全部成功**才返回 `allDone: true` + 每个任务的退出码/日志尾；**任一任务失败即立刻返回** `failed: true` + `failedJobId` + 已结束者的 `results` + 其余 `pending`（非 0 退出码，或被清理/找不到都算失败），不再等齐；超时返回部分状态可续等。只在「必须全部成功才能继续」或「一个失败就马上停」时使用——只想边拿边推进请用 `bgjob_wait` 的 any 竞速；`jobIds` 缺省 = 本会话全部任务；
 - `bgjob_list` — 列出当前 agent 会话提交的全部任务（id/状态/退出码），配合 wait 工具缺省使用。
+- **不要用 sleep 轮询**：等结果用 `bgjob_wait` / `bgjob_wait_all`；不要用 `sleep` / `Start-Sleep` / `timeout`，也不要用「循环 `bgjob_status`」代替（占住回合、收不到新消息）。
 
 直接对 AI 说一句即可：
 
@@ -157,14 +158,18 @@ allowBuilds:
 - **沙箱**：`sandbox` 只约束文件效果（写工作区/临时区外会被拒），网络不受限；它是"尽力而为"而非数学边界——工作目录若落在 Everyone 可写的位置会失效；沙箱任务的任务目录会授 Everyone 只读（脚本文本对本地用户可见）；bat 引擎任务恒为全权限，受限会话需开启「全权限」才能提交；
 - 受限会话里请求超出会话模式的权限会弹窗审批，`justification` 说明理由即可。
 - **MCP 任务**：默认关闭（设置页开启）；被删除/强杀的任务，其 stdio MCP server 子进程可能残留（正常完成后由 host 清理，见「删除」时的 pid 回收）；每个 server 在设置页可切「预热 / 冷启动 / 禁用」三态——**禁用**会让 `bgjob_submit_mcp` / `bgjob_mcp_tools` 拒绝该 server 并断开其常驻连接（「列出工具」仍可用）；「预热」连接只在 DSH 存活期有效，不改变"任务脱离 DSH 也能跑"；离线 CLI/GUI 只读查看与删除 MCP 任务，不在离线侧提交 MCP；`mcp-servers.json`、导出文本与任务目录的 `mcp.json` 都含**明文密钥**，分享/归档前请脱敏。
-- **等待被停止 ≠ 任务失败**：agent 等待任务时你点「停止/打断」，本次等待会**以错误结束**（错误文案写明各任务当前状态并提示可续等）。这是 DSH 的取消语义——调用方取消后，成功返回的东西送不到模型，只能以错误形态呈现；任务本身继续后台运行、不标记已交付，agent 可再次 `bgjob_wait` 续等。等待期间收到其它 agent 的消息则正常返回让路（`stoppedBy: 'message'`）。
+- **等待被停止 ≠ 任务失败**：agent 等待任务时你点「停止/打断」，本次等待会**以错误结束**（错误文案写明各任务当前状态并提示可续等）。这是 DSH 的取消语义——调用方取消后，成功返回的东西送不到模型，只能以错误形态呈现；任务本身继续后台运行、不标记已交付，agent 可再次 `bgjob_wait` 续等。等待期间收到其它 agent 的消息则正常返回让路（`stoppedBy: 'message'`）：该返回**不含消息正文**，但这次调用会**声明终结当前回合**——DSH 随即把你/它发来的消息作为正式用户消息投递给 agent（排在本轮之后的排队消息亦然）；agent 不应再用等待或阻塞操作顶替它。
 - **MCP 超时收尾有 1–2 秒宽限**：MCP 任务超时/失败后 host 会关闭连接并回收 server 子进程（SDK `close()` 内部会先等约 2 秒再升级），所以 `result.json` 里的 `durationMs` 可能比 `timeoutMs` 多 1–2 秒（同文件也记了 `timeoutMs` 便于对照）。
 
 ## 维护与开发
 
 架构设计、机制细节、测试与发布流程见 [docs/developer.md](docs/developer.md)。
 
-## 近期更新（v0.1.62 → v0.1.80）
+## 近期更新（v0.1.62 → v0.1.82）
+
+- **等待被新消息让路后自动交还回合**：`bgjob_wait` / `bgjob_wait_all` 因新入站消息返回（`stoppedBy: 'message'`）时会**声明终结当前回合**（DSH 工具执行契约 `exec.concludeTurn`），DSH 随即把该消息作为正式用户消息投递给 agent——不再出现"agent 继续等待、消息递不进来"（v0.1.82）。
+- **`bgjob_wait_all` 改为合取语义**：`allDone` 只在**全部成功**时为真；任一任务失败（非 0 退出码 / 被清理 / 找不到）即刻返回 `failed:true` + `failedJobId` + 已结束者 `results` + 其余 `pending`，不再空等。并行提交后的默认姿势改为 `bgjob_wait` 的 any 竞速（先拿到先推进）（v0.1.82）。
+- **指引明确禁止系统 sleep 等待**：等结果只用 `bgjob_wait` / `bgjob_wait_all`，不要用 `sleep` / `Start-Sleep` / `timeout`，也不要「循环 `bgjob_status`」；指引改为分节结构并补齐 `bgjob_submit_mcp` / `bgjob_mcp_tools`（v0.1.82）。
 
 - **新增 MCP 后台任务引擎**：`bgjob_submit_mcp` 把一次 MCP 工具调用提交为后台任务——与 bat/pwsh 一样由任务计划程序托管、面板可见、支持等待/通知；默认关闭，在设置页「MCP 任务」开启后可用（v0.1.80）。
 - **独立的「MCP 任务」设置页**：总开关、server 登记（含编辑与「列出工具」）、导出/导入（DSH 兼容 YAML 片段与 bgjobs JSON 原样回读）、从 DSH 现有配置一键导入（不 eval `!!js` 表达式，并提示明文密钥风险）。
