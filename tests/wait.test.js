@@ -200,7 +200,7 @@ test('bgjob_submit_pwsh wait=1：提交后自动等待 done', async () => {
   }
 })
 
-// ── 多任务等待（v0.1.59）：bgjob_wait any 竞速 / bgjob_wait_all / bgjob_list ──
+// ── 多任务等待（v0.1.59）：bgjob_wait any 竞速 / logic:'all'（原 bgjob_wait_all） / bgjob_list ──
 
 
 test('bgjob_wait jobIds 数组：任一先完成即返回（any 竞速）', async () => {
@@ -219,12 +219,41 @@ test('bgjob_wait jobIds 数组：任一先完成即返回（any 竞速）', asyn
     const r = await wait.execute({ jobIds: [a.jobId, b.jobId], timeoutSeconds: 5 })
     assert.equal(r.ok, true)
     assert.equal(r.anyDone, true)
+    assert.equal(r.allDone, undefined, '缺省 logic 是 any，不返回 allDone')
     assert.equal(r.timedOut, false)
     assert.equal(r.result.jobId, a.jobId, '先完成者应命中')
     assert.equal(r.result.status, 'done')
     assert.equal(r.result.exitCode, 0)
     assert.deepEqual(r.pending, [b.jobId], '未完成的 b 应在 pending')
     assert.ok(r.waitedMs < 5000)
+  } finally {
+    dispose()
+    await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+
+test("bgjob_wait: 缺省（不传 logic）与显式 logic:'any' 都是 any 语义（v0.1.83 合并后缺省不变）", async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  const workdir = await makeWorkdir()
+  const exec = { agent: { session: { id: 's1' } } }
+  const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
+  const dispose = apply(ctx)
+  try {
+    const submit = tools.find((t) => t.name === 'bgjob_submit')
+    const wait = tools.find((t) => t.name === 'bgjob_wait')
+    const a = await submit.execute({ name: 'a', command: 'echo a', workdir }, exec)
+    const b = await submit.execute({ name: 'b', command: 'echo b', workdir }, exec)
+    await fsp.writeFile(workdir + '\\.dsh\\bgjobs\\' + a.jobId + '\\exitcode.txt', '0', 'utf8')
+    await fsp.writeFile(workdir + '\\.dsh\\bgjobs\\' + b.jobId + '\\exitcode.txt', '0', 'utf8')
+    for (const args of [{ jobIds: [a.jobId, b.jobId] }, { jobIds: [a.jobId, b.jobId], logic: 'any' }]) {
+      const r = await wait.execute(Object.assign({ timeoutSeconds: 5 }, args))
+      assert.equal(r.anyDone, true, 'any 语义：' + JSON.stringify(args))
+      assert.equal(r.allDone, undefined, 'any 模式不返回 allDone')
+      assert.equal(r.failed, undefined, 'any 模式不返回 failed')
+      assert.equal(r.results, undefined, 'any 模式不返回 results 数组')
+      assert.ok(r.result && r.result.jobId, 'any 模式返回单个 result')
+    }
   } finally {
     dispose()
     await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
@@ -274,19 +303,19 @@ test('bgjob_wait 缺省空视图：会话无未交付任务 → empty 空返回�
 })
 
 
-test('bgjob_wait_all：全部成功才 allDone（含各自退出码）；超时返回部分', async () => {
+test("bgjob_wait(logic:'all')：全部成功才 allDone（含各自退出码）；超时返回部分", async () => {
   setSchtasksRunner(makeFakeRunner([]))
   const workdir = await makeWorkdir()
   const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
   const dispose = apply(ctx)
   try {
     const submit = tools.find((t) => t.name === 'bgjob_submit')
-    const all = tools.find((t) => t.name === 'bgjob_wait_all')
+    const waitAll = tools.find((t) => t.name === 'bgjob_wait')
     const a = await submit.execute({ name: 'a', command: 'echo a', workdir }, { agent: { session: { id: 's1' } } })
     const b = await submit.execute({ name: 'b', command: 'echo b', workdir }, { agent: { session: { id: 's1' } } })
     await fsp.writeFile(workdir + '\\.dsh\\bgjobs\\' + a.jobId + '\\exitcode.txt', '0', 'utf8')
     await fsp.writeFile(workdir + '\\.dsh\\bgjobs\\' + b.jobId + '\\exitcode.txt', '0', 'utf8')
-    const r = await all.execute({ jobIds: [a.jobId, b.jobId], timeoutSeconds: 5 })
+    const r = await waitAll.execute({ jobIds: [a.jobId, b.jobId], timeoutSeconds: 5, logic: 'all' })
     assert.equal(r.ok, true)
     assert.equal(r.allDone, true)
     assert.equal(r.failed, undefined, '全部成功时不应有 failed 字段')
@@ -298,7 +327,7 @@ test('bgjob_wait_all：全部成功才 allDone（含各自退出码）；超时�
     assert.equal(rb.exitCode, 0)
     // 一直 running → 超时 allDone:false
     const c = await submit.execute({ name: 'c', command: 'echo c', workdir }, { agent: { session: { id: 's1' } } })
-    const t = await all.execute({ jobIds: [c.jobId], timeoutSeconds: 1 })
+    const t = await waitAll.execute({ jobIds: [c.jobId], timeoutSeconds: 1, logic: 'all' })
     assert.equal(t.ok, true)
     assert.equal(t.allDone, false)
     assert.equal(t.timedOut, true)
@@ -310,21 +339,21 @@ test('bgjob_wait_all：全部成功才 allDone（含各自退出码）；超时�
 })
 
 
-// ── v0.1.82 bgjob_wait_all 失败短路（合取语义：任一失败即合取为假，不必等齐）────────────────
+// ── bgjob_wait 的 logic:'all' 失败短路（合取语义：任一失败即合取为假，不必等齐）────────────────
 
-test('bgjob_wait_all: 有任务失败即刻短路返回（不等齐），已终态者置交付、其余进 pending', async () => {
+test("bgjob_wait(logic:'all'): 有任务失败即刻短路返回（不等齐），已终态者置交付、其余进 pending", async () => {
   setSchtasksRunner(makeFakeRunner([]))
   const workdir = await makeWorkdir()
   const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
   const dispose = apply(ctx)
   try {
-    const all = tools.find((t) => t.name === 'bgjob_wait_all')
+    const waitAll = tools.find((t) => t.name === 'bgjob_wait')
     const a = await submitRunning(workdir, tools)
     const b = await submitRunning(workdir, tools)
     const c = await submitRunning(workdir, tools)
     await fsp.writeFile(path.join(b.jobDir, 'exitcode.txt'), '1', 'utf8')
     const started = Date.now()
-    const r = await all.execute({ jobIds: [a.jobId, b.jobId, c.jobId], timeoutSeconds: 30 })
+    const r = await waitAll.execute({ jobIds: [a.jobId, b.jobId, c.jobId], timeoutSeconds: 30, logic: 'all' })
     assert.equal(r.ok, true)
     assert.equal(r.allDone, false, '有失败 → 合取为假，不置 allDone')
     assert.equal(r.failed, true)
@@ -346,18 +375,18 @@ test('bgjob_wait_all: 有任务失败即刻短路返回（不等齐），已终�
   }
 })
 
-test('bgjob_wait_all: 已失败的任务不空等（首次快照即短路）', async () => {
+test("bgjob_wait(logic:'all'): 已失败的任务不空等（首次快照即短路）", async () => {
   setSchtasksRunner(makeFakeRunner([]))
   const workdir = await makeWorkdir()
   const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
   const dispose = apply(ctx)
   try {
-    const all = tools.find((t) => t.name === 'bgjob_wait_all')
+    const waitAll = tools.find((t) => t.name === 'bgjob_wait')
     const a = await submitRunning(workdir, tools)
     const b = await submitRunning(workdir, tools)
     await fsp.writeFile(path.join(b.jobDir, 'exitcode.txt'), '3', 'utf8')
     const started = Date.now()
-    const r = await all.execute({ jobIds: [a.jobId, b.jobId], timeoutSeconds: 30 })
+    const r = await waitAll.execute({ jobIds: [a.jobId, b.jobId], timeoutSeconds: 30, logic: 'all' })
     assert.equal(r.failed, true)
     assert.equal(r.failedJobId, b.jobId)
     assert.ok(Date.now() - started < 1000, '首次快照即应短路（waitedMs=' + r.waitedMs + '）')
@@ -367,22 +396,22 @@ test('bgjob_wait_all: 已失败的任务不空等（首次快照即短路）', a
   }
 })
 
-test('bgjob_wait_all: 无法确认成功也算失败（not found / 中途被清理触发短路）', async () => {
+test("bgjob_wait(logic:'all'): 无法确认成功也算失败（not found / 中途被清理触发短路）", async () => {
   setSchtasksRunner(makeFakeRunner([]))
   const workdir = await makeWorkdir()
   const { ctx, tools, injectCallbacks } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
   const dispose = apply(ctx)
   try {
-    const all = tools.find((t) => t.name === 'bgjob_wait_all')
+    const waitAll = tools.find((t) => t.name === 'bgjob_wait')
     // not found：id 不存在 → 无法确认成功
-    const miss = await all.execute({ jobIds: ['bg-nonexistent-x'], timeoutSeconds: 5 })
+    const miss = await waitAll.execute({ jobIds: ['bg-nonexistent-x'], timeoutSeconds: 5, logic: 'all' })
     assert.equal(miss.failed, true)
     assert.equal(miss.failedJobId, 'bg-nonexistent-x')
     assert.equal(miss.allDone, false)
     // removed：等待中途任务被清理（registry 移除 + 目录删除）→ status:'removed' → 短路
     const a = await submitRunning(workdir, tools)
     const jobs = attachWebServer(ctx, injectCallbacks)
-    const p = all.execute({ jobIds: [a.jobId], timeoutSeconds: 10 })
+    const p = waitAll.execute({ jobIds: [a.jobId], timeoutSeconds: 10, logic: 'all' })
     setTimeout(() => {
       const res = { writeHead: () => {}, end: () => {} }
       jobs().handler({ url: '/bgjobs/delete?id=' + a.jobId }, res).catch(() => {})
@@ -397,18 +426,18 @@ test('bgjob_wait_all: 无法确认成功也算失败（not found / 中途被清�
   }
 })
 
-test('bgjob_wait_all: 让路优先于失败（有新入站消息 → stoppedBy message，不算 failed）', async () => {
+test("bgjob_wait(logic:'all'): 让路优先于失败（有新入站消息 → stoppedBy message，不算 failed）", async () => {
   setSchtasksRunner(makeFakeRunner([]))
   const workdir = await makeWorkdir()
   const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
   const dispose = apply(ctx)
   try {
-    const all = tools.find((t) => t.name === 'bgjob_wait_all')
+    const waitAll = tools.find((t) => t.name === 'bgjob_wait')
     const a = await submitRunning(workdir, tools)
     const b = await submitRunning(workdir, tools)
     const stepArr = []
     const exec = inboxExec(stepArr, [])
-    const p = all.execute({ jobIds: [a.jobId, b.jobId], timeoutSeconds: 30 }, exec)
+    const p = waitAll.execute({ jobIds: [a.jobId, b.jobId], timeoutSeconds: 30, logic: 'all' }, exec)
     setTimeout(() => {
       // 新消息 + 失败同时发生 → 让路优先
       fsp.writeFile(path.join(b.jobDir, 'exitcode.txt'), '1', 'utf8').catch(() => {})
@@ -609,11 +638,11 @@ test('bgjob_pending_list：仅本会话未交付任务', async () => {
 })
 
 
-test('bgjob_wait_all 缺省空视图 → allDone 真空返回', async () => {
+test("bgjob_wait(logic:'all') 缺省空视图 → allDone 真空返回", async () => {
   const { ctx, tools } = makeCtx({ services: {} })
   const dispose = apply(ctx)
-  const all = tools.find((t) => t.name === 'bgjob_wait_all')
-  const r = await all.execute({}, { agent: { session: { id: 'nosess' } } })
+  const waitAll = tools.find((t) => t.name === 'bgjob_wait')
+  const r = await waitAll.execute({ logic: 'all' }, { agent: { session: { id: 'nosess' } } })
   assert.equal(r.ok, true)
   assert.equal(r.allDone, true)
   assert.equal(r.timedOut, false)
@@ -689,25 +718,25 @@ test('bgjob_wait jobIds(any): signal abort → 抛 BGJOB_WAIT_STOPPED（文案�
   }
 })
 
-test('bgjob_wait_all: signal abort → 抛 BGJOB_WAIT_STOPPED（不置 delivered、任务仍可查）', async () => {
+test("bgjob_wait(logic:'all'): signal abort → 抛 BGJOB_WAIT_STOPPED（不置 delivered、任务仍可查）", async () => {
   setSchtasksRunner(makeFakeRunner([]))
   const workdir = await makeWorkdir()
   const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
   const dispose = apply(ctx)
   try {
     const { jobId, jobDir } = await submitRunning(workdir, tools)
-    const all = tools.find((t) => t.name === 'bgjob_wait_all')
+    const waitAll = tools.find((t) => t.name === 'bgjob_wait')
     const status = tools.find((t) => t.name === 'bgjob_status')
     const controller = new AbortController()
-    const p = all.execute({ jobIds: [jobId], timeoutSeconds: 30 }, { agent: undefined, signal: controller.signal })
+    const p = waitAll.execute({ jobIds: [jobId], timeoutSeconds: 30, logic: 'all' }, { agent: undefined, signal: controller.signal })
     setTimeout(() => controller.abort(), 300)
     await assert.rejects(p, (e) => {
       assert.equal(e.code, 'BGJOB_WAIT_STOPPED')
-      assert.match(e.message, /bgjob_wait_all was stopped by the user/, '错误文案点名 bgjob_wait_all')
+      assert.match(e.message, /bgjob_wait was stopped by the user/, '错误文案点名 bgjob_wait')
       return true
     })
     const meta = JSON.parse(await fsp.readFile(path.join(jobDir, 'job.json'), 'utf8'))
-    assert.ok(meta.notifiedAt === undefined || meta.notifiedAt === null, 'wait_all stopped 不置已交付')
+    assert.ok(meta.notifiedAt === undefined || meta.notifiedAt === null, 'logic:all stopped 不置已交付')
     const st = await status.execute({ jobId }, { agent: undefined })
     assert.equal(st.status, 'running', '任务仍在后台运行')
   } finally {

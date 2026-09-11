@@ -84,10 +84,10 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
 ### bgjob_wait（v0.1.51）
 
 - 目的：agent 需要「等结果继续」时不再用前台 `pwsh sleep` 反复轮询；`bgjob_wait(jobId, timeoutSeconds?)` 等到任务 done 立即返回退出码/日志尾。
-- **硬约定（v0.1.82，与 `buildBgjobsGuidance` 一致）**：等结果只用 `bgjob_wait` / `bgjob_wait_all`（或 submit* 的 `wait` 参数），**禁止**用 `sleep` / `Start-Sleep` / `timeout` 或「循环 + `bgjob_status`」代替——阻塞式等待占住回合、收不到新消息、还可能被超时打断。并行提交多个任务后默认用 `bgjob_wait` 的 any 竞速：先拿到先处理，其余用 `pending` 继续等，不必等齐。
+- **硬约定（v0.1.82，与 `buildBgjobsGuidance` 一致）**：等结果只用 `bgjob_wait`（或 submit* 的 `wait` 参数），**禁止**用 `sleep` / `Start-Sleep` / `timeout` 或「循环 + `bgjob_status`」代替——阻塞式等待占住回合、收不到新消息、还可能被超时打断。并行提交多个任务后默认用 `bgjob_wait` 的 any 竞速：先拿到先处理，其余用 `pending` 继续等，不必等齐。
 - 实现：轮询 `waitSnapshot(jobId)`——注册表命中时对 running 任务复用既有 `checkCompletion(job)`（幂等收尾：置 done/写盘/通知），未命中回退 `statusFromDisk`；间隔与**任务自身已运行时长**成正比（`clamp(250ms, taskAge×10%, 1s)`，上限 1s 保证检测延迟 ≤~1s；v0.1.51 起，废弃按等待时长的档位退避），默认 120s、clamp 1–600s。
 - 语义：未知 id 立即返回 `not found` 不空等；等待期间任务被清理 → `status:'removed'`；超时返回 `timedOut:true` 的当前快照供 agent 再次调用；不替代 `notify`（异步收结果仍用 submit 的 notify）。
-- **`bgjob_wait_all` = 合取语义 + 失败短路（v0.1.82）**：`allDone:true` 只在**全部成功**时为真。失败判定 `e.ok === false`（not found）|| `e.status === 'removed'`（被清理，无法确认成功）|| `e.exitCode !== 0`（含 `exitCode` 为 `null`——done 但读不到退出码，同样无法确认成功）；MCP 引擎的非 0 码（1/2/3）自然覆盖。
+- **`bgjob_wait` 的 `logic:'all'` 模式（原独立工具 `bgjob_wait_all`）= 合取语义 + 失败短路**（v0.1.82 引入；v0.1.83 合并回 `bgjob_wait` 的 `logic` 参数，工具数 9 → 8）：`allDone:true` 只在**全部成功**时为真。失败判定 `e.ok === false`（not found）|| `e.status === 'removed'`（被清理，无法确认成功）|| `e.exitCode !== 0`（含 `exitCode` 为 `null`——done 但读不到退出码，同样无法确认成功）；MCP 引擎的非 0 码（1/2/3）自然覆盖。
   - **一旦有失败立刻返回**：`{ allDone:false, failed:true, failedJobId, timedOut:false, results, pending }`——合取已确定为假，不必再等剩余任务。判定序固定：**全部成功结束 > 让路 > 失败短路 > 超时**（让路优先于失败：有人在等，先把回合交还，失败信息随时可再查）。
   - 短路返回里**已终态者仍置交付**（`finishWaitResult` → `delivered·wait`；否则缺省 wait 会把它们再返回一次），未结束者给 running 占位并列入 `pending`；**不调 `concludeTurn`**——失败是"有活要干"，回合应继续，agent 可立即处置。
   - `waitAnyOf`（any 竞速）与 submit 的 `wait` 参数**不受影响**：失败也是"结束"，本来就立即返回。
@@ -254,7 +254,7 @@ submit ─► [pending-running] ──done──► [pending-done]
 | delivered·wait | wait 返回了该结果 | 任一 wait（jobId/any/all/submit wait）命中返回前 `markDeliveredId(id,'wait')` | ✘ |
 | removed | 已删除 | cleanup / 拖删 | ✘ |
 
-- **notify 视图** = 本会话（`createdBySession`）中 pending 的任务；`sessionPendingIds` 单一实现，供 `bgjob_wait`/`bgjob_wait_all` 缺省与 `bgjob_pending_list` 同源。
+- **notify 视图** = 本会话（`createdBySession`）中 pending 的任务；`sessionPendingIds` 单一实现，供 `bgjob_wait` 缺省（any 与 `logic:'all'` 两种模式）与 `bgjob_pending_list` 同源。
 - wait 返回某任务结果即视为一次「上下文注入」——done 结果在返回前被置 delivered·wait 并落盘；已交付任务不会被缺省 wait 重复返回。
 - 面板 `/bgjobs/state` 的 `view()`、`bgjob_list`/GUI 均输出 `notified/notifiedAt/notifiedBy`；GUI 列表加「通知」列。
 
@@ -308,7 +308,8 @@ submit ─► [pending-running] ──done──► [pending-done]
 1. 递增 `package.json` 版本（默认只升末位）；
 2. 若改过 `lib/client-src/`：先 `pnpm build:client` 再确认 `git diff --exit-code -- lib/client.js`（产物已提交、无漂移；CI 发布前也会重建并比对）；
 3. 更新 `README.md`（包括「近期更新」） / `docs/developer.md` 如有用户/开发者可读变化；
-4. `pnpm test` 全绿 + `pnpm check:bom` 无「多余 BOM」→ `git add`（按文件）→ commit。
+4. `pnpm test` 全绿 + `pnpm check:bom` 无「多余 BOM」→ `git add`（按文件）→ commit；
+5. 打 tag 并推送：`git tag v<版本>` → `git push` → `git push --tags`。本仓库**不发 GitHub Release**，版本以 tag 为准（README 页首 GitHub tag 徽章读的就是 tag），漏打 tag 会让徽章停在旧版本。
 
 > 发布前抽查发布面：`npm pack --dry-run 2>&1 | Select-String "tools/dsh-bgjobs|client-src"`——应含 `tools/`（离线 CLI/GUI/toast 随包）、**不含** `lib/client-src`（构建源）。
 

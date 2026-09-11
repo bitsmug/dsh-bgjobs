@@ -3,6 +3,7 @@
 **中文** · [English](README.en.md)
 
 [![npm version](https://img.shields.io/npm/v/bgjobs)](https://www.npmjs.com/package/bgjobs)
+[![GitHub tag](https://img.shields.io/github/v/tag/bitsmug/dsh-bgjobs)](https://github.com/bitsmug/dsh-bgjobs/tags)
 [![License](https://img.shields.io/npm/l/bgjobs)](LICENSE)
 [![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)
 
@@ -26,11 +27,11 @@
 
 ## 安装 / 卸载
 
-前置：已安装 DSH（`@deepseek-ai/dsh`）、PowerShell 7 与 Node.js（≥22），Windows 系统。
+前置：已安装 DSH（`@deepseek-ai/dsh`）、PowerShell 7 与 Node.js（≥22），Windows 系统。（已在 DSH `0.1.2-rc.1` ~ `0.1.5-rc.2` · Windows 10 · PowerShell 7 · Node.js 24 上验证）
 
 > MCP 引擎（`bgjob_submit_mcp`）由插件自带的 Node 依赖跑：`@modelcontextprotocol/sdk` 与 `yaml` 随包发布，`dsh plugin add` 会自动装上；本地源码开发需先在该目录执行一次 `pnpm install`。DSH 自带的 Node 即可，无需另装。
 
-**方式 A（推荐，npm 发布版）**
+**方式 A（快速，npm 发布版）**
 
 ```sh
 $pf="web"; dsh plugin --profile $pf add bgjobs || dsh plugin --profile $pf approve-builds koffi; dsh plugin --profile $pf add bgjobs && Write-Host "✓ bgjobs安装成功！" -ForegroundColor Green
@@ -95,19 +96,26 @@ allowBuilds:
 - `bgjob_submit_mcp(name, workdir, tool, [arguments], server | server_config, [timeout_seconds], [wait], [notify], [notify_mode])` — 把一次 **MCP 工具调用**提交为后台任务（第三引擎，同样由 schtasks 托管、面板可见、可 wait/notify）。`server` 是设置页登记的 server 名，`server_config` 是内联配置（`{transport:"stdio",command,args,env,cwd}` 或 `{transport:"streamable-http",url,headers}`），二者二选一。任务里连接该 server 调用一次工具，结果写日志与 `<jobDir>/result.json`（`channel` 记录本次是命中预热常驻连接还是冷启动），退出码 `0` 成功 / `1` 工具报错 / `2` 连接或调用失败 / `3` 超时。**默认关闭，需先在设置页打开「MCP 任务」开关**（未开启时调用会被拒绝）；与 DSH 一致，会话访问模式（read-only 等）**不限制** MCP 任务。建议先用 `bgjob_mcp_tools` 确认工具名；
 - `bgjob_mcp_tools(server | server_config, [refresh])` — 列出该 MCP server 的注册工具（工具名/描述/必填字段名），提交前用它确认工具名与参数形状；`refresh: true` 绕过 10 分钟缓存。优先用 DSH 已注册的 `mcp__<server>__*` 工具（零启动开销），未命中才真正连接/启动 server 探测；同样受「MCP 任务」开关限制；
 - `bgjob_status(jobId)` — 查询状态 / 退出码 / 日志尾部；仅用于查看当前状态，不要拿它循环轮询（等待用 `bgjob_wait`）；
-- `bgjob_wait(jobId | jobIds, [timeoutSeconds])` — 等待后台任务结束并**立即返回**退出码与日志尾部（默认最多 120s）。三种用法：单个 `jobId` 等该任务；`jobIds` 数组 = **任一先结束即返回**（any 竞速，返回完成者 + 其余 pending）——**并行提交多个任务时的默认姿势**：先拿到先处理，其余用 `pending` 继续等，不必等齐；两者都缺省 = 等**本会话**任务任一结束；
-- `bgjob_wait_all(jobIds, [timeoutSeconds])` — **合取语义**：等一批任务**全部成功**才返回 `allDone: true` + 每个任务的退出码/日志尾；**任一任务失败即立刻返回** `failed: true` + `failedJobId` + 已结束者的 `results` + 其余 `pending`（非 0 退出码，或被清理/找不到都算失败），不再等齐；超时返回部分状态可续等。只在「必须全部成功才能继续」或「一个失败就马上停」时使用——只想边拿边推进请用 `bgjob_wait` 的 any 竞速；`jobIds` 缺省 = 本会话全部任务；
+- `bgjob_wait(jobId | jobIds, [timeoutSeconds], [logic])` — 等待后台任务结束并**立即返回**退出码与日志尾部（默认最多 120s）。两种模式（`logic`）：
+  - **`any`（缺省）**：单个 `jobId` 等该任务；`jobIds` 数组 = **任一先结束即返回**（any 竞速，返回完成者 + 其余 `pending`）——**并行提交多个任务时的默认姿势**：先拿到先处理，其余用 `pending` 继续等，不必等齐；两者都缺省 = 等**本会话**任务任一结束；
+  - **`all`（合取）**：等一批任务**全部成功**才返回 `allDone: true` + 每个任务的退出码/日志尾；**任一任务失败即立刻返回** `failed: true` + `failedJobId` + 已结束者的 `results` + 其余 `pending`（非 0 退出码，或被清理/找不到都算失败），不再等齐；超时返回部分状态可续等。只在「必须全部成功才能继续」且「一个失败就马上停」时使用——只想边拿边推进请用缺省的 `any`；`jobIds` 缺省 = 本会话全部任务；
 - `bgjob_list` — 列出当前 agent 会话提交的全部任务（id/状态/退出码），配合 wait 工具缺省使用。
-- **不要用 sleep 轮询**：等结果用 `bgjob_wait` / `bgjob_wait_all`；不要用 `sleep` / `Start-Sleep` / `timeout`，也不要用「循环 `bgjob_status`」代替（占住回合、收不到新消息）。
+- **不要用 sleep 轮询**：等结果用 `bgjob_wait`；不要用 `sleep` / `Start-Sleep` / `timeout`，也不要用「循环 `bgjob_status`」代替（占住回合、收不到新消息）。
 
-直接对 AI 说一句即可：
+直接对 AI 说一句即可（说清工作目录、任务名，以及要不要等结果 / 通知）：
 
-> 把「下载 https://example.com/large.zip 到 D:\data」提交成后台任务，任务名叫「下载大文件」。
+> 把「clone Linux 内核源码到 `D:\work\linux`，再 `make -j16` 编译」这条长链路放后台跑，跑完通知我（`notify: on-exit`）——别让编译占着对话。
+
+> 并行起两个后台任务：一边下载数据集、一边重新编译；**谁先完成就先给我看结果**，另一个继续跑（any 竞速，不必等齐）。
+
+> 用 pwsh 引擎把 `D:\data` 下 30 个 CSV 批量转成 UTF-8；我要**全部成功才继续**，任何一个失败就立刻停下来（`logic: 'all'`）。
+
+> 把一次 MCP 调用提交成后台任务：server `glm` 的 `web_search`，query=「大模型最新进展」，跑完把结果发回本会话。
 
 - 任务输出实时写入 `<workdir>\.dsh\bgjobs\<jobId>\stdout.log`；
 - 退出后 `<workdir>\.dsh\bgjobs\<jobId>\exitcode.txt` 写入退出码，网页弹 Toast；
 - 完成后**默认不打扰会话**；需要让 agent 主动得知并收尾时，传 `notify: on-exit`（或 `on-completion` 仅成功 / `on-fail` 仅失败），并可选 `notify_mode`（`wakeup` 空闲唤醒 / `quiet` 仅入收件箱 / `always`）；
-- **交付标记（notify 视图）**：每个任务标注「结果是否已交付到会话上下文」——完成通知投递成功（`已通知·notify`）或某次 `bgjob_wait`/`bgjob_wait_all` 返回了它（`已通知·wait`）即交付；`bgjob_pending_list` 列出本会话**尚未交付**的任务（notify 视图），`bgjob_wait`/`bgjob_wait_all` 缺省只从这个视图等——已交付的结果不会重复返回。面板/离线 GUI 均有「已通知/待通知」标记。
+- **交付标记（notify 视图）**：每个任务标注「结果是否已交付到会话上下文」——完成通知投递成功（`已通知·notify`）或某次 `bgjob_wait` 返回了它（`已通知·wait`）即交付；`bgjob_pending_list` 列出本会话**尚未交付**的任务（notify 视图），`bgjob_wait` 缺省（含 `logic: 'all'`）只从这个视图等——已交付的结果不会重复返回。面板/离线 GUI 均有「已通知/待通知」标记。
 
 ## 网页面板
 
@@ -165,8 +173,9 @@ allowBuilds:
 
 架构设计、机制细节、测试与发布流程见 [docs/developer.md](docs/developer.md)。
 
-## 近期更新（v0.1.62 → v0.1.82）
+## 近期更新（v0.1.62 → v0.1.83）
 
+- **`bgjob_wait_all` 合并进 `bgjob_wait`**：新增 `logic` 参数（`any` 缺省 / `all` 合取），原 `bgjob_wait_all` 的全部行为（全部成功才 `allDone`、任一失败即刻返回 `failed` + `failedJobId` + 其余 `pending`）改由 `bgjob_wait({ ..., logic: 'all' })` 提供；工具数 9 → 8（v0.1.83）。
 - **等待被新消息让路后自动交还回合**：`bgjob_wait` / `bgjob_wait_all` 因新入站消息返回（`stoppedBy: 'message'`）时会**声明终结当前回合**（DSH 工具执行契约 `exec.concludeTurn`），DSH 随即把该消息作为正式用户消息投递给 agent——不再出现"agent 继续等待、消息递不进来"（v0.1.82）。
 - **`bgjob_wait_all` 改为合取语义**：`allDone` 只在**全部成功**时为真；任一任务失败（非 0 退出码 / 被清理 / 找不到）即刻返回 `failed:true` + `failedJobId` + 已结束者 `results` + 其余 `pending`，不再空等。并行提交后的默认姿势改为 `bgjob_wait` 的 any 竞速（先拿到先推进）（v0.1.82）。
 - **指引明确禁止系统 sleep 等待**：等结果只用 `bgjob_wait` / `bgjob_wait_all`，不要用 `sleep` / `Start-Sleep` / `timeout`，也不要「循环 `bgjob_status`」；指引改为分节结构并补齐 `bgjob_submit_mcp` / `bgjob_mcp_tools`（v0.1.82）。

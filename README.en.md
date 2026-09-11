@@ -3,6 +3,7 @@
 **English** · [中文](README.md)
 
 [![npm version](https://img.shields.io/npm/v/bgjobs)](https://www.npmjs.com/package/bgjobs)
+[![GitHub tag](https://img.shields.io/github/v/tag/bitsmug/dsh-bgjobs)](https://github.com/bitsmug/dsh-bgjobs/tags)
 [![License](https://img.shields.io/npm/l/bgjobs)](LICENSE)
 [![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)
 
@@ -26,7 +27,7 @@ Built for long-running work — large downloads, batch scripts, compilation, dat
 
 ## Install / uninstall
 
-Prereqs: DSH (`@deepseek-ai/dsh`), PowerShell 7, and Node.js (≥22 for docs below; package requires ^22.19.0 or >=24), Windows.
+Prereqs: DSH (`@deepseek-ai/dsh`), PowerShell 7, and Node.js (≥22 for docs below; package requires ^22.19.0 or >=24), Windows. (Verified on DSH `0.1.2-rc.1` ~ `0.1.5-rc.2` · Windows 10 · PowerShell 7 · Node.js 24).
 
 > The MCP engine (`bgjob_submit_mcp`) runs on the plugin's own Node dependencies: `@modelcontextprotocol/sdk` and `yaml` ship with the package and are installed by `dsh plugin add`; a local source checkout needs one `pnpm install`. DSH's bundled Node is enough — nothing else to install.
 
@@ -95,21 +96,28 @@ Restart DSH afterwards: the "Background Jobs Monitor" panel appears bottom-right
 - `bgjob_submit_mcp(name, workdir, tool, [arguments], server | server_config, [timeout_seconds], [wait], [notify], [notify_mode])` — submit one **MCP tool call** as a background job (third engine, also `schtasks`-hosted, visible in the panel, wait/notify supported). `server` is a name registered on the settings page, `server_config` is an inline config (`{transport:"stdio",command,args,env,cwd}` or `{transport:"streamable-http",url,headers}`) — give exactly one. The job connects to that server and calls the tool once; the result lands in the log and `<jobDir>/result.json` (`channel` records whether it hit a pre-warmed resident connection or did a cold start). Exit codes: `0` success / `1` tool reported an error / `2` connect or call failed / `3` timeout. **Off by default — turn on the "MCP jobs" switch in Settings first** (calls are refused otherwise). As in DSH, the session access mode (read-only, …) does **not** restrict MCP jobs. Check tool names with `bgjob_mcp_tools` first;
 - `bgjob_mcp_tools(server | server_config, [refresh])` — list that MCP server's tools (name/description/required fields) to confirm tool names and argument shape before submitting; `refresh: true` bypasses the 10-minute cache. DSH's already-registered `mcp__<server>__*` tools are used first (zero startup cost); only on a miss does it actually connect/spawn the server to probe. Also gated by the "MCP jobs" switch;
 - `bgjob_status(jobId)` — query status / exit code / log tail; for a look at the current state only — do not poll it in a loop (use `bgjob_wait` to wait);
-- `bgjob_wait(jobId | jobIds, [timeoutSeconds])` — wait for background job(s) and **return immediately** with exit codes and log tails (default up to 120s). Three modes: single `jobId` waits for that job; a `jobIds` array is **any-race** (returns as soon as one finishes, with the finisher + the rest pending) — the **default posture when several jobs run in parallel**: handle whichever lands first and keep waiting for the rest, no need to wait for all; omitting both waits for **any job of the current session** to finish;
-- `bgjob_wait_all(jobIds, [timeoutSeconds])` — **conjunctive semantics**: returns `allDone: true` plus each job's exit code/log tail only when **all jobs succeed**; **any failure returns at once** with `failed: true` + `failedJobId` + the finished jobs' `results` + the rest in `pending` (a non-zero exit code, or a cleaned-up/unknown job, both count as failure) — no waiting for the stragglers. Use it only when "everything must succeed before continuing" or when "one failure means stop now"; to make progress as results land, use `bgjob_wait`'s any-race instead. Omitting `jobIds` waits for all jobs of the current session;
+- `bgjob_wait(jobId | jobIds, [timeoutSeconds], [logic])` — wait for background job(s) and **return immediately** with exit codes and log tails (default up to 120s). Two modes (`logic`):
+  - **`any` (default)**: a single `jobId` waits for that job; a `jobIds` array is **any-race** (returns as soon as one finishes, with the finisher + the rest `pending`) — the **default posture when several jobs run in parallel**: handle whichever lands first and keep waiting for the rest, no need to wait for all; omitting both waits for **any job of the current session** to finish;
+  - **`all` (conjunctive)**: returns `allDone: true` plus each job's exit code/log tail only when **all jobs succeed**; **any failure returns at once** with `failed: true` + `failedJobId` + the finished jobs' `results` + the rest in `pending` (a non-zero exit code, or a cleaned-up/unknown job, both count as failure) — no waiting for the stragglers. Use it only when "everything must succeed before continuing" or when "one failure means stop now"; to make progress as results land, use the default `any`. Omitting `jobIds` waits for all jobs of the current session;
 - `bgjob_list` — list all jobs submitted by the current agent session (id/status/exit code); used together with the wait tools' default mode.
-- **Do not poll with sleep**: wait with `bgjob_wait` / `bgjob_wait_all`; don't use `sleep` / `Start-Sleep` / `timeout`, nor a "loop over `bgjob_status`" (it occupies the turn and blocks incoming messages).
+- **Do not poll with sleep**: wait with `bgjob_wait`; don't use `sleep` / `Start-Sleep` / `timeout`, nor a "loop over `bgjob_status`" (it occupies the turn and blocks incoming messages).
 
-Just tell the AI:
+Just tell the AI (name the workdir and job name, and say whether you want it to wait for the result / notify you):
 
-> Submit「download https://example.com/large.zip to D:\data」as a background job named「download-big-file」.
+> Run this whole chain in the background — clone the Linux kernel into `D:\work\linux`, then `make -j16` — and notify me when it finishes (`notify: on-exit`); don't let the build tie up the conversation.
+
+> Start two background jobs in parallel: one downloading a dataset, one rebuilding; **show me whichever finishes first** and let the other keep running (any-race, no need to wait for all).
+
+> Convert the 30 CSVs under `D:\data` to UTF-8 in one batch with the pwsh engine; I need **all of them to succeed before continuing** — stop as soon as any one fails (`logic: 'all'`).
+
+> Submit one MCP call as a background job: server `glm`, tool `web_search`, query「latest LLM progress」, and send the result back to this session when it's done.
 
 Then:
 
 - Job output is streamed live to `<workdir>\.dsh\bgjobs\<jobId>\stdout.log`;
 - On exit, `<workdir>\.dsh\bgjobs\<jobId>\exitcode.txt` gets the exit code and a toast pops in the web page;
 - By default, completion **does not interrupt the session**; when you want the agent to know and wrap up, pass `notify: on-exit` (or `on-completion` success-only / `on-fail` failure-only), plus optional `notify_mode` (`wakeup` wake an idle session / `quiet` inbox-only / `always`).
-- **Delivery marker (notify view)**: each job records whether its result has been delivered into the session context — a completion notice that was injected (`notified·notify`) or a `bgjob_wait`/`bgjob_wait_all` that returned it (`notified·wait`). `bgjob_pending_list` lists the session's **not-yet-delivered** jobs (the notify view), and the default mode of `bgjob_wait`/`bgjob_wait_all` waits only on that view, so an already-delivered result is never returned twice. The web panel and the offline GUI both show a "notified / pending" marker.
+- **Delivery marker (notify view)**: each job records whether its result has been delivered into the session context — a completion notice that was injected (`notified·notify`) or a `bgjob_wait` that returned it (`notified·wait`). `bgjob_pending_list` lists the session's **not-yet-delivered** jobs (the notify view), and the default mode of `bgjob_wait` (including `logic: 'all'`) waits only on that view, so an already-delivered result is never returned twice. The web panel and the offline GUI both show a "notified / pending" marker.
 
 ## Web panel
 
