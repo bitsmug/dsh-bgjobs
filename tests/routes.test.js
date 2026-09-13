@@ -629,7 +629,7 @@ test('webServer: /bgjobs/uiprefs display 默认/持久化/一键恢复默认/非
       // 默认：name/status/workdir=list，其余 hidden；含 defaultDisplay
       let r = await call('/bgjobs/uiprefs')
       assert.equal(r.ok, true)
-      assert.deepEqual(r.display, { id: 'hidden', name: 'list', status: 'list', exitCode: 'hidden', workdir: 'list', command: 'hidden', createdAt: 'hidden', finishedAt: 'hidden' }, '缺省 display = 默认配置')
+      assert.deepEqual(r.display, { id: 'hidden', name: 'list', status: 'list', runtime: 'list', exitCode: 'hidden', workdir: 'list', command: 'hidden', createdAt: 'hidden', finishedAt: 'hidden' }, '缺省 display = 默认配置')
       assert.deepEqual(r.defaultDisplay, r.display, 'defaultDisplay 与默认一致')
 
       // JSON body 修改单字段：仅该字段变化，其余保持
@@ -687,6 +687,36 @@ test('webServer: /bgjobs/uiprefs display 默认/持久化/一键恢复默认/非
       assert.equal(r.elements.mcpSettingsButton, true, '一键恢复默认恢复 MCP 设置入口')
       assert.equal(r.elements.notify, true, '一键恢复默认同时重置 elements')
       assert.equal(r.display.name, 'list', '一键恢复默认重置 display')
+
+      // v0.1.85：字段 runtime（默认 list）与「默认等待超时」（waitTimeoutSeconds，null = 不限时）
+      assert.equal(r.display.runtime, 'list', '一键恢复默认后 runtime 回到 list')
+      r = await callWith('/bgjobs/uiprefs', 'POST', { display: { runtime: 'detail' } })
+      assert.equal(r.display.runtime, 'detail', 'runtime 可切到详情')
+      assert.equal(r.display.name, 'list', '改 runtime 不影响其它字段')
+
+      r = await call('/bgjobs/uiprefs')
+      assert.equal(r.waitTimeoutSeconds, null, '缺省「默认等待超时」= null（不限时）')
+      assert.equal(r.defaultWaitTimeoutSeconds, null, 'defaultWaitTimeoutSeconds 同为 null')
+      r = await callWith('/bgjobs/uiprefs', 'POST', { waitTimeoutSeconds: 180 })
+      assert.equal(r.waitTimeoutSeconds, 180, 'POST 设置 180 秒')
+      assert.equal(r.display.runtime, 'detail', '改 waitTimeoutSeconds 不影响 display')
+      const onDisk3 = JSON.parse(await fsp.readFile(path.join(home, 'bgjobs', 'ui-prefs.json'), 'utf8'))
+      assert.equal(onDisk3.waitTimeoutSeconds, 180, 'waitTimeoutSeconds 应落盘 ui-prefs.json')
+      r = await call('/bgjobs/uiprefs')
+      assert.equal(r.waitTimeoutSeconds, 180, 'GET 回读缓存一致')
+      // 非数/0/负数 → null（不限时）；小数取整
+      r = await callWith('/bgjobs/uiprefs', 'POST', { waitTimeoutSeconds: 0 })
+      assert.equal(r.waitTimeoutSeconds, null, '0 = 不限时')
+      r = await callWith('/bgjobs/uiprefs', 'POST', { waitTimeoutSeconds: -5 })
+      assert.equal(r.waitTimeoutSeconds, null, '负数 = 不限时')
+      r = await callWith('/bgjobs/uiprefs', 'POST', { waitTimeoutSeconds: 'x' })
+      assert.equal(r.waitTimeoutSeconds, null, '非数 = 不限时')
+      r = await callWith('/bgjobs/uiprefs', 'POST', { waitTimeoutSeconds: 90.7 })
+      assert.equal(r.waitTimeoutSeconds, 90, '小数取整')
+      // 一键恢复默认只重置 display+elements，不动 waitTimeoutSeconds
+      r = await call('/bgjobs/uiprefs?action=resetDisplay', 'POST')
+      assert.equal(r.display.runtime, 'list', '恢复默认重置 runtime')
+      assert.equal(r.waitTimeoutSeconds, 90, '一键恢复默认不重置 waitTimeoutSeconds')
     } finally {
       dispose()
     }

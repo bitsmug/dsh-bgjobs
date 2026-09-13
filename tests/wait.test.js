@@ -892,3 +892,61 @@ test('bgjob_wait: exec 无 concludeTurn（老版本 DSH / 替身）→ 让路仍
 })
 
 
+// ── v0.1.85 设置页「默认等待超时」（ui-prefs.json 的 waitTimeoutSeconds）─────────────────────
+
+/** 预写 ui-prefs.json（必须在 apply 之前——store 首读即缓存）。 */
+async function writeUiPrefsWaitTimeout(seconds) {
+  const p = path.join(process.env.DSH_HOME, 'bgjobs', 'ui-prefs.json')
+  await fsp.mkdir(path.dirname(p), { recursive: true })
+  await fsp.writeFile(p, JSON.stringify({ waitTimeoutSeconds: seconds }), 'utf8')
+}
+
+test("bgjob_wait: 不传 timeoutSeconds → 用设置页「默认等待超时」到点返回 timedOut 快照", async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  const workdir = await makeWorkdir()
+  await writeUiPrefsWaitTimeout(1)
+  const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
+  const dispose = apply(ctx)
+  try {
+    const { jobId } = await submitRunning(workdir, tools)
+    const wait = tools.find((t) => t.name === 'bgjob_wait')
+    const started = Date.now()
+    const w = await wait.execute({ jobId }, { agent: undefined }) // 不传 timeoutSeconds
+    const elapsed = Date.now() - started
+    assert.equal(w.ok, true)
+    assert.equal(w.timedOut, true, '应按设置页默认值到点返回快照（旧实现会一直等下去）')
+    assert.equal(w.waitedMs, 1000, 'waitedMs = 设置页默认值 1s')
+    assert.ok(elapsed >= 900 && elapsed < 5000, '约 1 秒返回，elapsed=' + String(elapsed))
+  } finally {
+    dispose()
+    await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+test('bgjob_wait: 显式 timeoutSeconds: 0 → 强制不限时（覆盖设置页默认值）', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  const workdir = await makeWorkdir()
+  await writeUiPrefsWaitTimeout(1) // 设置页默认 1 秒：若被采纳，下面的等待会立刻返回
+  const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
+  const dispose = apply(ctx)
+  try {
+    const { jobId } = await submitRunning(workdir, tools)
+    const wait = tools.find((t) => t.name === 'bgjob_wait')
+    const controller = new AbortController()
+    let settled = false
+    const p = wait.execute({ jobId, timeoutSeconds: 0 }, { agent: undefined, signal: controller.signal })
+    p.then(() => { settled = true }, () => { settled = true })
+    await new Promise((r) => { const t = setTimeout(r, 1600); if (t.unref) t.unref() })
+    assert.equal(settled, false, '0 = 不限时：不应在设置页默认的 1 秒到点返回')
+    controller.abort(new Error('done'))
+    await assert.rejects(p, (e) => {
+      assert.equal(e.code, 'BGJOB_WAIT_STOPPED', '仅由用户停止结束本次等待')
+      return true
+    })
+  } finally {
+    dispose()
+    await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+
