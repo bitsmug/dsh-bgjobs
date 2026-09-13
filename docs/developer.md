@@ -85,7 +85,7 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
 
 - 目的：agent 需要「等结果继续」时不再用前台 `pwsh sleep` 反复轮询；`bgjob_wait(jobId, timeoutSeconds?)` 等到任务 done 立即返回退出码/日志尾。
 - **硬约定（v0.1.82，与 `buildBgjobsGuidance` 一致）**：等结果只用 `bgjob_wait`（或 submit* 的 `wait` 参数），**禁止**用 `sleep` / `Start-Sleep` / `timeout` 或「循环 + `bgjob_status`」代替——阻塞式等待占住回合、收不到新消息、还可能被超时打断。并行提交多个任务后默认用 `bgjob_wait` 的 any 竞速：先拿到先处理，其余用 `pending` 继续等，不必等齐。
-- 实现：轮询 `waitSnapshot(jobId)`——注册表命中时对 running 任务复用既有 `checkCompletion(job)`（幂等收尾：置 done/写盘/通知），未命中回退 `statusFromDisk`；间隔与**任务自身已运行时长**成正比（`clamp(250ms, taskAge×10%, 1s)`，上限 1s 保证检测延迟 ≤~1s；v0.1.51 起，废弃按等待时长的档位退避），默认 120s、clamp 1–600s。
+- 实现：轮询 `waitSnapshot(jobId)`——注册表命中时对 running 任务复用既有 `checkCompletion(job)`（幂等收尾：置 done/写盘/通知），未命中回退 `statusFromDisk`；间隔与**任务自身已运行时长**成正比（`clamp(250ms, taskAge×10%, 1s)`，上限 1s 保证检测延迟 ≤~1s；v0.1.51 起，废弃按等待时长的档位退避）。**超时缺省 = 不限时**（v0.1.84：`timeoutSeconds` 未传/非正数 → 传 `Infinity`，循环靠墙钟判定、无需定时器）；显式传值可为任意正数秒。
 - 语义：未知 id 立即返回 `not found` 不空等；等待期间任务被清理 → `status:'removed'`；超时返回 `timedOut:true` 的当前快照供 agent 再次调用；不替代 `notify`（异步收结果仍用 submit 的 notify）。
 - **`bgjob_wait` 的 `logic:'all'` 模式（原独立工具 `bgjob_wait_all`）= 合取语义 + 失败短路**（v0.1.82 引入；v0.1.83 合并回 `bgjob_wait` 的 `logic` 参数，工具数 9 → 8）：`allDone:true` 只在**全部成功**时为真。失败判定 `e.ok === false`（not found）|| `e.status === 'removed'`（被清理，无法确认成功）|| `e.exitCode !== 0`（含 `exitCode` 为 `null`——done 但读不到退出码，同样无法确认成功）；MCP 引擎的非 0 码（1/2/3）自然覆盖。
   - **一旦有失败立刻返回**：`{ allDone:false, failed:true, failedJobId, timedOut:false, results, pending }`——合取已确定为假，不必再等剩余任务。判定序固定：**全部成功结束 > 让路 > 失败短路 > 超时**（让路优先于失败：有人在等，先把回合交还，失败信息随时可再查）。
@@ -101,7 +101,7 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
   - **为什么必须声明**：`bgjob_wait` 是步内长工具、没有步边界。agent 若在让路后继续等待或跑耗时操作，回合不结束，`inbox` 里**排在本轮之后的用户消息（next-turn）永远不会被领取**——这就是"让路后读不到消息"的根因。机制保证优于文案约定，故不再靠指引要求 agent 自觉收敛回合。
   - **降级**：`exec.concludeTurn` 不存在（老版本 DSH / 测试替身）→ 静默跳过，退回"仅返回 stopped 快照"（try/catch 兜住冻结或异常实现）。
   - **已评估但未采用**：① 读 `inbox.nextStep`/`nextTurn` 正文放进返回——用户明确选择不读，且 DSH 之后仍会正式投递一次，模型会看到两遍；② `inbox.remove(id)` 做 exactly-once——其语义是"取消待投递消息"（写 `outcome:'canceled'` splice），用户自己的消息将不再作为正式用户消息出现，且插件去改 agent loop 的收件箱属越界；③ `exec.deferContext` 主动注入（理由同上文停止路径：破坏 wait 的同步语义）。
-- submit 糖（v0.1.52）：`bgjob_submit` / `bgjob_submit_pwsh` 传 `wait: <秒>`（1–600）会在提交成功后自动等待任务结束（内部同一 `waitJobDone`，超时返回 timedOut 快照）；提交失败不进入等待。
+- submit 糖（v0.1.52）：`bgjob_submit` / `bgjob_submit_pwsh` 传 `wait: <秒>`（任意正数秒；v0.1.84 起去掉 600 秒上限）会在提交成功后自动等待任务结束（内部同一 `waitJobDone`，超时返回 timedOut 快照）；提交失败不进入等待。
 
 ### 保留策略（v0.1.32 起）
 
@@ -161,17 +161,20 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
 - `submitJob(..., engine='mcp', ..., extra)`：`extra = { mcpSpec, serverName }`。提交时解析 Node 解释器（优先 `process.execPath`，否则 `where.exe node`）、烘焙 `meta.mcpRunnerPath`（`lib/mcp-runner.mjs` 绝对路径）/`meta.nodeExe`/`meta.mcpSpecPath`，写 `jobDir\mcp.json`（任务自包含，不依赖设置文件），`meta.engine='mcp'`、`meta.mcp={server,tool,transport,prewarm}`、展示用 `meta.command = 'mcp: <server> → <tool>'`。
 - **双层开关校验**：① 工具 `execute` 入口（开关即时生效、无需重启，工具常驻注册以避免动态注册时序问题）；② `submitJob` 内 `engine==='mcp'` 时再校验（防程序直调绕过）——关闭时连 jobDir 都不创建。开关文案统一为 `store.js` 的 `MCP_DISABLED_ERROR`。
 - **runner 契约**（`lib/mcp-runner.mjs`，`node lib/mcp-runner.mjs <jobDir>\mcp.json`）：
-  - `mcp.json` = `{ server, transport:'stdio'|'streamable-http', command/args/env/cwd 或 url/headers, tool, arguments, timeoutMs, prewarm? }`；
-  - 先试预热通道（`prewarm.url` + `x-bgjobs-token`，3s 短超时），任何失败写 `[BGJOB] prewarm unavailable: …; falling back to cold start` 并**回退冷启动**；
+  - `mcp.json` = `{ server, transport:'stdio'|'streamable-http', command/args/env/cwd 或 url/headers, tool, arguments, timeoutMs?, prewarm? }`（`timeoutMs` **缺省即省略 = 不限时**）；
+  - 先试预热通道（`prewarm.url` + `x-bgjobs-token`）。客户端中止预算 = `timeoutMs + 5s`、下限 10s（`timeoutMs` 缺省不限时 → 取 `MAX_TIMER_MS`），**只兜底"host 完全不响应"**，绝不能早于 host 侧的调用超时（v0.1.84 修：早期固定 3s 会把"耗时 >3s 的正常调用"误判为预热不可用，导致工具被执行两遍）。响应 `attempted` 决定后续：
+    - **未执行**（host 不在/代理不可达/坏 token/未预热 → 响应 `attempted` 非 true）→ 写 `[BGJOB] prewarm unavailable: …; falling back to cold start` 并**回退冷启动**（"任务脱离 DSH 也能跑"的保证不变）；
+    - **已发出但失败/超时**（响应 `attempted:true`）→ **不回退、不重跑**（防重复副作用），直接把错误文本按 `2`/`3` 退出码收尾；
   - 退出码：`0` 成功 / `1` 工具 `isError` / `2` 配置·连接·调用失败 / `3` 超时；日志首行 `[BGJOB] mcp call: …`、末行 `[BGJOB] channel: prewarm|cold`；
   - 产物：stdout 投影文本（→ `stdout.log`）、`result.json`（`{ ok, exitCode?, isError, channel, content, structuredContent?, server, tool, durationMs, timeoutMs, error? }`）、冷启动时 `mcp-server.pid`（供删除时 `taskkill /PID /T /F` 回收）。
 - **超时收尾宽限（O-1）**：超时/失败路径会 `client.close()` 回收 server 子进程（SDK 的 close = stdin end → 等 2s → SIGTERM → 再等 2s），所以 `result.json` 的 `durationMs` 可能比 `timeoutMs` 多 1–2 秒（故同文件记录 `timeoutMs` 供对照）。这是「保证不残留 server 子进程」的代价，**不加 `process.exit` 抢跑**。
+- **超时值可任意大、缺省不限时（v0.1.84）**：`timeout_seconds` / `timeoutSeconds` 未传（或非正数）即为"不限时"；内部具化为 `MAX_TIMER_MS = 2^31−1 ms`（≈24.8 天）——Node `setTimeout` 超过该值会被当成 1ms **立即触发**，所以任何来自用户输入的毫秒数都要过 `clampTimerMs`（唯一实现点：`lib/mcp-connect.js`，runner 与预热代理共用）。等待侧（`bgjob_wait`）靠"墙钟判定 + 轮询间隔 ≤1s"天然规避，不产生长定时器。
 - done 收尾时（`watch.js` 的 `checkCompletion`）对 mcp 任务补读 `result.json` 的 `channel` 落进 `meta.mcpChannel`，面板详情显示「执行通道：预热/冷启动」。
 
 ### 预热（`lib/mcp-prewarm.js`，只做加速）
 
 - 形态对齐第一方 mcp-client：`onclose` 触发重连 + 有界指数退避（500ms 起、上限 30s、最多 10 次）、**不做 ping**；空闲 TTL 10 分钟回收（每 60s 扫一次，定时器 `unref`）。连接尝试**按 server 去重（单飞）**——否则并发 `warm` 会重复 spawn 同一 stdio server，未记录的那些成为孤儿进程（实测会把测试进程卡住）；连接期间被 `unwarm`/dispose 则立即关闭。
-- 回环代理：`http.createServer` 自绑 `127.0.0.1:0`（**不依赖 DSH webServer 端口 API**），`POST /call`（调用）与 `POST /tools`（列工具），鉴权 = 每次 apply 随机 `randomUUID()` token（`x-bgjobs-token`）；同一 server 的调用经一条串行队列。
+- 回环代理：`http.createServer` 自绑 `127.0.0.1:0`（**不依赖 DSH webServer 端口 API**），`POST /call`（调用）与 `POST /tools`（列工具），鉴权 = 每次 apply 随机 `randomUUID()` token（`x-bgjobs-token`）；同一 server 的调用经一条串行队列。`/call` 成功 → `{ok:true,result}`；失败 → `200 {ok:false,error,attempted}`——`attempted:true` 表示"请求已发给 server（可能已执行）"，runner 据此**不回退冷启动**（v0.1.84）。响应写前会检查 `res.writableEnded/destroyed` 并挂 `res.on('error')`，客户端中止后不会在宿主里冒未处理错误。
 - token 与端口**只写进该任务的 `mcp.json`**（`prewarm:{url,token}`），不写设置文件、不进日志。代理生命周期挂在插件 dispose 链上。
 - 开关联动：MCP 总开关开启 → 对**启用且 `prewarm:true`** 的 server 预连；关闭 → `unwarmAll()`。被设为「禁用」（`enabled:false`）的 server **不预连**，且切到禁用时立即 `unwarm`。host 不在/代理不可达/坏 token → runner 回退冷启动，**任务照常成功**（"任务脱离 DSH 也能跑"的保证不变）。
 - runner 与 supervisor 共用 `lib/mcp-connect.js`（env 清洗 `/KEY|PASSWORD|SECRET|TOKEN/i` 与 `DSH_*`、transport 构造、`tools/list` 分页、结果投影），避免两套实现漂移。

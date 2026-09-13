@@ -93,10 +93,10 @@ allowBuilds:
 
 - `bgjob_submit(name, command, workdir, [wait], [notify], [notify_mode])` — 提交后台任务（command 为 **bat** 语法）；`wait`=提交后原地等待的秒数（0/缺省不等待；>0 语义同 bgjob_wait 全缺省——等本会话任一任务先结束，无会话信息时回退等刚提交任务）；
 - `bgjob_submit_pwsh(name, command, workdir, [wait], [sandbox], [justification], [notify], [notify_mode])` — 提交后台任务（command 为 **PowerShell** 语法，UTF-8 日志、`exit <code>` 语义安全）；`wait` 同上；
-- `bgjob_submit_mcp(name, workdir, tool, [arguments], server | server_config, [timeout_seconds], [wait], [notify], [notify_mode])` — 把一次 **MCP 工具调用**提交为后台任务（第三引擎，同样由 schtasks 托管、面板可见、可 wait/notify）。`server` 是设置页登记的 server 名，`server_config` 是内联配置（`{transport:"stdio",command,args,env,cwd}` 或 `{transport:"streamable-http",url,headers}`），二者二选一。任务里连接该 server 调用一次工具，结果写日志与 `<jobDir>/result.json`（`channel` 记录本次是命中预热常驻连接还是冷启动），退出码 `0` 成功 / `1` 工具报错 / `2` 连接或调用失败 / `3` 超时。**默认关闭，需先在设置页打开「MCP 任务」开关**（未开启时调用会被拒绝）；与 DSH 一致，会话访问模式（read-only 等）**不限制** MCP 任务。建议先用 `bgjob_mcp_tools` 确认工具名；
+- `bgjob_submit_mcp(name, workdir, tool, [arguments], server | server_config, [timeout_seconds], [wait], [notify], [notify_mode])` — 把一次 **MCP 工具调用**提交为后台任务（第三引擎，同样由 schtasks 托管、面板可见、可 wait/notify）。`server` 是设置页登记的 server 名，`server_config` 是内联配置（`{transport:"stdio",command,args,env,cwd}` 或 `{transport:"streamable-http",url,headers}`），二者二选一。任务里连接该 server 调用一次工具，结果写日志与 `<jobDir>/result.json`（`channel` 记录本次是命中预热常驻连接还是冷启动），退出码 `0` 成功 / `1` 工具报错 / `2` 连接或调用失败 / `3` 超时；`timeout_seconds` **缺省不限时**（该 server 在设置页登记了 `timeoutMs` 时以它为准），也可传任意正数秒。**默认关闭，需先在设置页打开「MCP 任务」开关**（未开启时调用会被拒绝）；与 DSH 一致，会话访问模式（read-only 等）**不限制** MCP 任务。建议先用 `bgjob_mcp_tools` 确认工具名；
 - `bgjob_mcp_tools(server | server_config, [refresh])` — 列出该 MCP server 的注册工具（工具名/描述/必填字段名），提交前用它确认工具名与参数形状；`refresh: true` 绕过 10 分钟缓存。优先用 DSH 已注册的 `mcp__<server>__*` 工具（零启动开销），未命中才真正连接/启动 server 探测；同样受「MCP 任务」开关限制；
 - `bgjob_status(jobId)` — 查询状态 / 退出码 / 日志尾部；仅用于查看当前状态，不要拿它循环轮询（等待用 `bgjob_wait`）；
-- `bgjob_wait(jobId | jobIds, [timeoutSeconds], [logic])` — 等待后台任务结束并**立即返回**退出码与日志尾部（默认最多 120s）。两种模式（`logic`）：
+- `bgjob_wait(jobId | jobIds, [timeoutSeconds], [logic])` — 等待后台任务结束并**立即返回**退出码与日志尾部（`timeoutSeconds` **缺省 = 不限时**，一直等到任务结束；传任意正数秒才到点返回 `timedOut: true` 快照）。两种模式（`logic`）：
   - **`any`（缺省）**：单个 `jobId` 等该任务；`jobIds` 数组 = **任一先结束即返回**（any 竞速，返回完成者 + 其余 `pending`）——**并行提交多个任务时的默认姿势**：先拿到先处理，其余用 `pending` 继续等，不必等齐；两者都缺省 = 等**本会话**任务任一结束；
   - **`all`（合取）**：等一批任务**全部成功**才返回 `allDone: true` + 每个任务的退出码/日志尾；**任一任务失败即立刻返回** `failed: true` + `failedJobId` + 已结束者的 `results` + 其余 `pending`（非 0 退出码，或被清理/找不到都算失败），不再等齐；超时返回部分状态可续等。只在「必须全部成功才能继续」且「一个失败就马上停」时使用——只想边拿边推进请用缺省的 `any`；`jobIds` 缺省 = 本会话全部任务；
 - `bgjob_list` — 列出当前 agent 会话提交的全部任务（id/状态/退出码），配合 wait 工具缺省使用。
@@ -131,7 +131,7 @@ allowBuilds:
 **MCP 任务（独立设置页，默认关闭）**：
 
 - **MCP 任务开关**：控制 agent 能否用 `bgjob_submit_mcp` / `bgjob_mcp_tools` 提交（关闭时一律拒绝并提示来开启）；开启后即时生效，无需重启 DSH。与 DSH 一致，会话访问模式（read-only 等）不限制 MCP 任务；
-- **MCP 服务器**：登记 agent 可按名引用的 server（名字 + JSON 配置）。每行可开「预热」、**编辑**（把该 server 的完整配置载入下方表单，含 env/headers 明文）、点「列出工具」看工具名（点击复制）、删除；列表只回传 env/headers 的键名，不回传值。**预热**＝在 DSH 进程内为该 server 保持一条常驻连接（任务复用它、省去每次冷启动），仅 DSH 存活期有效，连接失败/host 不在时任务自动回退冷启动，**不影响正确性**（stdio 收益最明显；http 传输本身不启动子进程，提速有限）；
+- **MCP 服务器**：登记 agent 可按名引用的 server（名字 + JSON 配置）。每行可开「预热」、**编辑**（把该 server 的完整配置载入下方表单，含 env/headers 明文）、点「列出工具」看工具名（点击复制）、删除；列表只回传 env/headers 的键名，不回传值。**预热**＝在 DSH 进程内为该 server 保持一条常驻连接（任务复用它、省去每次冷启动），仅 DSH 存活期有效，连接失败/host 不在时任务自动回退冷启动，**不影响正确性**（stdio 收益最明显；http 传输本身不启动子进程，提速有限）；只有"确定没执行"的失败才回退——**已发出的调用失败或超时不会重跑**（避免重复副作用），此时任务按退出码 `2`/`3` 结束，可自行重提（v0.1.84）；
 - **导出 / 导入**：导出格式二选一 —— **DSH YAML**（`@deepseek-ai/dsh-mcp-client` 条目，可直接并入 `cordis.patch.yml`）或 **bgjobs JSON**（备份/迁移，可被导入原样吃回）；导入支持粘贴或选文件，自动识别 DSH patch 片段 / bgjobs JSON / 单个或多个 server 配置对象（需带 `serverName`），可选「同名跳过 / 同名覆盖」，含 `!!js` 的条目默认拒导（勾选后强制导入，且不会求值——需手工补全 env/headers）。**导出文本与 `mcp.json` 都含明文密钥，分享前请脱敏**；
 - **DSH 已有 MCP（导入）**：读取**当前 profile** 或全局 `cordis.patch.yml` 里已配好的 `@deepseek-ai/dsh-mcp-client` 条目，一键导入成 bgjobs 登记（只读 DSH 配置、不改它）。顶部显示「当前 profile」及判定来源（命令行 `--profile` / 模块路径比对 / 唯一 profile）；含 `!!js` 表达式的条目**不会求值**，默认不导入（需手动补全 env/headers）。带引号（`!!js '"Bearer " + process.env.X'`）与**无引号**（`KEY: !!js process.env.X`）两种写法都会识别为需人工处理；万一表达式写在无法逐条定位的位置，整批条目都会被标红提示核对，不会把 JS 表达式当普通字符串静默导入。
 
@@ -173,8 +173,10 @@ allowBuilds:
 
 架构设计、机制细节、测试与发布流程见 [docs/developer.md](docs/developer.md)。
 
-## 近期更新（v0.1.62 → v0.1.83）
+## 近期更新（v0.1.62 → v0.1.84）
 
+- **超时值改为「任意正数秒 / 缺省不限时」**：`bgjob_wait` 的 `timeoutSeconds` 与 `bgjob_submit_mcp` 的 `timeout_seconds` 去掉 600 秒上限，且**不传即不限时**（一直等到结果；期间仍会被新入站消息让路、被用户停止打断）；submit 系列的 `wait` 同样支持任意正数秒（`0`/缺省仍 = 不等待）（v0.1.84）。
+- **修复预热通道导致 MCP 工具被执行两次**：预热代理调用原先客户端只等 3 秒，超时即"回退冷启动"，于是耗时 >3 秒的工具会被执行两遍；现在客户端中止预算与调用超时对齐（仅兜底 host 无响应），且代理会标记"调用是否已发出"——已发出的失败/超时**不再重跑**，直接按退出码 `2`/`3` 收尾（v0.1.84）。
 - **`bgjob_wait_all` 合并进 `bgjob_wait`**：新增 `logic` 参数（`any` 缺省 / `all` 合取），原 `bgjob_wait_all` 的全部行为（全部成功才 `allDone`、任一失败即刻返回 `failed` + `failedJobId` + 其余 `pending`）改由 `bgjob_wait({ ..., logic: 'all' })` 提供；工具数 9 → 8（v0.1.83）。
 - **等待被新消息让路后自动交还回合**：`bgjob_wait` / `bgjob_wait_all` 因新入站消息返回（`stoppedBy: 'message'`）时会**声明终结当前回合**（DSH 工具执行契约 `exec.concludeTurn`），DSH 随即把该消息作为正式用户消息投递给 agent——不再出现"agent 继续等待、消息递不进来"（v0.1.82）。
 - **`bgjob_wait_all` 改为合取语义**：`allDone` 只在**全部成功**时为真；任一任务失败（非 0 退出码 / 被清理 / 找不到）即刻返回 `failed:true` + `failedJobId` + 已结束者 `results` + 其余 `pending`，不再空等。并行提交后的默认姿势改为 `bgjob_wait` 的 any 竞速（先拿到先推进）（v0.1.82）。

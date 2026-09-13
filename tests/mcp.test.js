@@ -439,6 +439,38 @@ test('mcp 预热：命中代理 → channel=prewarm；代理不可用/坏 token 
     assert.equal(dead.result.channel, 'cold')
     assert.match(dead.stdout, /falling back to cold start/)
 
+    // v0.1.84 A：慢工具（>3s）走预热**不得**回退——否则等于把工具执行两遍
+    const slowSpec = { ...spec, tool: 'sleep', arguments: { seconds: 4 }, timeoutMs: 15000 }
+    const slow = await runSpec(path.join(workdir, 'prewarm-slow'), slowSpec)
+    assert.equal(slow.code, 0)
+    assert.equal(slow.result.channel, 'prewarm', '慢工具应仍走预热通道（不得回退）')
+    assert.ok(!/falling back to cold start/.test(slow.stdout), '慢工具不应回退（否则等于执行两遍）')
+
+    // v0.1.84 B：预热通道里"已发出但超时"不回退（不重跑），直接退出码 3
+    const toSpec = { ...spec, tool: 'sleep', arguments: { seconds: 5 }, timeoutMs: 500 }
+    const to = await runSpec(path.join(workdir, 'prewarm-timeout'), toSpec)
+    assert.equal(to.code, 3, '超时 → 退出码 3')
+    assert.equal(to.result.channel, 'prewarm', '已发出的调用不回退冷启动')
+    assert.match(String(to.result.error), /timed?\s?out/i)
+    assert.ok(!/falling back to cold start/.test(to.stdout), '已发出的调用不得重跑')
+
+    // v0.1.84 C：timeout_seconds 任意正数原样落盘；缺省 = 不限时（不写 timeoutMs）
+    const submitMcp = tools.find((t) => t.name === 'bgjob_submit_mcp')
+    const big = await submitMcp.execute({ name: 'big', workdir, tool: 'echo', server: 'demo', arguments: { text: 'x' }, timeout_seconds: 601 }, execWithSession())
+    assert.equal((await readJson(path.join(jobsRootOf(workdir), big.jobId, 'mcp.json'))).timeoutMs, 601000, '旧代码会被 clamp 成 600000')
+    const two = await submitMcp.execute({ name: 'two', workdir, tool: 'echo', server: 'demo', arguments: { text: 'x' }, timeout_seconds: 7200 }, execWithSession())
+    assert.equal((await readJson(path.join(jobsRootOf(workdir), two.jobId, 'mcp.json'))).timeoutMs, 7200000, '2 小时原样落盘')
+    const dflt = await submitMcp.execute({ name: 'd', workdir, tool: 'echo', server: 'demo', arguments: { text: 'x' } }, execWithSession())
+    assert.equal((await readJson(path.join(jobsRootOf(workdir), dflt.jobId, 'mcp.json'))).timeoutMs, undefined, '缺省 = 不限时（不写 timeoutMs）')
+
+    // v0.1.84 D：spec 不带 timeoutMs（不限时）时，预热通道 + 慢工具仍能跑通
+    const noTimeoutSpec = { ...spec, tool: 'sleep', arguments: { seconds: 2 } }
+    delete noTimeoutSpec.timeoutMs
+    const noTo = await runSpec(path.join(workdir, 'prewarm-no-timeout'), noTimeoutSpec)
+    assert.equal(noTo.code, 0)
+    assert.equal(noTo.result.channel, 'prewarm')
+    assert.equal(noTo.result.timeoutMs, null, '不限时时 result.json 的 timeoutMs 记 null')
+
     // 常驻连接被回收（用户关预热）→ 代理按需重建，任务照常成功
     await captured.api.unwarmAll()
     const rewarm = await runSpec(path.join(workdir, 'rewarm'), spec)

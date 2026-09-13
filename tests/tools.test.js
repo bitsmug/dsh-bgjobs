@@ -91,6 +91,25 @@ test('guidance: bgjob_wait 工具描述含禁 sleep、让路说明与 logic 两�
 })
 
 
+test('tools: 超时参数缺省不限时、可传任意正数（v0.1.84 去掉 600 秒上限）', () => {
+  const { ctx, tools } = makeCtx()
+  const dispose = apply(ctx)
+  const wait = tools.find((t) => t.name === 'bgjob_wait')
+  assert.equal(wait.parameters.properties.timeoutSeconds.default, undefined, '缺省不再是 120（缺省 = 不限时）')
+  assert.ok(!/1–600/.test(wait.parameters.properties.timeoutSeconds.description), 'wait 的 timeoutSeconds 不应再写 1–600')
+  assert.ok(wait.parameters.properties.timeoutSeconds.description.includes('不限时'), 'wait 描述应写明缺省不限时')
+  const mcpSubmit = tools.find((t) => t.name === 'bgjob_submit_mcp')
+  assert.equal(mcpSubmit.parameters.properties.timeout_seconds.default, undefined, '缺省不再是 60（缺省 = 不限时）')
+  assert.ok(!/1–600/.test(mcpSubmit.parameters.properties.timeout_seconds.description), 'timeout_seconds 不应再写 1–600')
+  assert.ok(mcpSubmit.parameters.properties.timeout_seconds.description.includes('不限时'), 'timeout_seconds 描述应写明缺省不限时')
+  for (const name of ['bgjob_submit', 'bgjob_submit_pwsh', 'bgjob_submit_mcp']) {
+    const t = tools.find((x) => x.name === name)
+    assert.ok(!/1–600/.test(t.parameters.properties.wait.description), name + ' 的 wait 不应再有 600 秒上限')
+  }
+  dispose()
+})
+
+
 test('guidance: apply 注册 tool:bgjobs system prompt section', () => {
   const { ctx, sections } = makeCtx()
   const dispose = apply(ctx)
