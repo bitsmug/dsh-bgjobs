@@ -91,8 +91,9 @@ test('notify=on-exit + wakeup + 空闲 → followup 唤醒，消息含任务名�
     assert.equal(handle.calls.inject.length, 0)
     const msg = handle.calls.followup[0]
     assert.equal(msg.role, 'user')
-    assert.equal(msg.source.kind, 'plugin')
-    assert.equal(msg.source.plugin, 'bgjobs')
+    // 0.1.7 起 v4 会话准入拒绝旧包装写法 { kind: 'plugin', plugin: … }，生产者名要直接进 kind
+    assert.equal(msg.source.kind, 'plugin:bgjobs')
+    assert.equal(msg.source.plugin, undefined)
     assert.ok(msg.content[0].text.includes('后台任务「t」已结束（exit code 3）'))
     const meta = JSON.parse(await fsp.readFile(path.join(jobDir, 'job.json'), 'utf8'))
     assert.equal(meta.notify, 'on-exit')
