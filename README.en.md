@@ -16,9 +16,10 @@ Built for long-running work — large downloads, batch scripts, compilation, dat
 | Capability | Description |
 |---|---|
 | Runs outside DSH | Jobs are hosted via `schtasks`; DSH crashes/shutdowns don't matter |
-| Live output panel | Floating panel (bottom-right) refreshes every second: draggable, minimizable to a bubble, collapsible to a job list, theme-aware; grouped by workspace, resizable |
+| Live output panel | Floating panel (bottom-right) refreshes every second: draggable, minimizable to a bubble, collapsible to a job list, theme-aware; grouped by workspace, resizable. Rows show a live **Runtime** (growing while running, total time once done), and each field can be placed in the list / detail view / hidden |
 | Manual cleanup | 🧹 click the cleanup icon to open the trash bar: drag a single finished job to delete, or bulk-clean (>24h only / all; follows the view filter) |
 | Completion notice | Toast on exit (does not interrupt the session); optionally notify the creating agent (`notify` param) |
+| In-session waiting | `bgjob_wait` lets the agent wait for results **without hogging the conversation**: unlimited by default (configurable via "Default wait timeout" in Settings), released immediately when a new inbound message yields or the user stops it; supports any-race and all-conjunctive (fail fast) modes |
 | Reconnect & track | Auto-recovers after a DSH restart; old job ids can still be queried from disk |
 | Offline management | CLI / GUI that don't need DSH: list / status / log / submit / kill / cleanup |
 | Optional sandbox | `bgjob_submit_pwsh` optional `sandbox` constrains job file permissions to no more than the current session mode |
@@ -27,7 +28,7 @@ Built for long-running work — large downloads, batch scripts, compilation, dat
 
 ## Install / uninstall
 
-Prereqs: DSH (`@deepseek-ai/dsh`), PowerShell 7, and Node.js (≥22 for docs below; package requires ^22.19.0 or >=24), Windows. (Verified on DSH `0.1.2-rc.1` ~ `0.1.5-rc.2` · Windows 10 · PowerShell 7 · Node.js 24).
+Prereqs: DSH (`@deepseek-ai/dsh`), PowerShell 7, and Node.js (`^22.19.0` or ≥24), Windows. (Verified on DSH `0.1.2-rc.1` ~ `0.1.7-rc.2` · Windows 10 · PowerShell 7 · Node.js 24).
 
 > The MCP engine (`bgjob_submit_mcp`) runs on the plugin's own Node dependencies: `@modelcontextprotocol/sdk` and `yaml` ship with the package and are installed by `dsh plugin add`; a local source checkout needs one `pnpm install`. DSH's bundled Node is enough — nothing else to install.
 
@@ -122,6 +123,10 @@ Then:
 ## Web panel
 
 Top bar, left to right: cleanup (opens the bottom trash bar: drag a finished job to delete, or bulk-clean >24h / all), collapse (to a compact job list), minimize (floating bubble anchored at the button). Toolbar toggles: "Only this session" (show only the current session's workspace jobs) and "Full access" (pre-approve full-access jobs; off by default). Click a job row to expand its live log. Rows show a live "Runtime" by default (growing while running, total time once done); move it to the detail view or hide it under Settings → Background Jobs → Field display. Panel copy follows the DSH UI language (Chinese DSH → Chinese panel, otherwise English).
+
+**The bgjobs pages in DSH Settings** (gear at the bottom-left): two pages — "Background Jobs" and "MCP jobs". The panel's title bar also has two shortcuts: ⚙ opens the "Background Jobs" page, the data-gear icon opens "MCP jobs" (each can be hidden under Settings → Background Jobs → UI elements).
+
+- "Background Jobs" (shows the current plugin version): ① sidebar-entry toggle (off by default; turning it on adds an entry at the bottom of the sidebar — click it to hide/show the floating panel); ② monitor-panel toggle (show/hide the floating panel and bubble, independent of the entry); ③ **"Default wait timeout"** (number input + Save): the default `timeoutSeconds` for `bgjob_wait` when the agent omits it — `0`/empty means unlimited; ④ Open the offline GUI in its own window; ⑤ Open the tools folder in File Explorer; ⑥ **Field display**: place each job field in the list / detail view / hidden (includes the "Runtime" field).
 
 **MCP jobs (its own Settings page, off by default)**:
 
