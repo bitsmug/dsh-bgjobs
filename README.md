@@ -28,7 +28,7 @@
 
 ## 安装 / 卸载
 
-前置：已安装 DSH（`@deepseek-ai/dsh`）、PowerShell 7 与 Node.js（`^22.19.0` 或 ≥24），Windows 系统。（已在 DSH `0.1.2-rc.1` ~ `0.1.7-rc.2` · Windows 10 · PowerShell 7 · Node.js 24 上验证）
+前置：已安装 DSH（`@deepseek-ai/dsh`）、PowerShell 7 与 Node.js（`^22.19.0` 或 ≥24），Windows 系统。（已在 DSH `0.1.2-rc.1` ~ `0.2.0-rc.2` · Windows 10 · PowerShell 7 · Node.js 24 上验证）（沙箱安全性未充分验证）
 
 > MCP 引擎（`bgjob_submit_mcp`）由插件自带的 Node 依赖跑：`@modelcontextprotocol/sdk` 与 `yaml` 随包发布，`dsh plugin add` 会自动装上；本地源码开发需先在该目录执行一次 `pnpm install`。DSH 自带的 Node 即可，无需另装。
 
@@ -174,8 +174,9 @@ allowBuilds:
 
 架构设计、机制细节、测试与发布流程见 [docs/developer.md](docs/developer.md)。
 
-## 近期更新（v0.1.62 → v0.1.86）
+## 近期更新（v0.1.62 → v0.1.87）
 
+- 支持 DSH 0.2.0-rc.2 版本（v0.1.87）
 - **修复完成通知在 DSH 0.1.7 上导致会话报错**：`notify` 通知消息的来源标记改用新版写法（旧写法 `{ kind: 'plugin', … }` 被 DSH 0.1.7 的会话准入拒绝，表现为「本轮运行失败 `format v4 message requires a producer-owned source kind`」，且该事件在写盘前就被拒、会话日志里查不到痕迹）（v0.1.86）。
 - **设置页可配「默认等待超时」**：agent 调用 `bgjob_wait` 未指定 `timeoutSeconds` 时用该值（0/留空 = 不限时）；显式传 `0` 仍可单次强制不限时（v0.1.85）。
 - **面板任务行显示「运行时长」**：运行中显示「已运行」的实时时长（`12s`/`3m05s`/`2h03m`/`1d04h`，随面板每秒刷新增长），完成后为总耗时；纳入设置页「字段显示」（默认显示在列表，可切详情/隐藏）（v0.1.85）。

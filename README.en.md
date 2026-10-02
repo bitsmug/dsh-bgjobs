@@ -28,7 +28,7 @@ Built for long-running work — large downloads, batch scripts, compilation, dat
 
 ## Install / uninstall
 
-Prereqs: DSH (`@deepseek-ai/dsh`), PowerShell 7, and Node.js (`^22.19.0` or ≥24), Windows. (Verified on DSH `0.1.2-rc.1` ~ `0.1.7-rc.2` · Windows 10 · PowerShell 7 · Node.js 24).
+Prereqs: DSH (`@deepseek-ai/dsh`), PowerShell 7, and Node.js (`^22.19.0` or ≥24), Windows. (Verified on DSH `0.1.2-rc.1` ~ `0.2.0-rc.2` · Windows 10 · PowerShell 7 · Node.js 24)(Sandbox security not verified)
 
 > The MCP engine (`bgjob_submit_mcp`) runs on the plugin's own Node dependencies: `@modelcontextprotocol/sdk` and `yaml` ship with the package and are installed by `dsh plugin add`; a local source checkout needs one `pnpm install`. DSH's bundled Node is enough — nothing else to install.
 
