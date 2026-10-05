@@ -140,7 +140,9 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
 ### runner 获取与任务 wiring
 
 - `resolveSandboxRunner()`：插件依赖 `@deepseek-ai/dsh-sandbox-windows-acl`（exports `./runner` → `lib/runner.js`）→ 环境变量 `BGJOBS_SANDBOX_RUNNER` 兜底；都不可得且请求沙箱 → fail loud + 清理。
-- `job.json` 恒记 resolved `sandbox`（含 off）；沙箱任务另记 `sandboxRunnerPath` / `sandboxTempPath`（`$DSH_HOME/bgjobs/sandbox/<id>`，工作区外）/ `nodeExe`（DSH 进程同款 Node，koffi ABI 匹配）。
+- `job.json` 恒记 resolved `sandbox`（含 off）；沙箱任务另记 `sandboxRunnerPath` / `sandboxTempPath`（`$DSH_HOME/bgjobs/sandbox/<id>`，工作区外）/ `nodeExe`。`nodeExe` 由 `resolveNodeExe`（`lib/runners.js`；测试经 `setNodeExeResolver` 整体替换，镜像 `setShellResolver`）解析：**保 basename 快路径**——`process.execPath` 的文件名是 `node`/`node.exe` 时原样使用（= DSH 进程同款 Node，koffi ABI 匹配），**保不住才 `where.exe node`**；两者都拿不到 ⇒ **fail-closed 报错**（`a real node executable not found (where.exe node)`），绝不退回 `execPath` 假成功。mcp 引擎共用同一解析器（行为不变）。
+- **PE 子系统守卫（v0.1.90-alpha，issue #1）**：挑定 `nodeExe` 后用 `peSubsystem()`（`lib/runners.js`；读 PE Optional Header 的 Subsystem，`2`=GUI / `3`=console）确证——`2` ⇒ 拒绝（`sandbox runner needs a console-subsystem node (…: <path>)`）；读不到 / 非 PE / 越界 ⇒ **放行**（只拒确证是 GUI 的，宁可放过不可误杀）。理由见下「边界与已知限制」。
+- **`suspect` 提示字段（v0.1.90-alpha）**：完成检测（`lib/core/watch.js`）时，沙箱任务满足「秒退（<1000ms）+ `exitCode === 0` + 日志 ≤64 B 且只含 runner 自己的 `[BGJOB]` marker（或全空）」⇒ 在 `job.json` 与 `/bgjobs/state` 记 `suspect: 'sandbox-runner-no-output'`（`lib/core/registry.js` 的 `view` / `statusFromDisk` 透出）。**只加提示字段，不改 `status`/`exitCode`/`notify` 语义**；真·秒退且无输出的沙箱任务会被误标，故仅作提示。
 - 沙箱任务对 `jobDir` 授 `Everyone:(OI)(CI)RX`（受限子进程去 Authenticated Users 读不了 job.ps1/解释器）。副作用：job.ps1（用户命令文本）对本地用户可读——README 已言明。
 - run.ps1 沙箱段：`node <runner> --workspace <workdir> --temp <sandboxTemp> --mode <mode> -- <解释器> -File job.ps1`；外层仍管重定向/exitcode/自删；done 清理时删 sandboxTemp。
 
@@ -148,6 +150,7 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
 
 - Windows ACL 沙箱是"尽力而为"非数学边界：workdir 落在 Everyone 可写树（如系统临时目录）会失效。
 - cmd 对被拒重定向不置 errorlevel（exit=0 但实际被拒，denial 只体现在输出文本 `Access is denied.`/「拒绝访问。」）——v1 不特判，日志可见即可。
+- **别把 GUI 子系统 exe 的 stdout 重定向到文件（Windows）**：GUI 子系统进程（Electron 桌面版 DSH 的 `process.execPath`、`notepad.exe`/`wscript.exe`…）不挂控制台，stdout 句柄指向文件时**静默秒退**——表现为日志空白 + 假 `exit 0`（issue #1 的沙箱 pwsh 症状）。所以沙箱 runner 必须由**真 node（console 子系统）**拉起；要拿输出就**走管道或真 node**。`dsh.cmd` 不受影响（cmd + 管道）。
 
 ## MCP 引擎（bgjob_submit_mcp / bgjob_mcp_tools）
 
@@ -166,7 +169,7 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
 
 ### 提交与任务产物
 
-- `submitJob(..., engine='mcp', ..., extra)`：`extra = { mcpSpec, serverName }`。提交时解析 Node 解释器（优先 `process.execPath`，否则 `where.exe node`）、烘焙 `meta.mcpRunnerPath`（`lib/mcp-runner.mjs` 绝对路径）/`meta.nodeExe`/`meta.mcpSpecPath`，写 `jobDir\mcp.json`（任务自包含，不依赖设置文件），`meta.engine='mcp'`、`meta.mcp={server,tool,transport,prewarm}`、展示用 `meta.command = 'mcp: <server> → <tool>'`。
+- `submitJob(..., engine='mcp', ..., extra)`：`extra = { mcpSpec, serverName }`。提交时解析 Node 解释器（`resolveNodeExe`：`process.execPath` 文件名是 `node`/`node.exe` 时优先，否则 `where.exe node`；与沙箱 runner 共用，见前「runner 获取与任务 wiring」）、烘焙 `meta.mcpRunnerPath`（`lib/mcp-runner.mjs` 绝对路径）/`meta.nodeExe`/`meta.mcpSpecPath`，写 `jobDir\mcp.json`（任务自包含，不依赖设置文件），`meta.engine='mcp'`、`meta.mcp={server,tool,transport,prewarm}`、展示用 `meta.command = 'mcp: <server> → <tool>'`。
 - **双层开关校验**：① 工具 `execute` 入口（开关即时生效、无需重启，工具常驻注册以避免动态注册时序问题）；② `submitJob` 内 `engine==='mcp'` 时再校验（防程序直调绕过）——关闭时连 jobDir 都不创建。开关文案统一为 `store.js` 的 `MCP_DISABLED_ERROR`。
 - **runner 契约**（`lib/mcp-runner.mjs`，`node lib/mcp-runner.mjs <jobDir>\mcp.json`）：
   - `mcp.json` = `{ server, transport:'stdio'|'streamable-http', command/args/env/cwd 或 url/headers, tool, arguments, timeoutMs?, prewarm? }`（`timeoutMs` **缺省即省略 = 不限时**）；

@@ -93,7 +93,7 @@ allowBuilds:
 ## 使用（agent 工具）
 
 - `bgjob_submit(name, command, workdir, [wait], [notify], [notify_mode])` — 提交后台任务（command 为 **bat** 语法）；`wait`=提交后原地等待的秒数（0/缺省不等待；>0 语义同 bgjob_wait 全缺省——等本会话任一任务先结束，无会话信息时回退等刚提交任务）；
-- `bgjob_submit_pwsh(name, command, workdir, [wait], [sandbox], [justification], [notify], [notify_mode])` — 提交后台任务（command 为 **PowerShell** 语法，UTF-8 日志、`exit <code>` 语义安全）；`wait` 同上；
+- `bgjob_submit_pwsh(name, command, workdir, [wait], [sandbox], [justification], [notify], [notify_mode])` — 提交后台任务（command 为 **PowerShell** 语法，UTF-8 日志、`exit <code>` 语义安全）；`wait` 同上；**沙箱任务**（`sandbox` 非 `off`）经独立 runner 拉起，需要**真 `node`**：DSH 自带的 node 优先，桌面版（Electron）改用 PATH 上的 `node.exe`（`where.exe node`），PATH 上也没有则**提交时直接报错**（不再出现「日志空白 + 假 exit 0」的假成功）；
 - `bgjob_submit_mcp(name, workdir, tool, [arguments], server | server_config, [timeout_seconds], [wait], [notify], [notify_mode])` — 把一次 **MCP 工具调用**提交为后台任务（第三引擎，同样由 schtasks 托管、面板可见、可 wait/notify）。`server` 是设置页登记的 server 名，`server_config` 是内联配置（`{transport:"stdio",command,args,env,cwd}` 或 `{transport:"streamable-http",url,headers}`），二者二选一。任务里连接该 server 调用一次工具，结果写日志与 `<jobDir>/result.json`（`channel` 记录本次是命中预热常驻连接还是冷启动），退出码 `0` 成功 / `1` 工具报错 / `2` 连接或调用失败 / `3` 超时；`timeout_seconds` **缺省不限时**（该 server 在设置页登记了 `timeoutMs` 时以它为准），也可传任意正数秒。**默认关闭，需先在设置页打开「MCP 任务」开关**（未开启时调用会被拒绝）；与 DSH 一致，会话访问模式（read-only 等）**不限制** MCP 任务。建议先用 `bgjob_mcp_tools` 确认工具名；
 - `bgjob_mcp_tools(server | server_config, [refresh])` — 列出该 MCP server 的注册工具（工具名/描述/必填字段名），提交前用它确认工具名与参数形状；`refresh: true` 绕过 10 分钟缓存。优先用 DSH 已注册的 `mcp__<server>__*` 工具（零启动开销），未命中才真正连接/启动 server 探测；同样受「MCP 任务」开关限制；
 - `bgjob_status(jobId)` — 查询状态 / 退出码 / 日志尾部；仅用于查看当前状态，不要拿它循环轮询（等待用 `bgjob_wait`）；
@@ -165,7 +165,7 @@ allowBuilds:
 - 任务默认「仅用户登录时运行」：关 DSH/终端不影响，但**注销 Windows 会终止任务**；
 - 命令不要自带 `> log` 类重定向（插件已整体重定向并保证 UTF-8）；
 - **沙箱**：`sandbox` 只约束文件效果（写工作区/临时区外会被拒），网络不受限；它是"尽力而为"而非数学边界——工作目录若落在 Everyone 可写的位置会失效；沙箱任务的任务目录会授 Everyone 只读（脚本文本对本地用户可见）；bat 引擎任务恒为全权限，受限会话需开启「全权限」才能提交；
-- 受限会话里请求超出会话模式的权限会弹窗审批，`justification` 说明理由即可。
+- 受限会话里请求超出会话模式的权限会弹窗审批，`justification` 说明理由即可；面板的**「全权限」开关不改变会话访问模式**（不改 DSH 的 mode）——它只决定这种「更宽请求」是弹窗审批（关）还是直接放行（开），任务仍按 resolved 模式落盘。
 - **MCP 任务**：默认关闭（设置页开启）；被删除/强杀的任务，其 stdio MCP server 子进程可能残留（正常完成后由 host 清理，见「删除」时的 pid 回收）；每个 server 在设置页可切「预热 / 冷启动 / 禁用」三态——**禁用**会让 `bgjob_submit_mcp` / `bgjob_mcp_tools` 拒绝该 server 并断开其常驻连接（「列出工具」仍可用）；「预热」连接只在 DSH 存活期有效，不改变"任务脱离 DSH 也能跑"；离线 CLI/GUI 只读查看与删除 MCP 任务，不在离线侧提交 MCP；`mcp-servers.json`、导出文本与任务目录的 `mcp.json` 都含**明文密钥**，分享/归档前请脱敏。
 - **等待被停止 ≠ 任务失败**：agent 等待任务时你点「停止/打断」，本次等待会**以错误结束**（错误文案写明各任务当前状态并提示可续等）。这是 DSH 的取消语义——调用方取消后，成功返回的东西送不到模型，只能以错误形态呈现；任务本身继续后台运行、不标记已交付，agent 可再次 `bgjob_wait` 续等。等待期间收到其它 agent 的消息则正常返回让路（`stoppedBy: 'message'`）：该返回**不含消息正文**，但这次调用会**声明终结当前回合**——DSH 随即把你/它发来的消息作为正式用户消息投递给 agent（排在本轮之后的排队消息亦然）；agent 不应再用等待或阻塞操作顶替它。
 - **MCP 超时收尾有 1–2 秒宽限**：MCP 任务超时/失败后 host 会关闭连接并回收 server 子进程（SDK `close()` 内部会先等约 2 秒再升级），所以 `result.json` 里的 `durationMs` 可能比 `timeoutMs` 多 1–2 秒（同文件也记了 `timeoutMs` 便于对照）。
@@ -174,7 +174,9 @@ allowBuilds:
 
 架构设计、机制细节、测试与发布流程见 [docs/developer.md](docs/developer.md)。
 
-## 近期更新（v0.1.62 → v0.1.89）
+## 近期更新（v0.1.62 → v0.1.90-alpha）
+
+- **修复沙箱 pwsh 任务「日志空白 + 假成功」**：桌面版（Electron）DSH 的 `process.execPath` 是 GUI 子系统 exe，被 runner 重定向 stdout 到文件后**静默秒退**——于是任务 `exit 0` 但日志空白。现在沙箱 runner 改用**真 node**：DSH 自带的 node 仍优先（保住 koffi ABI 匹配），保不住才 `where.exe node`；连 PATH 上都没有 ⇒ **提交时明确报错**（`a real node executable not found`）而非假成功；另加 PE 子系统守卫（确证 GUI 子系统 exe 直接拒绝）。已完成的任务若满足「秒退 + exit 0 + 日志只含 `[BGJOB]` marker」会在 `job.json` / 面板带 `suspect: 'sandbox-runner-no-output'` 提示（**仅提示**，不改状态/退出码/通知语义）（v0.1.90-alpha）。
 
 - **离线 GUI/CLI 的 dsh-home 改为「便携优先」分层探测**：便携树优先用 `<root>\data\dsh-home`（新增 `BGJOBS_DSH_HOME` 显式覆盖，状态栏常显当前来源 `| home: <来源>:<路径>`）。修复的痛点：双击 `tools\dsh-bgjobs-gui.bat` 后**任务列表为空**——进程继承到 User 级旧 `DSH_HOME`（指向旧库位置），与宿主实际落盘的便携库不是同一个 store；现在猜测层还会做「像不像 home」判据（空目录桩不误命中），显式设置的 `$DSH_HOME` 仍原样生效（v0.1.89）。
 - **完成横幅（toast）去重落盘**：已在任务自己的 `job.json` 记 `toastedAt`/`toastedBy`，设置页新增「完成横幅」「横幅去重」两个开关，启动/刷新后不再对已完成任务重复弹横幅（v0.1.88）。
