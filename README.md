@@ -169,14 +169,15 @@ allowBuilds:
 - **MCP 任务**：默认关闭（设置页开启）；被删除/强杀的任务，其 stdio MCP server 子进程可能残留（正常完成后由 host 清理，见「删除」时的 pid 回收）；每个 server 在设置页可切「预热 / 冷启动 / 禁用」三态——**禁用**会让 `bgjob_submit_mcp` / `bgjob_mcp_tools` 拒绝该 server 并断开其常驻连接（「列出工具」仍可用）；「预热」连接只在 DSH 存活期有效，不改变"任务脱离 DSH 也能跑"；离线 CLI/GUI 只读查看与删除 MCP 任务，不在离线侧提交 MCP；`mcp-servers.json`、导出文本与任务目录的 `mcp.json` 都含**明文密钥**，分享/归档前请脱敏。
 - **等待被停止 ≠ 任务失败**：agent 等待任务时你点「停止/打断」，本次等待会**以错误结束**（错误文案写明各任务当前状态并提示可续等）。这是 DSH 的取消语义——调用方取消后，成功返回的东西送不到模型，只能以错误形态呈现；任务本身继续后台运行、不标记已交付，agent 可再次 `bgjob_wait` 续等。等待期间收到其它 agent 的消息则正常返回让路（`stoppedBy: 'message'`）：该返回**不含消息正文**，但这次调用会**声明终结当前回合**——DSH 随即把你/它发来的消息作为正式用户消息投递给 agent（排在本轮之后的排队消息亦然）；agent 不应再用等待或阻塞操作顶替它。
 - **MCP 超时收尾有 1–2 秒宽限**：MCP 任务超时/失败后 host 会关闭连接并回收 server 子进程（SDK `close()` 内部会先等约 2 秒再升级），所以 `result.json` 里的 `durationMs` 可能比 `timeoutMs` 多 1–2 秒（同文件也记了 `timeoutMs` 便于对照）。
+- **⚠️ 已知缺陷（尚未修复）：运行中的「沙箱 pwsh」任务删不掉**——面板「删除」和离线 CLI `kill` 都会**返回成功，但任务其实还在跑**；它同时从面板列表里消失，于是你**既看不见也管不了**这个进程，作业目录也删不掉。**受限会话下 pwsh 任务默认就进沙箱**，所以这类任务都可能中招。临时办法：从任务目录或进程树里找到 pid，用 `taskkill /PID <pid> /T /F` 结束（可能需要在不受限的窗口里执行）。成因、进程树证据与代码位置见 [docs/developer.md](docs/developer.md) 的「边界与已知限制」。
 
 ## 维护与开发
 
 架构设计、机制细节、测试与发布流程见 [docs/developer.md](docs/developer.md)。
 
-## 近期更新（v0.1.62 → v0.1.90-alpha）
+## 近期更新（v0.1.62 → v0.1.90）
 
-- **修复沙箱 pwsh 任务「日志空白 + 假成功」**：桌面版（Electron）DSH 的 `process.execPath` 是 GUI 子系统 exe，被 runner 重定向 stdout 到文件后**静默秒退**——于是任务 `exit 0` 但日志空白。现在沙箱 runner 改用**真 node**：DSH 自带的 node 仍优先（保住 koffi ABI 匹配），保不住才 `where.exe node`；连 PATH 上都没有 ⇒ **提交时明确报错**（`a real node executable not found`）而非假成功；另加 PE 子系统守卫（确证 GUI 子系统 exe 直接拒绝）。已完成的任务若满足「秒退 + exit 0 + 日志只含 `[BGJOB]` marker」会在 `job.json` / 面板带 `suspect: 'sandbox-runner-no-output'` 提示（**仅提示**，不改状态/退出码/通知语义）（v0.1.90-alpha）。
+- **修复沙箱 pwsh 任务「日志空白 + 假成功」**：桌面版（Electron）DSH 的 `process.execPath` 是 GUI 子系统 exe，被 runner 重定向 stdout 到文件后**静默秒退**——于是任务 `exit 0` 但日志空白。现在沙箱 runner 改用**真 node**：DSH 自带的 node 仍优先（保住 koffi ABI 匹配），保不住才 `where.exe node`；连 PATH 上都没有 ⇒ **提交时明确报错**（`a real node executable not found`）而非假成功；另加 PE 子系统守卫（确证 GUI 子系统 exe 直接拒绝）。已完成的任务若满足「秒退 + exit 0 + 日志只含 `[BGJOB]` marker」会在 `job.json` / 面板带 `suspect: 'sandbox-runner-no-output'` 提示（**仅提示**，不改状态/退出码/通知语义）（v0.1.90）。
 
 - **离线 GUI/CLI 的 dsh-home 改为「便携优先」分层探测**：便携树优先用 `<root>\data\dsh-home`（新增 `BGJOBS_DSH_HOME` 显式覆盖，状态栏常显当前来源 `| home: <来源>:<路径>`）。修复的痛点：双击 `tools\dsh-bgjobs-gui.bat` 后**任务列表为空**——进程继承到 User 级旧 `DSH_HOME`（指向旧库位置），与宿主实际落盘的便携库不是同一个 store；现在猜测层还会做「像不像 home」判据（空目录桩不误命中），显式设置的 `$DSH_HOME` 仍原样生效（v0.1.89）。
 - **完成横幅（toast）去重落盘**：已在任务自己的 `job.json` 记 `toastedAt`/`toastedBy`，设置页新增「完成横幅」「横幅去重」两个开关，启动/刷新后不再对已完成任务重复弹横幅（v0.1.88）。
