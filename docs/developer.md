@@ -141,8 +141,8 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
 
 - `resolveSandboxRunner()`：插件依赖 `@deepseek-ai/dsh-sandbox-windows-acl`（exports `./runner` → `lib/runner.js`）→ 环境变量 `BGJOBS_SANDBOX_RUNNER` 兜底；都不可得且请求沙箱 → fail loud + 清理。
 - `job.json` 恒记 resolved `sandbox`（含 off）；沙箱任务另记 `sandboxRunnerPath` / `sandboxTempPath`（`$DSH_HOME/bgjobs/sandbox/<id>`，工作区外）/ `nodeExe`。`nodeExe` 由 `resolveNodeExe`（`lib/runners.js`；测试经 `setNodeExeResolver` 整体替换，镜像 `setShellResolver`）解析：**保 basename 快路径**——`process.execPath` 的文件名是 `node`/`node.exe` 时原样使用（= DSH 进程同款 Node，koffi ABI 匹配），**保不住才 `where.exe node`**；两者都拿不到 ⇒ **fail-closed 报错**（`a real node executable not found (where.exe node)`），绝不退回 `execPath` 假成功。mcp 引擎共用同一解析器（行为不变）。
-- **PE 子系统守卫（v0.1.90-alpha，issue #1）**：挑定 `nodeExe` 后用 `peSubsystem()`（`lib/runners.js`；读 PE Optional Header 的 Subsystem，`2`=GUI / `3`=console）确证——`2` ⇒ 拒绝（`sandbox runner needs a console-subsystem node (…: <path>)`）；读不到 / 非 PE / 越界 ⇒ **放行**（只拒确证是 GUI 的，宁可放过不可误杀）。理由见下「边界与已知限制」。
-- **`suspect` 提示字段（v0.1.90-alpha）**：完成检测（`lib/core/watch.js`）时，沙箱任务满足「秒退（<1000ms）+ `exitCode === 0` + 日志 ≤64 B 且只含 runner 自己的 `[BGJOB]` marker（或全空）」⇒ 在 `job.json` 与 `/bgjobs/state` 记 `suspect: 'sandbox-runner-no-output'`（`lib/core/registry.js` 的 `view` / `statusFromDisk` 透出）。**只加提示字段，不改 `status`/`exitCode`/`notify` 语义**；真·秒退且无输出的沙箱任务会被误标，故仅作提示。
+- **PE 子系统守卫（v0.1.90，issue #1）**：挑定 `nodeExe` 后用 `peSubsystem()`（`lib/runners.js`；读 PE Optional Header 的 Subsystem，`2`=GUI / `3`=console）确证——`2` ⇒ 拒绝（`sandbox runner needs a console-subsystem node (…: <path>)`）；读不到 / 非 PE / 越界 ⇒ **放行**（只拒确证是 GUI 的，宁可放过不可误杀）。理由见下「边界与已知限制」。
+- **`suspect` 提示字段（v0.1.90）**：完成检测（`lib/core/watch.js`）时，沙箱任务满足「秒退（<1000ms）+ `exitCode === 0` + 日志 ≤64 B 且只含 runner 自己的 `[BGJOB]` marker（或全空）」⇒ 在 `job.json` 与 `/bgjobs/state` 记 `suspect: 'sandbox-runner-no-output'`（`lib/core/registry.js` 的 `view` / `statusFromDisk` 透出）。**只加提示字段，不改 `status`/`exitCode`/`notify` 语义**；真·秒退且无输出的沙箱任务会被误标，故仅作提示。
 - 沙箱任务对 `jobDir` 授 `Everyone:(OI)(CI)RX`（受限子进程去 Authenticated Users 读不了 job.ps1/解释器）。副作用：job.ps1（用户命令文本）对本地用户可读——README 已言明。
 - run.ps1 沙箱段：`node <runner> --workspace <workdir> --temp <sandboxTemp> --mode <mode> -- <解释器> -File job.ps1`；外层仍管重定向/exitcode/自删；done 清理时删 sandboxTemp。
 
@@ -151,6 +151,14 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
 - Windows ACL 沙箱是"尽力而为"非数学边界：workdir 落在 Everyone 可写树（如系统临时目录）会失效。
 - cmd 对被拒重定向不置 errorlevel（exit=0 但实际被拒，denial 只体现在输出文本 `Access is denied.`/「拒绝访问。」）——v1 不特判，日志可见即可。
 - **别把 GUI 子系统 exe 的 stdout 重定向到文件（Windows）**：GUI 子系统进程（Electron 桌面版 DSH 的 `process.execPath`、`notepad.exe`/`wscript.exe`…）不挂控制台，stdout 句柄指向文件时**静默秒退**——表现为日志空白 + 假 `exit 0`（issue #1 的沙箱 pwsh 症状）。所以沙箱 runner 必须由**真 node（console 子系统）**拉起；要拿输出就**走管道或真 node**。`dsh.cmd` 不受影响（cmd + 管道）。
+- **⚠️ 已知缺陷（B1，本轮未修）：运行中的沙箱 pwsh 任务删不掉 / 停不掉——调用返回成功，进程照跑**。桌面版（Electron）实测，原始证据见 `_开发日志/bgjobs-测试报告-桌面沙箱pwsh-v0.1.90-alpha-2026-10-05.md` 的 B1（该报告属方案外发现，不计入 issue #1 判据）：
+  - **现象**：对 running 的沙箱 pwsh 任务，面板「删除/垃圾篓」（`/bgjobs/delete`，HTTP 200 `{"ok":true,"removed":"<id>"}`）与离线 CLI `kill` 都**无效**——心跳继续增长，直到脚本自己跑完。
+  - **后果**：① 任务**从面板注册表消失**（`registry.delete` / `indexRemove` 照常执行）⇒ 用户**看不见也管不了**仍在跑的进程；② **作业目录删不掉**（孤儿进程持句柄，`fsp.rm` 失败且被 `.catch(() => {})` 静默吞掉）；③ 已被删的 **sandbox 临时根被孤儿进程复活重建**。
+  - **进程树铁证**（`schtasks /End` + `/Delete` 之后**三个进程全部存活**）：`pwsh.exe -File …\run.ps1` → `node.exe …\dsh-sandbox-windows-acl\lib\runner.js` → `pwsh.exe -File …\job.ps1`；**只有 `taskkill /PID <pid> /T /F` 才真正结束**（一次杀掉三层，日志随即停止增长，任务目录才删得掉）。
+  - **代码定位（行号按 HEAD `e420579` 复核）**：`lib/core/web.js` 的 `removeJob`（`:45-69`）对 running 任务只做 `schtasks /End`（`:50`）+ `/Delete`（`:52`），**pid 级 `taskkill /PID /T /F` 兜底只对 `engine === 'mcp'` 生效**（`:53-63`，其注释自述"runner 冷启动的子进程不在 schtasks 树里"）；**沙箱 pwsh 是结构上同类情形**——`run.ps1` 多包了一层 node runner，`/End` 够不到下层。删目录/删 sandbox 临时根在 `:64`/`:65`，两者都 `.catch(() => {})`。离线 CLI 更弱：`tools/dsh-bgjobs-lib.ps1` 的 `Stop-BgjobsJob`（`:494-511`）**没有 pid 兜底**，且 schtasks 结果全被 `[void](...)` 丢弃（`:499`/`:501`）。
+  - **影响面**：受限会话下 pwsh 的**默认** sandbox 即会话模式（`lib/sandbox.js:43`）⇒ 受限会话里**每个 pwsh 任务**都进沙箱 runner，也就都删不掉。
+  - **临时规避**：从任务目录/进程树里找到 pid，用 `taskkill /PID <pid> /T /F` 结束；受限会话连 `tasklist` 都可能 `Access denied`，需不受限权限。
+  - **未修声明**：issue #1 只修「日志空白 + 假成功」（`resolveNodeExe` + PE 子系统守卫 + `suspect` 提示），**B1 未修**，仅作已知缺陷记录，修复另案。
 
 ## MCP 引擎（bgjob_submit_mcp / bgjob_mcp_tools）
 
