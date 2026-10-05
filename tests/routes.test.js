@@ -663,9 +663,9 @@ test('webServer: /bgjobs/uiprefs display 默认/持久化/一键恢复默认/非
       assert.equal(r.sidebarEntry, true, '旧 sidebarEntry query 仍生效')
       assert.equal(r.display.name, 'list', 'sidebarEntry POST 不影响 display')
 
-      // 界面元素显隐（v0.1.71）：默认全显示；POST body {elements} 改单个；一键恢复同时重置
+      // 界面元素显隐（v0.1.71；v0.1.88 增两个完成横幅开关）：默认全显示；POST body {elements} 改单个；一键恢复同时重置
       r = await call('/bgjobs/uiprefs')
-      assert.deepEqual(r.elements, { settingsButton: true, mcpSettingsButton: true, onlySession: true, fullAccess: true, groupHeader: true, notify: true }, '缺省 elements = 全显示')
+      assert.deepEqual(r.elements, { settingsButton: true, mcpSettingsButton: true, onlySession: true, fullAccess: true, groupHeader: true, notify: true, bannerEnabled: true, bannerMemo: true }, '缺省 elements = 全显示（含横幅两开关）')
       assert.deepEqual(r.defaultElements, r.elements, 'defaultElements 与默认一致')
       r = await callWith('/bgjobs/uiprefs', 'POST', { elements: { notify: false } })
       assert.equal(r.elements.notify, false, 'POST body 改 elements.notify=false')

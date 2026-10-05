@@ -237,6 +237,26 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
   - 消息：纯文本 UserMessage（`randomUUID` id + `role: user` + source `{kind:'plugin', plugin:'bgjobs'}`），一行「后台任务『name』已完成/已结束（exit code N）」。
 - **幂等**：`deliverCompletionNotice` 成功（inject/followup 未抛）后由 `markDelivered(job,'notify')` 把 `notifiedAt/notifiedBy` 并入 job.json——恢复判重依据「notifiedAt 已落盘」，漏送窗口极小且 toast 兜底，可接受。
 
+### 完成横幅（toast）的幂等与两个开关（v0.1.88，web 面板）
+
+横幅本体是 client toast（新 done 任务弹一条）。修之前去重标记只在内存（`panel.js` 的 `prevDoneRef`），且判定基线是「**首个成功轮询**的 jobs 列表」而非「打开时刻已 done 的集合」——宿主 recover 未完成时那份列表为空/不全，下一轮就把所有已完成任务判成"新完成"（**横幅重复弹出**的直接成因；刷新页面还会把内存标记清零）。
+
+- **落盘标记**：每个任务自己的 `job.json` 写 `toastedAt`（ms）+ `toastedBy`（网页弹的写 `web`；一次性种子写 `seed`）。与上一条 `notifiedAt` 同款：字段随任务目录生存亡，**不需要 GC/上限**；多标签页天然一致（第一个标签页写回后，其它标签页轮询到该字段即不再弹）。`registry.view()` 随 `/bgjobs/state` 下发 `toasted`/`toastedAt`/`toastedBy`。
+- **写路径**：`POST /bgjobs/toasted`，body `{ ids: string[] }` → 逐 id `markToastedId`（registry 未命中则 `locateJobDir` 定位磁盘 `job.json` 回填，与 `markDeliveredId` 同款）。`ids` 非数组 ⇒ 400；**不存在/已标记的 id 忽略并记一行日志**（绝不 500）；`bannerMemo=false` ⇒ 直接 `{ ok:true, skipped:'memo-off' }`（不写盘）。
+- **★ 先弹后写的取舍**（`lib/client-src/panel.js`）：client 先把 toast 推进 state，**之后**才 POST 回写；POST 失败只 `console.warn` 一行、**不重试** ⇒ 最坏结果是**重复弹一次**，绝不漏弹（幂等标记宁可少写、不可错写）。
+- **★ 空基线窗口**：`/bgjobs/state` 出参 `ready`（`store.setReady`/`isReady`）在 **watch 的 `recover()` 与一次性种子都跑完**之后才置 true；client 见 `ready === false` **跳过整段横幅判定、且不动内存基线**——把空列表记进基线正是"重复弹出"的成因。
+- **★ 一次性种子**（`lib/core/watch.js#seedBannerState`，`bannerSeedVersion`）：首次带上 toasted 判定的那次启动，把「`status === 'done'` 且无 `toastedAt`」的存量任务批量补写 `toastedAt = Date.now()`、`toastedBy = 'seed'`（内存 `job.meta` 同步，本轮快照即带 `toasted`），并在 `ui-prefs.json` 记 `bannerSeedVersion: 1` ⇒ **只跑一次**；此后新完成的任务（含关页面/宿主重启期间完成的）保持未标记，才能照常弹。种子全程 try/catch，**失败不影响 recover 与 ready**。
+- **判定口径**（`lib/client-src/banner.js` 的纯函数 `shouldToast(job, prevSeen, opts)`，便于单测）：优先级 `enabled > memo > toasted > 首轮 > 基线`。首轮已 done 且未 toasted ⇒ **不弹**（只记基线）；新完成 ⇒ **弹 + 写回**；已 toasted ⇒ **不弹**。
+- **两个开关**（DSH 设置页「后台任务 → 字段显示 → 界面元素」，落在 `ui-prefs.json` 的 `elements`）：
+
+| 开关 | 默认 | 关掉后的行为 |
+|---|---|---|
+| `bannerEnabled`（是否检测并弹横幅 = 总开关） | `true` | **完全不检测、不弹**（判定短路，连轮询里的判定整段跳过） |
+| `bannerMemo`（是否记住"已弹过"） | `true` | **照弹但不记** ⇒ 每次挂载/刷新都对 done 重弹（= 无记忆模式）；同一轮仍靠内存基线防刷屏（每秒轮询不会重复弹同一条） |
+
+- 语义关系：**总开关关 ⇒ 记忆开关无意义**；**总开关开 + 记忆关 ⇒ 弹但不写**。
+- 两个键走 `elements` 白名单（`web.js` 的 uiprefs **GET/POST 是 `elements` 整对象透传**，不需要 per-key 白名单——这点与 `display` 字段键不同），但**必须同步 5 处**，漏一处表现为「设置页无该项」或「改了不生效」：host `store.js` 的 `ELEMENT_KEYS`+`DEFAULT_ELEMENTS`、client `gui-prefs.js` 的 `DEFAULT_ELEMENTS`、client `settings-section.js` 的 `ELEMENT_KEYS`、i18n `element.<key>`（zh+en）、client `panel.js` 的读取点（经 `bannerRef` 读——轮询闭包只在 mount 建立一次，直接读 `elements` 会拿到旧值，设置页拨开关不生效）。
+
 ### 结果交付标记与 notify 视图（v0.1.60，全任务）
 
 每个任务的「结果是否已交付到 agent 上下文」由 `notifiedAt`（首次交付时间）+ `notifiedBy`（`notify` | `wait`）标记：**缺省即 pending（待交付）**。两条交付通道，先到者生效、不覆盖：
