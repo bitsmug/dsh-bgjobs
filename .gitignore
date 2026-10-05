@@ -3,3 +3,7 @@ node_modules
 _*/
 .trae/
 pnpm-lock.yaml
+*.bak-before-*
+*.bak-*
+.dsh/
+.tmp-*

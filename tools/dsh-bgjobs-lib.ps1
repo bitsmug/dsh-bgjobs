@@ -1,15 +1,22 @@
 ﻿# dsh-bgjobs-lib.ps1 - shared logic for the bgjobs offline management CLI.
 # Dot-source this from dsh-bgjobs.ps1 (CLI). Works WITHOUT DSH running:
 # reads/writes the same job.json / stdout.log / exitcode.txt files and the
-# same central index ($DSH_HOME/bgjobs/index.json) as the bgjobs DSH plugin.
+# same central index (<dsh-home>/bgjobs/index.json) as the bgjobs DSH plugin.
 #
 # Store layout (mirrors lib/index.js of the bgjobs plugin):
 #   - Jobs live at <workdir>/.dsh/bgjobs/<jobId>/  (job.json, stdout.log,
 #     exitcode.txt, run.bat) — the durable source of truth. State is ALWAYS
 #     read live from job.json; the central index is only a "map" (jobId ->
 #     jobDir) so the offline tool can locate jobs scattered across workspaces.
-#   - Central index: $DSH_HOME/bgjobs/index.json
-#     DSH_HOME env var, fallback ~/.dsh — same rule as harness resolveDshHome.
+#   - Central index: <dsh-home>/bgjobs/index.json, where <dsh-home> comes from
+#     Resolve-BgjobsHome() below — PORTABLE-FIRST, then the harness rule
+#     ($DSH_HOME env var, fallback ~/.dsh) as fallback.
+#     Inside a portable tree this file sits at <root>\plugins\<plugin>\tools\,
+#     so <root>\data\dsh-home (three levels up) WINS over an external DSH_HOME
+#     **on purpose** — that is the portable tree's own documented policy
+#     ("DSH_HOME 策略 = 便携优先", see the tree's README): a stale machine-level
+#     DSH_HOME must not drag the offline tools to a different, abandoned store.
+#     $env:BGJOBS_DSH_HOME overrides every layer (explicit escape hatch).
 #
 # MUST-MIRROR notes (keep in sync with lib/index.js):
 #   - New-BgjobsBat must behave identically to buildBat() in lib/index.js
@@ -18,7 +25,66 @@
 #   - job.json timestamps are UNIX MILLISECONDS (Date.now() in the plugin);
 #     do NOT write ISO strings or the offline tool misreads plugin-written jobs.
 
-$script:BgjobsHome = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $env:USERPROFILE '.dsh' }
+# ── dsh-home resolution: portable-first, harness rule as fallback ─────────
+# Priority: ① $env:BGJOBS_DSH_HOME (explicit override for the offline tools)
+# → ② portable probe <root>\data\dsh-home (this file sits in
+# <root>\plugins\<plugin>\tools\, so '..\..\..' from here is <root>)
+# → ③ $env:DSH_HOME (same rule as harness resolveDshHome)
+# → ④ $env:USERPROFILE\.dsh.
+# The "shape" gate guards only the *guessed* layers (② and ④): a directory
+# with no bgjobs/DSH marker inside is not a home and must not win by accident
+# (e.g. an empty <root>\data\dsh-home stub). Explicitly set env vars (①/③)
+# are deliberately NOT shape-gated: an explicit choice stays authoritative
+# even for a brand-new/empty store — otherwise these tools would silently read
+# and write a DIFFERENT home than the one the user/harness selected.
+$script:BgjobsPortableHomeProbe = if ($PSScriptRoot) { Join-Path $PSScriptRoot '..\..\..\data\dsh-home' } else { $null }
+
+# Does $Dir look like a DSH home? Must exist, be a directory, and carry at
+# least one marker. Primitives only (Windows PowerShell 5.1 compatible).
+function Test-BgjobsHomeShape([string]$Dir) {
+    if (-not $Dir) { return $false }
+    if (-not (Test-Path -LiteralPath $Dir -PathType Container)) { return $false }
+    foreach ($marker in @('bgjobs\index.json', 'profiles', 'sessions', 'logs')) {
+        if (Test-Path -LiteralPath (Join-Path $Dir $marker)) { return $true }
+    }
+    return $false
+}
+
+# Resolve the dsh-home as { Path; Source } — Source is one of
+# override|portable|env|userprofile|fallback (the GUI shows it in the status
+# bar so a "which store am I looking at?" question is answerable at a glance).
+function Resolve-BgjobsHome() {
+    # ① explicit override
+    if ($env:BGJOBS_DSH_HOME) {
+        return [pscustomobject]@{ Path = $env:BGJOBS_DSH_HOME; Source = 'override' }
+    }
+    # ② portable-first probe (shape-gated)
+    if ($script:BgjobsPortableHomeProbe -and (Test-BgjobsHomeShape $script:BgjobsPortableHomeProbe)) {
+        $portablePath = $script:BgjobsPortableHomeProbe
+        try { $portablePath = (Resolve-Path -LiteralPath $script:BgjobsPortableHomeProbe).Path } catch { }
+        $externalHome = if ($env:DSH_HOME) { ([string]$env:DSH_HOME).TrimEnd('\', '/') } else { '' }
+        if ($externalHome -and ($externalHome -ne ([string]$portablePath).TrimEnd('\', '/'))) {
+            Write-Host "[bgjobs] external DSH_HOME=$($env:DSH_HOME) ignored on purpose (portable-first); using $portablePath"
+        }
+        return [pscustomobject]@{ Path = $portablePath; Source = 'portable' }
+    }
+    # ③ harness rule
+    if ($env:DSH_HOME) {
+        return [pscustomobject]@{ Path = $env:DSH_HOME; Source = 'env' }
+    }
+    # ④ ~/.dsh
+    $userProfileHome = Join-Path $env:USERPROFILE '.dsh'
+    if (Test-BgjobsHomeShape $userProfileHome) {
+        return [pscustomobject]@{ Path = $userProfileHome; Source = 'userprofile' }
+    }
+    # nothing looks like a home: still hand back a path (never an empty one)
+    return [pscustomobject]@{ Path = $userProfileHome; Source = 'fallback' }
+}
+
+# Path + Source are kept side by side; $script:BgjobsHome keeps its old name
+# and type so every downstream consumer stays untouched.
+$script:BgjobsHomeInfo = Resolve-BgjobsHome
+$script:BgjobsHome = $script:BgjobsHomeInfo.Path
 $script:BgjobsIndexPath = Join-Path $script:BgjobsHome 'bgjobs\index.json'
 $script:BgjobsSchtasks = Join-Path ($env:SystemRoot) 'System32\schtasks.exe'
 

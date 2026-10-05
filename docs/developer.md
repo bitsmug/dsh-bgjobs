@@ -75,6 +75,14 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
   ```
   也可在「任务计划程序」GUI 里按名字筛 `dsh-bgj-`。
 
+### 离线 CLI/GUI 的 dsh-home 探测（便携优先，tools/dsh-bgjobs-lib.ps1）
+
+- 分层探测 `Resolve-BgjobsHome()`（返回 `{Path, Source}`，`Source` ∈ `override|portable|env|userprofile|fallback`）：① `$env:BGJOBS_DSH_HOME`（**新增**的显式覆盖）→ ② **便携探测** `Join-Path $PSScriptRoot '..\..\..\data\dsh-home'`（lib 位于 `<root>\plugins\<plugin>\tools\` ⇒ 上三级 = `<root>`；便携树命中 `<root>\data\dsh-home`，源码树里该目录不存在 ⇒ 自然落空）→ ③ `$env:DSH_HOME`（harness `resolveDshHome` 同规则）→ ④ `$env:USERPROFILE\.dsh`；**全落空 ⇒ 仍返回 ④ 的路径**（`Source='fallback'`），路径永不为空。变量名/类型不变：`$script:BgjobsHome` 仍是字符串路径，新增 `$script:BgjobsHomeInfo` 存 Path+Source ⇒ 下游零改动。
+- **为什么便携优先**：便携树**故意忽略外部 `DSH_HOME`**（其 `README.md` 的「DSH_HOME 策略 = 便携优先」）。此前 lib 只照搬 harness 默认规则（`$DSH_HOME` > `~/.dsh`）而没实现该策略：Explorer 双击 `tools\dsh-bgjobs-gui.bat` 时进程继承**User 级旧** `DSH_HOME`（指向旧库位置），而 harness 自己落便携盘 ⇒ **GUI 任务列表为空**（两端看的不是同一个 store）。
+- `Test-BgjobsHomeShape($Dir)`：「像 home」判据 = 存在、是目录、且含 `bgjobs\index.json` / `profiles\` / `sessions\` / `logs\` 之一。★ 只门禁**猜测层**（②④）——空目录桩不得误命中；★ ①③ 是**显式**选择，**不做 shape 门禁**：显式值即便指向尚未建库的新目录也必须生效，否则会被静默改道到另一个 home（正是本次要修的那类故障）。判据只用 Windows PowerShell 5.1 也有的原语（`Test-Path -PathType Container` / `Join-Path`）。
+- **可观测性**：② 命中而 `DSH_HOME` 指向别处 ⇒ 打一行 `[bgjobs] external DSH_HOME=<x> ignored on purpose (portable-first); using <y>`；GUI 状态栏尾部常显 `| home: <Source>:<Path>`（例 `| home: portable:<root>\data\dsh-home`）——「我在看哪个库」一眼可答。
+- `tools/smoke-test.ps1` 同步加固：便携优先后 `DSH_HOME` 不再是隔离手段（便携树的 `<root>\data\dsh-home` 会先命中），该测试改为把 **`BGJOBS_DSH_HOME`** 钉在它的临时 home，并在 dot-source 后**断言** `Source='override'` 且路径 == 临时 home（不符即 throw，**在任何写盘之前**失败）——否则合成索引会被写进**真实**索引。
+
 ### 完成检测 / 读日志 / 恢复
 
 - **事件驱动 + 兜底**：fs.watch 监视任务目录，`exitcode.txt` 出现即触发（200ms 节流）迁移 done；tick 每 5s 补查防 watch 丢事件/合并。`checkCompletion` 是唯一 running→done 迁移点。

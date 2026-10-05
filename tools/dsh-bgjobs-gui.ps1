@@ -95,7 +95,7 @@ function Update-GuiList {
     }
     $script:list.EndUpdate()
     if ($changed) {
-        $script:statusLabel.Text = (Get-BgjobsText 'status.count') -f @($jobs).Count, $script:BgjobsIndexPath
+        $script:statusLabel.Text = ((Get-BgjobsText 'status.count') -f @($jobs).Count, $script:BgjobsIndexPath) + "  | home: $($script:BgjobsHomeInfo.Source):$($script:BgjobsHome)"
     }
 }
 

@@ -8,6 +8,11 @@ $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ('bgjobs-smoke-' + [guid]::Ne
 $origDshHome = $env:DSH_HOME
 $env:DSH_HOME = Join-Path $tmp 'home'
 New-Item -ItemType Directory -Force -Path $env:DSH_HOME | Out-Null
+# The lib resolves the dsh-home portable-first: inside a portable tree
+# (<root>\data\dsh-home) an external DSH_HOME no longer isolates this test, so
+# pin the top-priority override at the temp home — otherwise the synthetic index
+# would be written into the REAL index of the portable store.
+$env:BGJOBS_DSH_HOME = $env:DSH_HOME
 $workdir = Join-Path $tmp 'work'
 New-Item -ItemType Directory -Force -Path $workdir | Out-Null
 $jobsRoot = Join-Path $workdir '.dsh\bgjobs'
@@ -21,6 +26,13 @@ if ($jobsRoot -eq $realJobsRoot -or $env:DSH_HOME -eq $realDshHome -or -not $tmp
 }
 $script = Join-Path $PSScriptRoot 'dsh-bgjobs-lib.ps1'
 . $script
+
+# Fail closed: refuse to run (before anything is written) unless the override
+# above really took effect. Without this, a silent fallback would let the test
+# rewrite the user's real bgjobs/index.json.
+if ($script:BgjobsHomeInfo.Source -ne 'override' -or ([string]$script:BgjobsHome).TrimEnd('\') -ne ([string]$env:DSH_HOME).TrimEnd('\')) {
+    throw "refusing to run: bgjobs home resolved to '$($script:BgjobsHome)' (source=$($script:BgjobsHomeInfo.Source)); expected the temp home '$($env:DSH_HOME)' via BGJOBS_DSH_HOME"
+}
 
 $failed = 0
 function Assert-True([bool]$Cond, [string]$Msg) {
