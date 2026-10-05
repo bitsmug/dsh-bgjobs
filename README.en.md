@@ -173,6 +173,11 @@ Double-click `tools\dsh-bgjobs-gui.bat` to open a standalone window (no DSH need
 
 Architecture, mechanism details, testing and release flow: see [docs/developer.md](docs/developer.md).
 
+## Recent updates (v0.1.62 → v0.1.89)
+
+- **Portable-first, layered dsh-home detection for the offline GUI/CLI**: the offline tools now prefer the portable tree's `<root>\data\dsh-home`, honour a new `BGJOBS_DSH_HOME` override, and always show the resolved source in the status bar (`| home: <source>:<path>`). The pain it fixes: double-clicking `tools\dsh-bgjobs-gui.bat` showed an **empty job list**, because the process inherited an old user-level `DSH_HOME` (pointing at an abandoned store) while the harness itself had moved to the portable store — the two were not reading the same one. Guessed layers are shape-checked (a marker-less stub directory cannot win by accident), while an explicitly set `$DSH_HOME` still applies as-is (v0.1.89).
+- **Completion banner (toast) dedup persisted on disk**: `toastedAt`/`toastedBy` are now recorded in each job's own `job.json`, two settings switches ("completion banner" and "banner memo") were added, and already-finished jobs no longer pop the banner again after a start or page refresh (v0.1.88).
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

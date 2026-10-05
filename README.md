@@ -174,8 +174,10 @@ allowBuilds:
 
 架构设计、机制细节、测试与发布流程见 [docs/developer.md](docs/developer.md)。
 
-## 近期更新（v0.1.62 → v0.1.87）
+## 近期更新（v0.1.62 → v0.1.89）
 
+- **离线 GUI/CLI 的 dsh-home 改为「便携优先」分层探测**：便携树优先用 `<root>\data\dsh-home`（新增 `BGJOBS_DSH_HOME` 显式覆盖，状态栏常显当前来源 `| home: <来源>:<路径>`）。修复的痛点：双击 `tools\dsh-bgjobs-gui.bat` 后**任务列表为空**——进程继承到 User 级旧 `DSH_HOME`（指向旧库位置），与宿主实际落盘的便携库不是同一个 store；现在猜测层还会做「像不像 home」判据（空目录桩不误命中），显式设置的 `$DSH_HOME` 仍原样生效（v0.1.89）。
+- **完成横幅（toast）去重落盘**：已在任务自己的 `job.json` 记 `toastedAt`/`toastedBy`，设置页新增「完成横幅」「横幅去重」两个开关，启动/刷新后不再对已完成任务重复弹横幅（v0.1.88）。
 - 支持 DSH 0.2.0-rc.2 版本（v0.1.87）
 - **修复完成通知在 DSH 0.1.7 上导致会话报错**：`notify` 通知消息的来源标记改用新版写法（旧写法 `{ kind: 'plugin', … }` 被 DSH 0.1.7 的会话准入拒绝，表现为「本轮运行失败 `format v4 message requires a producer-owned source kind`」，且该事件在写盘前就被拒、会话日志里查不到痕迹）（v0.1.86）。
 - **设置页可配「默认等待超时」**：agent 调用 `bgjob_wait` 未指定 `timeoutSeconds` 时用该值（0/留空 = 不限时）；显式传 `0` 仍可单次强制不限时（v0.1.85）。
