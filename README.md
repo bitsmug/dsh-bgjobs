@@ -95,7 +95,7 @@ allowBuilds:
 
 - `bgjob_submit(name, command, workdir, [wait], [notify], [notify_mode])` — 提交后台任务（command 为 **bat** 语法）；`wait`=提交后原地等待的秒数（0/缺省不等待；>0 语义同 bgjob_wait 全缺省——等本会话任一任务先结束，无会话信息时回退等刚提交任务）；
 - `bgjob_submit_pwsh(name, command, workdir, [wait], [sandbox], [justification], [notify], [notify_mode])` — 提交后台任务（command 为 **PowerShell** 语法，UTF-8 日志、`exit <code>` 语义安全）；`wait` 同上；**沙箱任务**（`sandbox` 非 `off`）经独立 runner 拉起，需要**真 `node`**（console 子系统，优先与 DSH 同源的那份，见近期更新 v0.1.91）；找不到 ⇒ **提交时直接报错**（不会出现「日志空白 + 假 exit 0」的假成功）；
-- `bgjob_submit_mcp(name, workdir, tool, [arguments], server | server_config, [timeout_seconds], [wait], [notify], [notify_mode])` — 把一次 **MCP 工具调用**提交为后台任务（第三引擎，同样由 schtasks 托管、面板可见、可 wait/notify）。`server` 是设置页登记的 server 名，`server_config` 是内联配置（stdio 或 streamable-http），二者二选一。任务里连接该 server 调用一次工具，结果写日志与 `<jobDir>/result.json`（本次走预热常驻连接还是冷启动也记在里面），退出码 `0` 成功 / `1` 工具报错 / `2` 连接或调用失败 / `3` 超时；`timeout_seconds` **缺省不限时**（该 server 在设置页登记了 `timeoutMs` 时以它为准），也可传任意正数秒。**默认关闭，需先在设置页打开「MCP 任务」开关**（未开启时调用会被拒绝）；与 DSH 一致，会话访问模式（read-only 等）**不限制** MCP 任务。建议先用 `bgjob_mcp_tools` 确认工具名；
+- `bgjob_submit_mcp(name, workdir, tool, [arguments], server | server_config, [timeout_seconds], [wait], [notify], [notify_mode])` — 把一次 **MCP 工具调用**提交为后台任务（第三引擎，同样由 schtasks 托管、面板可见、可 wait/notify）。`server` 是设置页登记的 server 名，`server_config` 是内联配置（stdio 或 streamable-http），二者二选一。任务里连接该 server 调用一次工具，结果写日志与 `<jobDir>/result.json`（含执行通道），退出码 `0` 成功 / `1` 工具报错 / `2` 连接或调用失败 / `3` 超时；`timeout_seconds` **缺省不限时**（该 server 在设置页登记了 `timeoutMs` 时以它为准），也可传任意正数秒。**默认关闭，需先在设置页打开「MCP 任务」开关**（未开启时调用会被拒绝）；与 DSH 一致，会话访问模式（read-only 等）**不限制** MCP 任务。建议先用 `bgjob_mcp_tools` 确认工具名；
 - `bgjob_mcp_tools(server | server_config, [refresh])` — 列出该 MCP server 的注册工具（工具名/描述/必填字段名），提交前用它确认工具名与参数形状；结果有缓存，`refresh: true` 强制刷新；同样受「MCP 任务」开关限制；
 - `bgjob_status(jobId)` — 查询状态 / 退出码 / 日志尾部；仅用于查看当前状态，不要拿它循环轮询（等待用 `bgjob_wait`）；
 - `bgjob_wait(jobId | jobIds, [timeoutSeconds], [logic])` — 等待后台任务结束并**立即返回**退出码与日志尾部（`timeoutSeconds` **缺省 = 设置页「默认等待超时」**，该设置未配置＝不限时（一直等到任务结束）；显式传 `0`/负数 = 本次强制不限时，传正数才到点返回 `timedOut: true` 快照）。两种模式（`logic`）：
@@ -156,7 +156,7 @@ allowBuilds:
 
 ## 数据与存储
 
-- 任务数据：`<workdir>\.dsh\bgjobs\<jobId>\`（`job.json` 元数据、`stdout.log` 日志、`exitcode.txt` 退出码）；
+- 任务数据：`<workdir>\.dsh\bgjobs\<jobId>\`（`job.json` 元数据、`stdout.log` 日志、`exitcode.txt` 退出码；MCP 任务另有 `mcp.json` 调用说明与 `result.json` 结果）；
 - 全局状态：`$DSH_HOME\bgjobs\`（`index.json` 任务"地图"、`fullaccess.json` 全权限开关、`ui-prefs.json` 网页 UI 偏好、`mcp-*.json` MCP 开关/登记/缓存；逐项含义见 [docs/developer.md](docs/developer.md)）；
 - `done` 任务默认持续保留，直到你手动清理（面板 🧹 / CLI cleanup / GUI）。
 
@@ -212,3 +212,7 @@ allowBuilds:
 - **任务完成后自动执行动作**：可选关机 / 休眠 / 运行自定义脚本（支持延迟与参数，离线 GUI 内配置）。
 - **离线 GUI 体验优化**：列表自动刷新不再跳顶、列表与日志可拖动分界、修复列表列头与刷新闪烁；新增「创建桌面快捷方式」。
 - 操作失败不再静默：设置页会直接显示失败原因。
+
+## 许可证
+
+MIT — 见 [LICENSE](LICENSE)。
