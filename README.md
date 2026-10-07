@@ -93,7 +93,7 @@ allowBuilds:
 ## 使用（agent 工具）
 
 - `bgjob_submit(name, command, workdir, [wait], [notify], [notify_mode])` — 提交后台任务（command 为 **bat** 语法）；`wait`=提交后原地等待的秒数（0/缺省不等待；>0 语义同 bgjob_wait 全缺省——等本会话任一任务先结束，无会话信息时回退等刚提交任务）；
-- `bgjob_submit_pwsh(name, command, workdir, [wait], [sandbox], [justification], [notify], [notify_mode])` — 提交后台任务（command 为 **PowerShell** 语法，UTF-8 日志、`exit <code>` 语义安全）；`wait` 同上；**沙箱任务**（`sandbox` 非 `off`）经独立 runner 拉起，需要**真 `node`**：DSH 自带的 node 优先，桌面版（Electron）改用 PATH 上的 `node.exe`（`where.exe node`），PATH 上也没有则**提交时直接报错**（不再出现「日志空白 + 假 exit 0」的假成功）；
+- `bgjob_submit_pwsh(name, command, workdir, [wait], [sandbox], [justification], [notify], [notify_mode])` — 提交后台任务（command 为 **PowerShell** 语法，UTF-8 日志、`exit <code>` 语义安全）；`wait` 同上；**沙箱任务**（`sandbox` 非 `off`）经独立 runner 拉起，需要**真 `node`**（console 子系统）：按「**与 DSH 运行时同源优先**」挑选——`process.execPath` 本身是 node → 桌面版 `DSH_DESKTOP_NODE_EXECUTABLE` → **桌面版自带 node** → 最后才是 PATH 上的 `where.exe node`（命中结果同样要过 PE 校验）；全落空则**提交时直接报错**（不再出现「日志空白 + 假 exit 0」的假成功）；
 - `bgjob_submit_mcp(name, workdir, tool, [arguments], server | server_config, [timeout_seconds], [wait], [notify], [notify_mode])` — 把一次 **MCP 工具调用**提交为后台任务（第三引擎，同样由 schtasks 托管、面板可见、可 wait/notify）。`server` 是设置页登记的 server 名，`server_config` 是内联配置（`{transport:"stdio",command,args,env,cwd}` 或 `{transport:"streamable-http",url,headers}`），二者二选一。任务里连接该 server 调用一次工具，结果写日志与 `<jobDir>/result.json`（`channel` 记录本次是命中预热常驻连接还是冷启动），退出码 `0` 成功 / `1` 工具报错 / `2` 连接或调用失败 / `3` 超时；`timeout_seconds` **缺省不限时**（该 server 在设置页登记了 `timeoutMs` 时以它为准），也可传任意正数秒。**默认关闭，需先在设置页打开「MCP 任务」开关**（未开启时调用会被拒绝）；与 DSH 一致，会话访问模式（read-only 等）**不限制** MCP 任务。建议先用 `bgjob_mcp_tools` 确认工具名；
 - `bgjob_mcp_tools(server | server_config, [refresh])` — 列出该 MCP server 的注册工具（工具名/描述/必填字段名），提交前用它确认工具名与参数形状；`refresh: true` 绕过 10 分钟缓存。优先用 DSH 已注册的 `mcp__<server>__*` 工具（零启动开销），未命中才真正连接/启动 server 探测；同样受「MCP 任务」开关限制；
 - `bgjob_status(jobId)` — 查询状态 / 退出码 / 日志尾部；仅用于查看当前状态，不要拿它循环轮询（等待用 `bgjob_wait`）；
@@ -175,7 +175,9 @@ allowBuilds:
 
 架构设计、机制细节、测试与发布流程见 [docs/developer.md](docs/developer.md)。
 
-## 近期更新（v0.1.62 → v0.1.90）
+## 近期更新（v0.1.62 → v0.1.91）
+
+- **只装桌面版 DSH、机器上没有别的 node 时，沙箱 pwsh 任务现在也能跑起来了**：此前 `where.exe node` 落空就直接报错（桌面版自带的 node 不在 PATH 上）。node 挑选改为「**与 DSH 运行时同源优先**」——`process.execPath` 是 node → `DSH_DESKTOP_NODE_EXECUTABLE` → **桌面版自带 node**（`<安装根>\resources\runtime\...\dependencies\node\bin\node.exe`）→ 最后才是 `where.exe node`；`job.json` 记来源标签 `nodeExeSource`（`basename`/`desktop-env`/`desktop-bundled`/`where`），一眼看出用的是哪一份。**为什么把自带 node 排在 `where.exe` 之前**：前三条都是与 DSH 同源的那份 node，能保证 koffi 原生绑定的 N-API ABI 与运行中的 DSH 匹配；`where.exe` 命中的是机器上任意的一份 node（可能是低版本/异源，甚至 `resources\runtime\bin` 里那个 `#!/bin/sh` 的 `node` 假货）。`where.exe` 命中结果现在也要过 PE 校验（名 `node.exe` + console 子系统），把那个 shim 挡掉；仍找不到 ⇒ 提交时中性报错（`a real console-subsystem node executable could not be located`），fail-closed 不假成功。另：提交时把所选 node 的 `--version` 记进 `job.json` 的 `meta.nodeExeVersion`（短超时探测，失败/超时记 `null`、**不影响提交**；不设版本下限阈值——koffi 的实际要求待取证）（v0.1.91）。
 
 - **修复沙箱 pwsh 任务「日志空白 + 假成功」**：桌面版（Electron）DSH 的 `process.execPath` 是 GUI 子系统 exe，被 runner 重定向 stdout 到文件后**静默秒退**——于是任务 `exit 0` 但日志空白。现在沙箱 runner 改用**真 node**：DSH 自带的 node 仍优先（保住 koffi ABI 匹配），保不住才 `where.exe node`；连 PATH 上都没有 ⇒ **提交时明确报错**（`a real node executable not found`）而非假成功；另加 PE 子系统守卫（确证 GUI 子系统 exe 直接拒绝）。已完成的任务若满足「秒退 + exit 0 + 日志只含 `[BGJOB]` marker」会在 `job.json` / 面板带 `suspect: 'sandbox-runner-no-output'` 提示（**仅提示**，不改状态/退出码/通知语义）（v0.1.90）。
 

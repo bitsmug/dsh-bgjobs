@@ -140,7 +140,15 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
 ### runner 获取与任务 wiring
 
 - `resolveSandboxRunner()`：插件依赖 `@deepseek-ai/dsh-sandbox-windows-acl`（exports `./runner` → `lib/runner.js`）→ 环境变量 `BGJOBS_SANDBOX_RUNNER` 兜底；都不可得且请求沙箱 → fail loud + 清理。
-- `job.json` 恒记 resolved `sandbox`（含 off）；沙箱任务另记 `sandboxRunnerPath` / `sandboxTempPath`（`$DSH_HOME/bgjobs/sandbox/<id>`，工作区外）/ `nodeExe`。`nodeExe` 由 `resolveNodeExe`（`lib/runners.js`；测试经 `setNodeExeResolver` 整体替换，镜像 `setShellResolver`）解析：**保 basename 快路径**——`process.execPath` 的文件名是 `node`/`node.exe` 时原样使用（= DSH 进程同款 Node，koffi ABI 匹配），**保不住才 `where.exe node`**；两者都拿不到 ⇒ **fail-closed 报错**（`a real node executable not found (where.exe node)`），绝不退回 `execPath` 假成功。mcp 引擎共用同一解析器（行为不变）。
+- `job.json` 恒记 resolved `sandbox`（含 off）；沙箱任务另记 `sandboxRunnerPath` / `sandboxTempPath`（`$DSH_HOME/bgjobs/sandbox/<id>`，工作区外）/ `nodeExe` / `nodeExeSource`（来源标签，见下）/ `nodeExeVersion`（v0.1.91）。`nodeExe` 由 `resolveNodeExe` / `resolveNodeExeInfo`（`lib/runners.js`；测试经 `setNodeExeResolver` 整体替换，镜像 `setShellResolver`）解析——**v0.1.91 重排优先级，逐层**：
+  1. **basename 快路径**——`process.execPath` 的文件名是 `node`/`node.exe` 时原样使用（= DSH 进程同款 Node，koffi ABI 匹配）；
+  2. `DSH_DESKTOP_NODE_EXECUTABLE`（桌面版 runtime 引用的变量；运行时可能为空，只当加分项）；
+  3. `<process.resourcesPath>` 下按已知布局取**桌面版自带 node**（`runtime\primary-runtime\dependencies\node\bin\node.exe` 等；布局变化时限深/限条目数扫描 `resourcesPath\runtime` 兜底）；
+  4. `where.exe node`——**降为最后手段**，且命中结果同样过 `asConsoleNodeExe`（名 `node.exe` + PE = 3）；
+  5. 全落空 ⇒ **fail-closed 报错**（`sandbox requested but a real console-subsystem node executable could not be located`），绝不退回 `execPath` 假成功。
+  - **为什么把自带 node（③）放在 `where.exe`（④）之前**：①②③ 都是"**与 DSH 运行时同源**"的那份 node，唯一能保证 koffi 原生绑定的 **N-API ABI** 与运行中的 DSH 匹配；`where.exe` 命中的是**这台机器上任意的**一份 node（PATH 顺序决定），可能是别的版本/别的发行版，甚至 `resources\runtime\bin\node` 那个 `#!/bin/sh` shim（非 PE，spawn 直接失败）——所以它降为最后手段，且必须过同一道 PE/名校验（否则把 `resources\runtime\bin` 加进 PATH 就会先命中 shim）。
+  - `nodeExeSource` ∈ `basename` | `desktop-env` | `desktop-bundled` | `where`（`injected` 仅测试注入缝）——用于**事后判断"用的是哪一份"**。mcp 引擎共用同一解析器（行为不变）。
+- **所选 node 的版本落盘（v0.1.91）**：挑定解释器后跑一次 `node --version`（`probeNodeVersion`，短超时 3s、失败/超时/认不出 ⇒ `null`）写入 `meta.nodeExeVersion`（归一成 `24.21.0` 形式）+ 失败时附 `sandboxRunnerNodeVersionProbeFailed: true`（沙箱分支）。**纯诊断：绝不阻断提交**；★ 不设版本下限阈值——koffi 的实际版本要求未取证，先积累数据再判。
 - **PE 子系统守卫（v0.1.90，issue #1）**：挑定 `nodeExe` 后用 `peSubsystem()`（`lib/runners.js`；读 PE Optional Header 的 Subsystem，`2`=GUI / `3`=console）确证——`2` ⇒ 拒绝（`sandbox runner needs a console-subsystem node (…: <path>)`）；读不到 / 非 PE / 越界 ⇒ **放行**（只拒确证是 GUI 的，宁可放过不可误杀）。理由见下「边界与已知限制」。
 - **`suspect` 提示字段（v0.1.90）**：完成检测（`lib/core/watch.js`）时，沙箱任务满足「秒退（<1000ms）+ `exitCode === 0` + 日志 ≤64 B 且只含 runner 自己的 `[BGJOB]` marker（或全空）」⇒ 在 `job.json` 与 `/bgjobs/state` 记 `suspect: 'sandbox-runner-no-output'`（`lib/core/registry.js` 的 `view` / `statusFromDisk` 透出）。**只加提示字段，不改 `status`/`exitCode`/`notify` 语义**；真·秒退且无输出的沙箱任务会被误标，故仅作提示。
 - 沙箱任务对 `jobDir` 授 `Everyone:(OI)(CI)RX`（受限子进程去 Authenticated Users 读不了 job.ps1/解释器）。副作用：job.ps1（用户命令文本）对本地用户可读——README 已言明。
@@ -177,7 +185,7 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
 
 ### 提交与任务产物
 
-- `submitJob(..., engine='mcp', ..., extra)`：`extra = { mcpSpec, serverName }`。提交时解析 Node 解释器（`resolveNodeExe`：`process.execPath` 文件名是 `node`/`node.exe` 时优先，否则 `where.exe node`；与沙箱 runner 共用，见前「runner 获取与任务 wiring」）、烘焙 `meta.mcpRunnerPath`（`lib/mcp-runner.mjs` 绝对路径）/`meta.nodeExe`/`meta.mcpSpecPath`，写 `jobDir\mcp.json`（任务自包含，不依赖设置文件），`meta.engine='mcp'`、`meta.mcp={server,tool,transport,prewarm}`、展示用 `meta.command = 'mcp: <server> → <tool>'`。
+- `submitJob(..., engine='mcp', ..., extra)`：`extra = { mcpSpec, serverName }`。提交时解析 Node 解释器（`resolveNodeExe`：与沙箱 runner 共用同一解析器，优先级见前「runner 获取与任务 wiring」）、烘焙 `meta.mcpRunnerPath`（`lib/mcp-runner.mjs` 绝对路径）/`meta.nodeExe`/`meta.nodeExeVersion`（v0.1.91，诊断用；探测失败 ⇒ `null`）/`meta.mcpSpecPath`，写 `jobDir\mcp.json`（任务自包含，不依赖设置文件），`meta.engine='mcp'`、`meta.mcp={server,tool,transport,prewarm}`、展示用 `meta.command = 'mcp: <server> → <tool>'`。
 - **双层开关校验**：① 工具 `execute` 入口（开关即时生效、无需重启，工具常驻注册以避免动态注册时序问题）；② `submitJob` 内 `engine==='mcp'` 时再校验（防程序直调绕过）——关闭时连 jobDir 都不创建。开关文案统一为 `store.js` 的 `MCP_DISABLED_ERROR`。
 - **runner 契约**（`lib/mcp-runner.mjs`，`node lib/mcp-runner.mjs <jobDir>\mcp.json`）：
   - `mcp.json` = `{ server, transport:'stdio'|'streamable-http', command/args/env/cwd 或 url/headers, tool, arguments, timeoutMs?, prewarm? }`（`timeoutMs` **缺省即省略 = 不限时**）；
@@ -325,7 +333,7 @@ submit ─► [pending-running] ──done──► [pending-done]
 ### 测试
 
 - `pnpm test`（=`node --test "tests/**/*.test.js"`，不依赖 DSH）。用例按功能分布在 `tests/*.test.js`（unit / tools / submit / watch / routes / sandbox / notify / wait / mcp / mcp-web），共享工具与套件隔离在 `tests/helpers/common.js`。覆盖：纯函数、工具注册契约、提交/完成/恢复/保留、webServer 路由、沙箱决策矩阵与审批、notify 矩阵与送达路由、wait/交付标记、MCP（开关双层拦截 / 提交与 mcp.json 落盘 / server 登记解析 / runner 端到端 / 工具列表与缓存 / 预热通道与回退 / profile 判定与 DSH 导入 / 端点）。MCP 用例一律用 `tests/fixtures/demo-mcp-server.mjs`（本地、离线）。
-- 测试替身 seam（模块级，测试内成对恢复）：`setSchtasksRunner`（schtasks/icacls/taskkill 都走它）、`setShellResolver`、`setSandboxRunnerResolver`、`setPrewarmFactory`（捕获本 apply 的预热域以驱动 warm/endpoint 断言）。
+- 测试替身 seam（模块级，测试内成对恢复）：`setSchtasksRunner`（schtasks/icacls/taskkill 都走它）、`setShellResolver`、`setSandboxRunnerResolver`、`setNodeSearchContext`（node 搜索上下文：execPath/env/resourcesPath）、`setNodeVersionProber`（`node --version` 探测；`null` = 恢复生产实现）、`setPrewarmFactory`（捕获本 apply 的预热域以驱动 warm/endpoint 断言）。
 - 回归注意：
   - `/bgjobs/state` 路由含 `await readFullAccess()` → 测试调 `handler` 必须 `await`；
   - makeCtx mock 需提供 `ctx.on`（apply 注册了 `agent/inbox/claimed`）；触发事件 = `onCallbacks.find(...)?.fn(payload)`；
