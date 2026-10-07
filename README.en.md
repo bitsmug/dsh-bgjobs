@@ -5,6 +5,7 @@
 [![npm version](https://img.shields.io/npm/v/bgjobs)](https://www.npmjs.com/package/bgjobs)
 [![GitHub tag](https://img.shields.io/github/v/tag/bitsmug/dsh-bgjobs)](https://github.com/bitsmug/dsh-bgjobs/tags)
 [![License](https://img.shields.io/npm/l/bgjobs)](LICENSE)
+[![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/bitsmug/dsh-bgjobs)
 [![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)
 
 **Run commands outside the DSH process**: jobs are handed to the Windows Task Scheduler service, so closing DSH or the web page does not stop them. A toast appears in the web UI when a job finishes; live output is always one refresh away; and when DSH is offline you can still manage jobs with the standalone CLI/GUI.
@@ -28,7 +29,7 @@ Built for long-running work — large downloads, batch scripts, compilation, dat
 
 ## Install / uninstall
 
-Prereqs: DSH (`@deepseek-ai/dsh`), PowerShell 7, and Node.js (`^22.19.0` or ≥24), Windows. (Verified on DSH `0.1.2-rc.1` ~ `0.2.0-rc.2` · Windows 10 · PowerShell 7 · Node.js 24)(Sandbox security not verified)
+Prereqs: DSH (`@deepseek-ai/dsh`), PowerShell 7, and Node.js (`^22.19.0` or ≥24), Windows. (Verified on DSH `0.1.2-rc.1` ~ `0.2.0-rc.2` · Windows 10 · PowerShell 7 · Node.js 24) (Desktop version `0.2.0-rc.2` supported, verified) (Sandbox security not verified)
 
 > The MCP engine (`bgjob_submit_mcp`) runs on the plugin's own Node dependencies: `@modelcontextprotocol/sdk` and `yaml` ship with the package and are installed by `dsh plugin add`; a local source checkout needs one `pnpm install`. DSH's bundled Node is enough — nothing else to install.
 
@@ -174,7 +175,9 @@ Double-click `tools\dsh-bgjobs-gui.bat` to open a standalone window (no DSH need
 
 Architecture, mechanism details, testing and release flow: see [docs/developer.md](docs/developer.md).
 
-## Recent updates (v0.1.62 → v0.1.91)
+## Recent updates (v0.1.62 → v0.1.92)
+
+- **Sandboxed pwsh job startup measured 2.86 s → 1.61 s (median, −1.25 s per job), behaviour unchanged**: the encoding preamble in `run.ps1` / `job.ps1` used to carry an `Add-Type … SetConsoleOutputCP(65001)` line — every process start had to **compile a C# snippet on the spot**, while for PS 5.1 it had **zero semantics** (measured: the same 5.1 script with and without that line produces **byte-identical** output — UTF-16LE `FF FE`, Chinese intact). What actually rescues mojibake is the `FF FE` detection/conversion in `run.ps1` (for sandboxed jobs `job.ps1` runs in a separate child process, so the line was compiled twice), so it is now deleted. Also, the encoding preamble is now **conditional on the interpreter**: when the interpreter is pwsh 7 (`pwsh`/`pwsh.exe` basename, fixed at submit time by `resolveShell()`) it is skipped entirely (pwsh 7 is UTF-8 by default); Windows PowerShell 5.1 still gets `[Console]::OutputEncoding` (its `*>` redirection defaults to UTF-16LE) and `$OutputEncoding` (defaults to ASCII). An unknown/missing interpreter is treated as 5.1 (fail-safe) (v0.1.92).
 
 - **Sandboxed pwsh jobs now work on a machine that only has the desktop DSH build and no other node**: previously a miss from `where.exe node` was a hard error (the desktop build's bundled node is not on `PATH`). Node selection is now "**same origin as the DSH runtime first**": `process.execPath` being node → `DSH_DESKTOP_NODE_EXECUTABLE` → the **node bundled with the desktop build** (`<install root>\resources\runtime\...\dependencies\node\bin\node.exe`) → and only then `where.exe node`. The origin is recorded in `job.json` as `nodeExeSource` (`basename`/`desktop-env`/`desktop-bundled`/`where`) so you can see which copy was used. **Why the bundled node ranks ahead of `where.exe`**: the first three are the same copy of node the DSH runtime uses, which is what keeps the koffi native binding's N-API ABI compatible with the running DSH; `where.exe` returns an arbitrary node from the machine (possibly an older or foreign build — or the fake `#!/bin/sh` `node` in `resources\runtime\bin`). A `where.exe` hit must now also pass the PE check (name `node.exe` + console subsystem), which rejects that shim; if nothing is found the submission fails with a neutral message (`a real console-subsystem node executable could not be located`) — fail-closed, never a fake success. Also: submit now records the chosen node's `--version` in `job.json` as `meta.nodeExeVersion` (short-timeout probe; failure/timeout records `null` and **never blocks the submission**; no minimum-version threshold yet — koffi's actual requirement is still unverified) (v0.1.91).
 

@@ -5,6 +5,7 @@
 [![npm version](https://img.shields.io/npm/v/bgjobs)](https://www.npmjs.com/package/bgjobs)
 [![GitHub tag](https://img.shields.io/github/v/tag/bitsmug/dsh-bgjobs)](https://github.com/bitsmug/dsh-bgjobs/tags)
 [![License](https://img.shields.io/npm/l/bgjobs)](LICENSE)
+[![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/bitsmug/dsh-bgjobs)
 [![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)
 
 **让 DSH 提交的命令脱离 DSH 进程独立运行**：任务交给 Windows 任务计划程序服务托管，关掉 DSH、关掉网页都不影响执行；网页弹 Toast 提醒完成，随时看实时输出；DSH 离线时还能用独立 CLI/GUI 管理。
@@ -28,7 +29,7 @@
 
 ## 安装 / 卸载
 
-前置：已安装 DSH（`@deepseek-ai/dsh`）、PowerShell 7 与 Node.js（`^22.19.0` 或 ≥24），Windows 系统。（已在 DSH `0.1.2-rc.1` ~ `0.2.0-rc.2` · Windows 10 · PowerShell 7 · Node.js 24 上验证）（沙箱安全性未充分验证）
+前置：已安装 DSH（`@deepseek-ai/dsh`）、PowerShell 7 与 Node.js（`^22.19.0` 或 ≥24），Windows 系统。（已在网页版 DSH `0.1.2-rc.1` ~ `0.2.0-rc.2` · Windows 10 · PowerShell 7 · Node.js 24 上验证）（已支持桌面版 DSH `0.2.0-rc.2` 并通过验证）（沙箱安全性未充分验证）
 
 > MCP 引擎（`bgjob_submit_mcp`）由插件自带的 Node 依赖跑：`@modelcontextprotocol/sdk` 与 `yaml` 随包发布，`dsh plugin add` 会自动装上；本地源码开发需先在该目录执行一次 `pnpm install`。DSH 自带的 Node 即可，无需另装。
 
@@ -175,7 +176,9 @@ allowBuilds:
 
 架构设计、机制细节、测试与发布流程见 [docs/developer.md](docs/developer.md)。
 
-## 近期更新（v0.1.62 → v0.1.91）
+## 近期更新（v0.1.62 → v0.1.92）
+
+- **沙箱 pwsh 任务的启动开销实测 2.86 s → 1.61 s（中位数 −1.25 s/任务），行为不变**：`run.ps1` / `job.ps1` 的编码 preamble 里曾有一行 `Add-Type … SetConsoleOutputCP(65001)`——每次进程启动都要**现编译一段 C#**，而它对 5.1 的 `*>` 产物**零语义**（实测：同一 5.1 脚本带/不带该行，产物**字节完全相同**，都是 UTF-16LE `FF FE`，中文照常正常）。真正救回乱码的一直是 `run.ps1` 里那句 FF FE 检测转换（沙箱任务的 `job.ps1` 跑在独立子进程 ⇒ 这一行被编译两次），故直接删除。另：编码 preamble 现在**按解释器条件化**——解释器是 pwsh 7（basename `pwsh`/`pwsh.exe`，提交时由 `resolveShell()` 定下）时**整段不写**（pwsh 7 启动即 UTF-8）；Windows PowerShell 5.1 仍照写 `[Console]::OutputEncoding`（其 `*>` 重定向默认 UTF-16LE）与 `$OutputEncoding`（默认 ASCII）；判据拿不到解释器时按 5.1 处理（fail-safe）（v0.1.92）。
 
 - **只装桌面版 DSH、机器上没有别的 node 时，沙箱 pwsh 任务现在也能跑起来了**：此前 `where.exe node` 落空就直接报错（桌面版自带的 node 不在 PATH 上）。node 挑选改为「**与 DSH 运行时同源优先**」——`process.execPath` 是 node → `DSH_DESKTOP_NODE_EXECUTABLE` → **桌面版自带 node**（`<安装根>\resources\runtime\...\dependencies\node\bin\node.exe`）→ 最后才是 `where.exe node`；`job.json` 记来源标签 `nodeExeSource`（`basename`/`desktop-env`/`desktop-bundled`/`where`），一眼看出用的是哪一份。**为什么把自带 node 排在 `where.exe` 之前**：前三条都是与 DSH 同源的那份 node，能保证 koffi 原生绑定的 N-API ABI 与运行中的 DSH 匹配；`where.exe` 命中的是机器上任意的一份 node（可能是低版本/异源，甚至 `resources\runtime\bin` 里那个 `#!/bin/sh` 的 `node` 假货）。`where.exe` 命中结果现在也要过 PE 校验（名 `node.exe` + console 子系统），把那个 shim 挡掉；仍找不到 ⇒ 提交时中性报错（`a real console-subsystem node executable could not be located`），fail-closed 不假成功。另：提交时把所选 node 的 `--version` 记进 `job.json` 的 `meta.nodeExeVersion`（短超时探测，失败/超时记 `null`、**不影响提交**；不设版本下限阈值——koffi 的实际要求待取证）（v0.1.91）。
 
