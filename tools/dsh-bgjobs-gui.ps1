@@ -1,4 +1,4 @@
-﻿# dsh-bgjobs-gui.ps1 - bgjobs standalone management window (works WITHOUT DSH).
+# dsh-bgjobs-gui.ps1 - bgjobs standalone management window (works WITHOUT DSH).
 # Mirrors dsh-undo-savepoint-gui.ps1: single-instance mutex, hidden console,
 # WinForms list with refresh/submit/kill/cleanup, live log tail panel.
 # Open via dsh-bgjobs-gui.bat or a desktop shortcut.
@@ -581,6 +581,9 @@ $script:toolbar = New-Object System.Windows.Forms.ToolStrip
 $script:btnRefresh = New-Object System.Windows.Forms.ToolStripButton((Get-BgjobsText 'gui.refresh'))
 $script:btnSubmit = New-Object System.Windows.Forms.ToolStripButton((Get-BgjobsText 'gui.submit'))
 $script:btnKill = New-Object System.Windows.Forms.ToolStripButton((Get-BgjobsText 'gui.kill'))
+# ★ kill 与 delete 是两种语义（用户裁定）：终止按钮**只杀进程、保留记录**；
+#   "删除"按钮才删记录（job 目录 + 中央索引），且只对没有活进程的任务有效。
+$script:btnDelete = New-Object System.Windows.Forms.ToolStripButton((Get-BgjobsText 'gui.delete'))
 $script:btnCleanup = New-Object System.Windows.Forms.ToolStripButton((Get-BgjobsText 'gui.cleanup'))
 $script:btnIndex = New-Object System.Windows.Forms.ToolStripButton((Get-BgjobsText 'gui.index'))
 $script:btnAutoDone = New-Object System.Windows.Forms.ToolStripButton((Get-BgjobsText 'gui.autodone'))
@@ -590,6 +593,7 @@ $script:btnShortcut = New-Object System.Windows.Forms.ToolStripButton((Get-Bgjob
 $script:toolbar.Items.Add($script:btnRefresh) | Out-Null
 $script:toolbar.Items.Add($script:btnSubmit) | Out-Null
 $script:toolbar.Items.Add($script:btnKill) | Out-Null
+$script:toolbar.Items.Add($script:btnDelete) | Out-Null
 $script:toolbar.Items.Add($script:btnCleanup) | Out-Null
 $script:toolbar.Items.Add($script:btnIndex) | Out-Null
 $script:toolbar.Items.Add($script:btnAutoDone) | Out-Null
@@ -671,10 +675,67 @@ $script:btnSubmit.Add_Click({ Show-GuiSubmitDialog })
 $script:btnKill.Add_Click({
     if ($script:list.SelectedItems.Count -eq 0) { return }
     $j = $script:list.SelectedItems[0].Tag
-    $ask = [System.Windows.Forms.MessageBox]::Show(((Get-BgjobsText 'msg.kill') -f $j.name, $j.id), 'bgjobs', 'YesNo', 'Question')
+    # ★ unknown 门槛（用户裁定，2026-10-08）：动 kill/delete 之前先做一次**只读**判定
+    #   （Get-BgjobsJobProcessState 绝不杀进程、绝不改状态）。unknown = 无法判定进程状态
+    #   ⇒ 弹**警告型**确认框（说清"无法判定"+"继续将直接终止/清理"）；用户确认 = 本次调用带 -Force
+    #   （口径：**确认框本身就是 force**）。live / absent 走原确认框且**不带** -Force —— force 只对 unknown 生效。
+    $taskName = if ($j.taskName) { $j.taskName } else { 'dsh-bgj-' + $j.id }
+    $state = Get-BgjobsJobProcessState $j $taskName
+    $force = ($state.state -eq 'unknown')
+    if ($force) {
+        # 措辞随动作分流（★ 只改措辞、不改行为）：kill = 终止进程；记录仍保留。
+        $askKey = 'msg.unknown.kill'
+        $caption = Get-BgjobsText 'msg.unknown.title'
+        $icon = 'Warning'
+    } else {
+        # 措辞随状态分流（★ 只改措辞、不改行为）：running = **终止进程**（kill）；done = **回收残留进程**
+        # （典型的 mcp 孤儿 server）——对已完成的任务说"终止任务"是错的口径。
+        $askKey = if ($j.status -eq 'running') { 'msg.kill' } else { 'msg.kill.done' }
+        $caption = 'bgjobs'
+        $icon = 'Question'
+    }
+    $ask = [System.Windows.Forms.MessageBox]::Show(((Get-BgjobsText $askKey) -f $j.name, $j.id), $caption, 'YesNo', $icon)
     if ($ask -ne 'Yes') { return }
-    $r = Stop-BgjobsJob $j.id
-    if (-not $r.ok) { [System.Windows.Forms.MessageBox]::Show(((Get-BgjobsText 'msg.kill.failed') -f $r.error), 'bgjobs', 'OK', 'Error') }
+    $r = Stop-BgjobsJobProcesses $j.id -Force:$force
+    # ★ absent 不再静默（用户裁定，2026-10-08）：host 在"未发现活进程"时回 **ok = $true + mode:'absent'**
+    #   ⇒ 只看 $r.ok 会把它当成功、静默刷新，用户以为杀掉了。这里在 $r.ok 为真后**再分一次 mode**：
+    #     absent ⇒ 弹提示（未终止任何东西、记录原封未动；要清记录请用「🗑 删除记录」）；
+    #     kill / 其它 ⇒ 原成功路径不变（静默刷新）；
+    #     mode 读不到（缺失/空/非字符串）⇒ **不许瞎报**，退回静默刷新。
+    #   "什么都没动"这个事实由 host 如实回传在 $r.note 里（文案唯一来源 = lib/core/web.js 的 absent 分支），
+    #   这里不复制一份，只补一句"要清记录该怎么办"的 GUI 指引。
+    if (-not $r.ok) {
+        [System.Windows.Forms.MessageBox]::Show(((Get-BgjobsText 'msg.kill.failed') -f $r.error), 'bgjobs', 'OK', 'Error')
+    } elseif ($r.mode -is [string] -and $r.mode -eq 'absent') {
+        $absentText = [string]$r.note + [Environment]::NewLine + (Get-BgjobsText 'msg.kill.absent.hint')
+        [System.Windows.Forms.MessageBox]::Show($absentText, 'bgjobs', 'OK', 'Information')
+    }
+    Update-GuiList
+})
+$script:btnDelete.Add_Click({
+    if ($script:list.SelectedItems.Count -eq 0) { return }
+    $j = $script:list.SelectedItems[0].Tag
+    # ★ unknown 门槛（口径同 kill）：无法判定进程状态 ⇒ 警告型确认框，确认 = -Force；live / absent 不带 force。
+    $taskName = if ($j.taskName) { $j.taskName } else { 'dsh-bgj-' + $j.id }
+    $state = Get-BgjobsJobProcessState $j $taskName
+    $force = ($state.state -eq 'unknown')
+    if ($force) {
+        $askKey = 'msg.unknown.delete'
+        $caption = Get-BgjobsText 'msg.unknown.title'
+        $icon = 'Warning'
+    } else {
+        $askKey = 'msg.delete'
+        $caption = 'bgjobs'
+        $icon = 'Question'
+    }
+    $ask = [System.Windows.Forms.MessageBox]::Show(((Get-BgjobsText $askKey) -f $j.name, $j.id), $caption, 'YesNo', $icon)
+    if ($ask -ne 'Yes') { return }
+    $r = Remove-BgjobsJob $j.id -Force:$force
+    if (-not $r.ok) {
+        $text = (Get-BgjobsText 'msg.delete.failed') -f $r.error
+        if ($r.mode -eq 'kill' -or $r.mode -eq 'unknown') { $text = $text + [Environment]::NewLine + (Get-BgjobsText 'msg.delete.hint') }
+        [System.Windows.Forms.MessageBox]::Show($text, 'bgjobs', 'OK', 'Error')
+    }
     Update-GuiList
 })
 $script:btnCleanup.Add_Click({ Show-GuiCleanupDialog })

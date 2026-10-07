@@ -38,6 +38,29 @@ function makeClient(ctx, injectCallbacks) {
 
 const demoConfig = () => ({ transport: 'stdio', command: process.execPath, args: [DEMO] })
 
+/**
+ * pid 探针可作答的替身（默认替身对探针回**空 stdout** = "探针答不出话" = `unknown`）。
+ * 这里按**真实序列**作答：kill 前"该 pid 存活且属于本任务"、kill 后"该 pid 已消失"
+ * —— 那正是 `taskkill /PID <pid> /T /F` 回收 stdio server 之后的真实状态。
+ * ★ 为什么必须如实建模（用户裁定 2026-10-08）：`unknown` 起就**默认不清理/删除**（只警告 + needsForce），
+ *   旧写法靠"探针答不出话"蒙过去，等于在 unknown 上删记录 —— 那正是裁定要拦下的行为。
+ * 判据与 tests/kill-tree.test.js 同源：探针脚本 = `Win32_Process` 且**不含**反查标记 `BGJOBS-PROC`。
+ */
+const PROBE_ALIVE_OWNED = 'BGJOBS-PID 1 1'
+const PROBE_GONE = 'BGJOBS-PID 0 0'
+function makeProbeAwareRunner(log) {
+  const probeQueue = [PROBE_ALIVE_OWNED, PROBE_GONE]
+  return async (argv) => {
+    log.push(argv)
+    const joinedArgv = argv.map(String).join(' ')
+    if (joinedArgv.includes('Win32_Process') && !joinedArgv.includes('BGJOBS-PROC')) {
+      const out = probeQueue.length > 0 ? probeQueue.shift() : PROBE_GONE
+      return { exitCode: 0, stdout: out, stderr: '' }
+    }
+    return { exitCode: 0, stdout: '', stderr: '' }
+  }
+}
+
 /** 打开 MCP 总开关（默认关闭；测试直接写 prefs 文件，等价于设置页 POST /bgjobs/mcpprefs）。 */
 const enableMcp = async () => {
   await fsp.mkdir(path.dirname(bgjobsFile('mcp-prefs.json')), { recursive: true })
@@ -259,10 +282,11 @@ test('web: /bgjobs/dsh-mcp 只读列示 + 导入（同名跳过 / !!js 默认拒
 
 // ── 展示与清理（引擎标签 / 通道 / pid 回收） ────────────────────────────
 
-test('web: mcp 任务 done 后 state 带 engine/channel；删除时回收 stdio server pid', async () => {
+test('web: mcp 任务 done 后 state 带 engine/channel；kill 回收 stdio server pid（记录保留）⇒ delete 才清记录', async () => {
   await enableMcp()
   const calls = []
-  setSchtasksRunner(makeFakeRunner(calls))
+  // ★ 探针如实作答（kill 前存活、kill 后已消失）：见 makeProbeAwareRunner 的注释。
+  setSchtasksRunner(makeProbeAwareRunner(calls))
   const workdir = await makeWorkdir()
   const { ctx, tools, intervals, injectCallbacks } = makeCtx({ services: {} })
   const dispose = apply(ctx)
@@ -285,9 +309,18 @@ test('web: mcp 任务 done 后 state 带 engine/channel；删除时回收 stdio 
     assert.equal(job.channel, 'prewarm', 'state 视图应带执行通道')
     assert.equal((await readJson(path.join(jobDir, 'job.json'))).mcpChannel, 'prewarm', '通道落盘供离线只读展示')
 
+    // ★ 回收 mcp server pid 是 **kill** 的事（只终止进程、不删记录）：任务已 done ⇒ 退出码保持原样。
+    const killed = await call('/bgjobs/kill?id=' + res.jobId)
+    assert.equal(killed.ok, true)
+    assert.equal(killed.mode, 'kill')
+    assert.ok(calls.some((argv) => String(argv[0]).includes('taskkill') && argv.includes('4242')), 'kill 应回收 mcp server pid')
+    assert.equal((await readJson(path.join(jobDir, 'job.json'))).exitCode, 0, 'done 任务的退出码不得被 kill 覆盖成 KILLED_EXIT_CODE')
+    assert.ok(await fsp.stat(jobDir).then(() => true).catch(() => false), 'kill 不删记录 ⇒ job 目录必须还在')
+    // ★ 记录由 **delete** 清掉（"进程不存在"⇒ delete 语义）。
     const del = await call('/bgjobs/delete?id=' + res.jobId)
     assert.equal(del.ok, true)
-    assert.ok(calls.some((argv) => String(argv[0]).includes('taskkill') && argv.includes('4242')), '删除 mcp 任务应回收 server pid')
+    assert.equal(del.mode, 'delete')
+    assert.equal(await fsp.stat(jobDir).catch(() => null), null, 'delete 才删掉 job 目录')
   } finally {
     dispose()
     await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})

@@ -274,7 +274,61 @@ test('mcp: disabled + prewarm:true 的 server 不进入预热域', async () => {
   }
 })
 
-// ── 5. 与 DSH 一致：会话访问模式不限制 MCP ───────────────────────────────
+// ── 5. 守卫：绝对路径形式的 command 不存在 → 不 spawn、只写一次日志、状态 down ──
+// 动机（实测刷屏）：陈旧/跨机复制的 stdio 配置在 Windows 上被 cross-spawn 包成
+// `cmd.exe /d /s /c "…x.exe …"`，cmd 的原生报错进启动器 stderr；预热失败后还有最多 10 次
+// 退避重连 ⇒ 每次启动刷最多 10 行。守卫必须在真正 spawn 之前拦住，且不得误封正常 server。
+
+test('mcp 守卫：绝对路径 command 不存在 → 不 spawn、状态 down、只写一次日志；裸命令名放行', async () => {
+  const missing = path.join(process.env.DSH_HOME, 'no-such-dir-xyz', 'matlab-mcp-server.exe')
+  const warned = []
+  const origWarn = console.warn
+  console.warn = (...args) => { warned.push(args.join(' ')) }
+  const cases = {
+    missing: { transport: 'stdio', command: missing, args: ['--x'], env: {} },
+    real: { ...demoConfig(), serverName: 'real' },
+  }
+  const domain = createMcpPrewarm({
+    resolveConfig: async (n) => cases[String(n)] || null,
+    version: () => '0.0.0-test',
+  })
+  const pw = domain.api
+  const pidOf = (rec) => (rec && rec.client && rec.client.transport ? rec.client.transport.pid : undefined)
+  try {
+    await pw.init()
+    // ① 不存在的绝对路径：状态 down + 可读原因，且**没有子进程**
+    const rec = await pw.warm('missing')
+    assert.equal(pidOf(rec), undefined, '不该有 spawn（transport.pid 应为空）')
+    assert.equal(rec.status, 'down')
+    assert.equal(rec.lastError, 'missing command: ' + missing, 'down 原因应可读')
+    assert.equal(warned.length, 1, '每个缺失路径只写一次日志')
+    assert.match(warned[0], /missing command: /)
+    assert.ok(warned[0].includes(missing), '日志应含完整路径')
+    // ② 再 warm 两次（模拟设置页/退避重试）：不 spawn、不重连、不再刷屏
+    await pw.warm('missing')
+    await pw.warm('missing')
+    await new Promise((r) => setTimeout(r, 1500))
+    assert.equal(warned.length, 1, '重复 warm 不得重复写日志')
+    assert.equal(pw.status().find((s) => s.name === 'missing').status, 'down')
+    // ③ 预热通道读工具走同一守卫：报可读原因，而不是 spawn 失败
+    await assert.rejects(() => pw.listTools('missing'), /not warm[\s\S]*missing command: /)
+    // ④ 正例回归：已存在的绝对路径（process.execPath）照旧 spawn 并 warm
+    const real = await pw.warm('real')
+    assert.ok(pidOf(real) !== undefined && pidOf(real) !== null, '存在的绝对路径必须照旧 spawn')
+    assert.equal(real.status, 'warm', '存在的绝对路径必须照旧连上')
+    // ⑤ 换配置（同 name 指向存在的绝对路径）→ 守卫让路，不"粘住"
+    cases.missing.command = process.execPath
+    cases.missing.args = [DEMO]
+    const fixed = await pw.warm('missing')
+    assert.equal(fixed.status, 'warm', '修好路径后应能连上（守卫不粘滞）')
+    assert.ok(pidOf(fixed) !== undefined && pidOf(fixed) !== null, '修好后应真的 spawn')
+  } finally {
+    console.warn = origWarn
+    try { await pw.unwarmAll() } catch { /* noop */ }
+  }
+})
+
+// ── 5b. 与 DSH 一致：会话访问模式不限制 MCP ───────────────────────────────
 
 test('mcp: 受限会话（read-only）+ full access 关 → 仍可提交；对照 bat 被拒', async () => {
   await enableMcp()

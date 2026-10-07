@@ -113,10 +113,13 @@ function makeCtx(overrides = {}) {
   return { ctx, tools, intervals, services, injectCallbacks, sections, onCallbacks }
 }
 
-/** 默认 fake schtasks：全部成功，记录调用。 */
-
+/** 默认 fake schtasks：全部成功，记录调用。
+ *  ★ 反查查询（缺口 B：无 pid 文件时按 jobDir/taskName 列出本任务进程）默认回**空**（筛不到任何进程）
+ *  = **进程不存在** ⇒ 归 **delete 语义**（用户裁定：kill 只终止进程、delete 只删记录；"进程不存在"归 delete）。
+ *  于是 delete 路径在默认替身下就成立（只删记录、不杀任何进程），kill 路径则如实回 mode:'delete'（无可终止）。
+ *  要造"有活进程"的场景（kill 真杀 / delete 被拒）请用 tests/kill-tree.test.js 的 makeKillRunner 注入命中行。 */
 function makeFakeRunner(log) {
-  return async (argv, _cwd) => {
+  return async (argv) => {
     log.push(argv)
     return { exitCode: 0, stdout: '', stderr: '' }
   }

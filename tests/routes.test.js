@@ -145,6 +145,8 @@ test('webServer: /bgjobs/delete 删除单个任务（目录+任务计划+索引�
     const r = await call('/bgjobs/delete?id=' + res.jobId)
     assert.equal(r.ok, true)
     assert.equal(r.removed, res.jobId)
+    // ★ 语义标记（用户裁定）：delete 只删记录；替身默认反查筛不到 ⇒ "进程不存在" ⇒ 本次就是 delete 语义。
+    assert.equal(r.mode, 'delete', 'mode 必须标明本次走的是"只删记录"')
     // 目录删除
     assert.ok(!(await fsp.stat(jobDir).catch(() => null)), 'job 目录应被删除')
     // running 任务：/End + /Delete 都调过

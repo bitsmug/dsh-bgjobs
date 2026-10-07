@@ -22,17 +22,17 @@ import {
 
 installSuiteHooks()
 
-test('apply: 注册九个工具，output 结构合法', () => {
+test('apply: 注册十个工具，output 结构合法', () => {
   const { ctx, tools } = makeCtx()
   const dispose = apply(ctx)
-  assert.equal(tools.length, 8)
+  assert.equal(tools.length, 10)
   for (const tool of tools) {
     assert.ok(tool.output, `${tool.name} 必须声明 output`)
     assert.equal(typeof tool.output.render, 'function')
     assert.equal(typeof tool.output.schema, 'object')
     assert.equal(typeof tool.execute, 'function')
   }
-  assert.deepEqual(tools.map((t) => t.name).sort(), ['bgjob_list', 'bgjob_mcp_tools', 'bgjob_pending_list', 'bgjob_status', 'bgjob_submit', 'bgjob_submit_mcp', 'bgjob_submit_pwsh', 'bgjob_wait'])
+  assert.deepEqual(tools.map((t) => t.name).sort(), ['bgjob_delete', 'bgjob_kill', 'bgjob_list', 'bgjob_mcp_tools', 'bgjob_pending_list', 'bgjob_status', 'bgjob_submit', 'bgjob_submit_mcp', 'bgjob_submit_pwsh', 'bgjob_wait'])
   dispose()
 })
 

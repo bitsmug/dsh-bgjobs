@@ -6,6 +6,7 @@
 
 - [目录结构](#目录结构)
 - [架构与关键机制](#架构与关键机制)
+- [kill / delete 语义](#kill--delete-语义用户裁定2026-10-07v020-起可用)
 - [可选沙箱（bgjob_submit_pwsh）](#可选沙箱bgjob_submit_pwsh复用-dsh-windows-acl-runner)
 - [MCP 引擎（bgjob_submit_mcp / bgjob_mcp_tools）](#mcp-引擎bgjob_submit_mcp--bgjob_mcp_tools)
 - [完成通知创建者 Agent（可选 notify）](#完成通知创建者agentv0131可选-notify)
@@ -121,6 +122,211 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
 - 面板「仅 >24h」依赖 `/bgjobs/state` 视图的 `finishedAt`（done=时间戳、running=null；缺失按不算超期）。
 - 离线 CLI/GUI 的「仅 >N 小时」只删能确定完成时间且已超期的 done：finishedAt 缺失（DSH 离线完成未回写）以 exitcode.txt 落盘时间近似完成时间；两者皆无才保留，仅「全部」（0）无条件删除。
 
+## kill / delete 语义（用户裁定，2026-10-07；v0.2.0-alpha 起可用）
+
+> ★★ **边界更正（2026-10-08，用户裁定）**：`kill` 只终止进程（无活进程时**什么都不删**）、
+> `delete` 只删记录（有活进程时拒绝）；「进程不存在 ⇒ delete 语义」重新理解为
+> **"调用方在无活进程时该去调 delete"**，而不是"kill 内部替它转 delete" —— kill 里那个
+> 内部转 delete 的分支已删除（见下）。
+
+**两个动作彻底分开，判据是「本任务到底有没有活进程」**（唯一判据 = `lib/kill-tree.js` 的
+`killJobProcessTree` 的 `processFound` / `detectJobProcesses` 的 `state`，**不靠 error 文案猜**）：
+
+- ★★ **更正后的边界（本轮核心）**：**`kill` 只终止进程，`delete` 只删记录；两个动作各自纯粹，
+  "谁该做什么"由【调用方】决定。** 老话「进程不存在 ⇒ delete 语义」的正确读法是
+  **「调用方在无活进程时该去调 delete」** —— ★ **不是"kill 内部替它转 delete"**（`killJob` 里
+  那个"内部转 delete"的分支已删除，`mode:'delete'` 这个 kill 侧取值同时作废，改回自己的
+  `mode:'absent'`）。⇒ 一个 `kill` 请求永远不会偷偷变成"删除记录"；调用方想"只终止、不删"
+  也永远做得到。
+
+| | **kill**（`/bgjobs/kill` · `killJob` · CLI `kill` · GUI「⏹ 终止进程」） | **delete**（`/bgjobs/delete` · `removeJob` · CLI `delete` · GUI「🗑 删除记录」） |
+|---|---|---|
+| 做什么 | **只终止进程**：pid 文件 → 归属核验 → `taskkill /PID <pid> /T /F`；无 pid 文件 ⇒ 按 jobDir/taskName **反查进程树**；原路径失败 ⇒ 反查兜底 | **只删记录**：job 目录 + 中央索引（+ sandbox 临时根） |
+| 记录 | **一律保留**（job 目录 / 中央索引 / 注册表）——`recordsKept: true` 是契约 | 删除（「清理与报错解耦」：目录删不净也要清索引，失败如实进 `error`） |
+| 前置 | 无。**未发现活进程 ⇒ 什么都不做、什么都不删**，如实回 `ok:true + mode:'absent' + killed:false + note`（note 明说"未发现该任务的活进程"+ "未删除任何记录"） | **必须没有本任务的活进程**：有 ⇒ 拒绝（`ok:false + mode:'kill'`，提示先 kill）；**无法判定 ⇒ 默认不执行**（`ok:false + mode:'unknown' + needsForce:true`，只警告、一个记录都不删），只有**显式 force** 才继续 |
+| 退出码 | 杀成后由 **host 侧补写** `exitcode.txt` | 不动 |
+| 计划任务 | 杀成后 `/End` + `/Delete`（计划任务注册**不是任务记录**）；**未发现活进程时一个都不动** | 同左 |
+
+- **为什么必须补写退出码**：`exitcode.txt` 原本只由 runner 收尾时写，而进程被 `taskkill /F` 杀掉时
+  runner **没有机会写** ⇒ 不补的话 `bgjob_wait` 会一直等到超时、面板永远显示 running。
+- **值 = `1`**（`lib/kill-tree.js` 的 `KILLED_EXIT_CODE`；离线镜像 `tools/dsh-bgjobs-lib.ps1` 的
+  `$script:BgjobsKilledExitCode` —— 两处必须一起改）。**理由只有一条：那就是"取真值"** —— 见下面
+  「退出码的取值依据」。
+- **退出码的取值依据**（实测，2026-10-07，本机 Windows，各 3 次重复）：
+  1. **退出码由终止方传入**：它**不是系统自动给的**，就是终止方传给 `TerminateProcess` 的那个参数。
+     证据：同一进程换个终止方值就变（`taskkill` ⇒ `1`；`Stop-Process -Force` ⇒ `-1`/`0xFFFFFFFF`；
+     node `child.kill` ⇒ 记 `signal`）；`TerminateProcess(h, 99/143/0/42)` **全部原样记录**；
+     进程还活着时 `Get-Process.ExitCode` 是**空的**。
+  2. **`taskkill /F` 传的就是 `1`**：本机 `taskkill /PID <pid> /T /F` 记录的值**稳定 = `1`**
+     （`/F` 不带 `/T` 也是 `1`）⇒ **`1` 就是内核记录的真值**，所以补写 `1`。旧值 `143`（= 128 + 15）
+     是 POSIX shell 的"被 SIGTERM 终止"约定，**Windows 根本不会产生这个值**，已废弃。
+  3. **我们拿不到"任务自己"的退出码**：任务进程是 `schtasks` 起的 —— **不是我们 `spawn` 的、
+     我们不持有它的句柄** ⇒ 手里只有 `taskkill` 写进内核的那个值（计划任务的 `Last Result` 就是这么来的）。
+- **★ 坑：`schtasks` 的 `Last Result` 不能当证据** —— 它**分不清「runner 自己报了 1」与「runner 被杀成
+  1」**（两者同值）。**这正是 `exitCodeSource` 那个标记有存在价值的原因，必须保留**：来源永远靠
+  `job.json` 的 `exitCodeSource:'killed'` + `killedAt`/`killedBy` 判，**绝不靠退出码数值或 Last Result 猜**。
+- **若将来想让这个码成为"任务真值"**：只有 **Job Object + `TerminateJobObject(hJob, code)`** 那条路
+  （`code` 由我们指定并成为整棵 job 的终值）—— 那要改 runner 的启动方式，**本轮不做**（属另一条方案）。
+- **来源标记**（判据，不是猜退出码）：`job.json` 落 `exitCodeSource:'killed'` + `killedAt`/`killedBy`；
+  `/bgjobs/state` 快照（`lib/core/registry.js` 的 `view`）与 `bgjob_status` 的磁盘回退
+  （`statusFromDisk`）都带 `killed/killedAt/exitCodeSource`。
+- **`status` 仍用既有枚举 `'done'`，不新增枚举值**：被终止的任务就是**终态**，用
+  `done + exitCode:1 + killedAt` 表达"已被终止"。为什么不用新状态：面板「垃圾篓只收 `done`」、
+  `cleanupDone`、离线 `Clear-BgjobsDone`（`status -eq 'done'`）、`watch` 的完成检测都以 `done` 为准 ——
+  新增枚举值会让被终止的任务在这些**清理/删除入口**里"消失"（漏一个消费方就变成删不掉的僵尸条目）。
+  **对既有消费者的影响**：面板/CLI 仍按 `done` 展示终态，靠 **非 0 退出码 1** 与 `killedAt` 区分。
+- **`bgjob_wait`**：杀完立刻把内存注册表置 `status:'done'`、`exitCode:1` ⇒ 正在等待的 wait 直接以
+  **非 0 退出码**返回；`logic:'all'` 的成败判据是 `exitCode !== 0` ⇒ 被终止的任务算 **failed**
+  （行为与旧值 143 时一致，只是数值换成 taskkill 的真值）。
+- **notify**：kill 走 `shouldNotifyForExit(notify, 1)` ⇒ `on-fail`/`on-exit` 命中、**`on-completion` 不命中**；
+  文案由 `exitCodeSource === 'killed'` 判为「已被终止（killed，exit code 1）」（`lib/core/notify.js`）
+  ⇒ 绝不被读成"完成"。
+- **返回值标记**：`mode`（本次实际走了哪种语义；字段名与其余取值一字未改）、`killed: true|false`
+  （确实终止了进程）、`recordsKept: true`。**两个动作各自的取值范围**：
+  - kill（`killJob`）⇒ `'kill'`（有活进程、本次终止了它，记录保留）/ **`'absent'`**（**未发现本任务的
+    活进程** ⇒ 什么都没做、什么都没删，配 `killed:false` + note）/ `'unknown'`（探针/反查本身跑不起来
+    ⇒ 无法判定）。★ 旧取值 `'delete'`（= kill 借用 delete 的名字）**本轮作废**：kill 不再把自己说成 delete。
+  - delete（`removeJob`）⇒ `'delete'`（本次只删记录）/ `'kill'`（**有活进程 ⇒ 拒绝**，提示先 kill）/
+    `'unknown'`（无法判定）——取值与语义**一字未动**。
+  - `unknown`（两条路径）⇒ **默认什么也不做**：`ok:false + needsForce:true` + 一条 `warnings`，
+    只有显式 force 才继续（回 `forced:true`）。
+- **`ok:false` 的完整清单**：① kill：有活进程但杀不掉（归属核验失败 / taskkill 非零且核验仍活 / 杀后仍活）；
+  ② kill 与 delete：**无法判定**有没有活进程（反查查询非零退出）—— 本轮起这是"默认不执行"的门槛情形
+  （带 `needsForce:true`；带 force 时 kill 仍可能落在这条：查不到进程就没杀成，**绝不谎报成功**）；
+  ③ delete：**还有活进程** ⇒ 拒绝；④ delete：目录删不净（`remove job dir failed`，但索引/注册表照清）；
+  ⑤ job 不存在。★ kill **未发现活进程不算 `ok:false`**（也不是 `mode:'delete'`）：它是"无可终止"的
+  合理终局 ⇒ `ok:true + mode:'absent'`。
+- **「未发现活进程」（absent）的两条路径与两条动作**：
+  - **kill + absent** ⇒ **什么都不做、什么都不删**（不 taskkill、不 `/End`/`/Delete`、不补写退出码），
+    如实回 `mode:'absent' + killed:false + note`（"未发现该任务的活进程 ⇒ 无可终止；kill 只终止进程，
+    本次未删除任何记录…要清记录请调用 delete"）。两条 absent 路径都走这里：① 无 pid 文件 + 反查筛不到
+    （`skipped:'no-match'`）；② 有 pid 文件但进程早已退出（`skipped:'already-gone'`）。
+  - **delete + absent** ⇒ **放行**：`ok:true + mode:'delete'`，删 job 目录 + 索引 + 注册表
+    （"进程不存在"归 delete —— 这正是"调用方该来这里"的那一步）。
+  - ★ **`absent` 与 `force` 无关**（它不是 unknown）：带不带 force 行为一模一样，也没有 `forced` 标记。
+- **PID 复用（`run.pid` 的命令行不含 jobDir/taskName）**：本任务的进程**不存在** ⇒ kill/delete 都按
+  absent 处理（`detectJobProcesses` 回 `absent/pid-reused`，delete 记一条 `pid reuse guard` warning 后
+  照常删记录）；若任务仍标 running，kill 仍保守报 `ok:false`（无法证实它在不在跑，且绝不误杀那个无关进程）。
+- **离线镜像**（`tools/dsh-bgjobs-lib.ps1`）：`Stop-BgjobsJobProcesses`（kill，`-Force`）/
+  `Remove-BgjobsJob`（delete，`-Force` / `-NoDeleteDir`）/ `Get-BgjobsJobProcessState`（只读判定）/
+  `Set-BgjobsJobKilled`（终态补写），
+  与宿主侧 `killJob` / `removeJob` / `detectJobProcesses` / `markJobKilled` 一一对应；
+  ★ 镜像的 kill 判定**与宿主同口径**：未发现活进程 ⇒ `mode = 'absent'` + `killed = $false` +
+  同一条 note（"未发现该任务的活进程…未删除任何记录…要清记录请调用 delete"），**不 taskkill、不
+  `/End`/`/Delete`、不补写退出码**；`Remove-BgjobsJob` 的 `mode = 'delete'` 一字未动（**只为对称
+  去杀进程是禁止的**）。
+  CLI 命令 `kill -Id <id> [-Force]`（只杀进程）与 `delete -Id <id> [-NoDeleteDir] [-Force]`（只删记录）分开，
+  `kill` 遇到 absent 打印 `Nothing to kill: <id> — no live process found; nothing was terminated and no
+  record was touched. Use 'delete' to remove the records.`（**不再把它说成 delete**）；
+  GUI 工具栏是「⏹ 终止进程」与「🗑 删除记录」两个按钮，确认框文案本就写明"只杀进程，任务记录保留；
+  要彻底清掉请随后用【删除记录】"⇒ 与新边界一致；
+  ★ **GUI 的 absent 静默本轮已修**：`tools/dsh-bgjobs-gui.ps1` 的「⏹ 终止进程」处理块原先
+  **只看 `$r.ok`**（而 host 在 absent 时回 `ok:true`）⇒ 被当成功、静默刷新，用户以为杀掉了。
+  现在在 `$r.ok` 为真后**再分一次 `$r.mode`**：`absent` ⇒ 弹提示（"什么都没动"那句直接用 host 回传的
+  `$r.note`，**不复制文案**；GUI 只补一句 `msg.kill.absent.hint`「要清记录请用「🗑 删除记录」」），
+  `kill` ⇒ 原成功路径不变；**`mode` 读不到（缺失/非字符串）⇒ 退回静默刷新，不许瞎报**。
+  离线 `Clear-BgjobsDone`（清理超期/全部 done）**未改**：它只删 done 任务的目录 + 索引条目，
+  与 delete 语义一致（done 任务没有"任务进程"可谈），不参与 kill。
+- ★★ **工具层入口 = `bgjob_kill` / `bgjob_delete`**（agent 侧的第 9 / 第 10 个工具，本轮新增）：
+  语义与字段**原样转达** host 的 `killJob` / `removeJob`——`lib/core/web.js` 的
+  `api: { killJob, removeJob, cleanupDone }` 已把它们外露，`lib/core/apply.js` 以
+  `web: { killJob, removeJob }` 注入 `createTools`，`lib/core/tools.js` 只做
+  `killJob(jobId, { force, reason })` / `removeJob(jobId, { force })` 的接线，
+  **不重写实现、不复制文案、不改既有字段名**。工具返回即 host 返回（`mode` 三态一字未改），
+  唯一的增量是可选的 `reason`（只对 kill 有意义）——它落进 `job.json` 的 `killedBy` 供审计，
+  **不传时缺省仍是 `'kill'`**（既有调用方行为不变）。⇒ 三条入口（HTTP 路由 / CLI+GUI 离线镜像 /
+  agent 工具）现在同口径，`absent` 与 `unknown` 的分流在四处完全一致。
+- **覆盖不到的地方（已知）**：Web 面板**没有** kill 入口（垃圾篓只接受 done 任务，走 `/bgjobs/delete`）；
+  要停一个 running 任务目前只能用 CLI `kill` / GUI「终止进程」/ agent 工具 `bgjob_kill` /
+  直接调 `/bgjobs/kill`。
+  ★ kill 之后的"清记录"是**调用方自己的第二步**（面板没有 kill 入口 ⇒ 面板路径上不存在"kill 之后
+  顺手删掉"这种事）；host 不做任何隐式衔接。
+  ★ 但"判定不出进程状态"的 done 任务在面板上**删得掉**了：host 回 `needsForce:true` ⇒ 面板弹警告确认框，
+  点确认才带 `force=1`（见下节「Web 面板」）。
+
+### unknown ⇒ 默认不执行，仅显式 force 才做（用户裁定 2026-10-08）
+
+**裁定原话**：「无法准确判定的任务，清理删除时应该警告，仅 `--force` 才清理删除」。落地口径如下。
+
+- **触发条件只有一个**：`mode === 'unknown'` —— 即 `detectJobProcesses` / `killJobProcessTree` 判定不出
+  有没有活进程（进程探针无输出、或反查查询本身非零退出）。**判据是那个三态字段，不靠 error 文案猜**。
+- **默认行为（不带 force）：什么都不做**。两条路由（`/bgjobs/kill`、`/bgjobs/delete`）都
+  `ok:false + mode:'unknown' + needsForce:true`，并回一条 `warnings`：
+  `无法判定该任务的进程状态（<原始失败>）：按裁定默认不执行，仅警告`；
+  `error` 说明"未终止任何进程 / 未删除任何记录"并给出 force 的三种入口。
+  **kill 路径本来在 unknown 下也无从下手**（连"杀谁"都拿不到）⇒ 门槛拦下的其实是"什么都没发生"这件事的
+  **报告口径**；delete 路径则真的**一个记录都不删**（job 目录 / 中央索引 / 注册表全留，连计划任务注册都不动）。
+  ★ 为什么默认保守：删记录有可能删出一个**看不见却还在跑**的孤儿进程（面板不再列出、也无从管理）。
+- **force 的传参形态**（宿主两条路由同口径，判据只有"有没有显式 force"）：
+  ① **query `?force=1`**（推荐 —— 与既有 `id` 同形态：`/bgjobs/delete?id=<id>&force=1`）；
+  ② **JSON body `{ force: true }`**（POST 且查询串里**没写** force 时才看 body）。
+  真值集合 `1|true|yes`（大小写不敏感）；`force=0` / `false` / 缺省一律视为不带 force。
+- **带 force 时：照常执行**，并在返回值里标明"是带 force 才做的"：`forced: true`。
+  `needsForce` 与 `forced` **互斥且都只在 unknown 情形出现**：
+  - 不带 force + unknown ⇒ `needsForce:true`（无 `forced`）；
+  - 带 force + unknown ⇒ `forced:true`（无 `needsForce`），delete 真删；kill 若仍杀不掉则**如实** `ok:false`
+    （force 只解除门槛，**绝不谎报成功**）。
+  既有字段一律未改名（`killedPids` / `killedProcesses` / `survivors` / `jobDirRemoved` / `registryRemoved` /
+  `indexRemoved` / `warnings` / `mode` / `killed` / `recordsKept`）。
+- **边界（重要）：只影响 unknown。** `live`（有活进程 ⇒ kill 语义 / delete 拒绝）与 `absent`（**未发现
+  活进程** ⇒ kill 什么都不做、delete 放行）**完全不受 force 影响** —— 传不传 force 行为一模一样，
+  也不会出现 `forced` 标记；`delete + live` 带 force 仍然拒绝（force 撬不开 live 这道门）。
+- **批量清理 `/bgjobs/cleanup` 不带 force**（`cleanupDone` 调 `removeJob` 时不给 force）⇒ 判定不出进程状态的
+  done 任务同样被拦下，记进返回的 `skipped`（`{id, mode:'unknown', error}`）如实回传，绝不替用户 force。
+- **CLI**（`tools/dsh-bgjobs.ps1`）：`kill` / `delete` 新增 `-Force`。不带 `-Force` 遇到 unknown ⇒ 打印
+  `kill/delete skipped: cannot determine whether job <id> still has live processes.` + 那条 warning +
+  `nothing was done ...` + `Re-run with -Force to proceed: ...`，**退出码 3**（0 = 做成、1 = 真失败、
+  3 = 无法判定因而没做 —— 非 0 是因为确实没做成事）；带 `-Force` ⇒ 照做，成功行尾附 `[forced]`。
+- **GUI**（`tools/dsh-bgjobs-gui.ps1`，「⏹ 终止进程」/「🗑 删除记录」）：口径 = **确认框本身就是 force**。
+  点击时先做一次**只读**判定 `Get-BgjobsJobProcessState`（绝不杀进程、绝不改状态）：
+  - `unknown` ⇒ 弹**警告型**确认框（标题 `无法判定进程状态`，文案 `msg.unknown.kill` / `msg.unknown.delete`：
+    说清"探针/反查本身跑不起来、既不能确认在跑也不能确认已停"，以及"继续将直接终止其进程树 / 直接清理删除其记录
+    （可能留下看不见的孤儿）"）；用户点「是」⇒ 这次调用带 `-Force`；点「否」⇒ 什么都不做。
+  - `live` / `absent` ⇒ 沿用原有确认框（文案不变），**不带** `-Force`（force 对这两态没有语义）。
+- **回归测试**（`tests/kill-tree.test.js`，**34 例**；全经 `setSchtasksRunner` 注入缝，不真杀进程）：
+  ★ 新边界钉子：③b kill(无 pid 文件 + 反查筛不到) ⇒ `mode:'absent'` + 「未发现活进程」+ `killed:false`
+  + 记录三处（目录/索引/注册表）**一个都没动** + 无 taskkill 且无 `/End`/`/Delete`；③c kill(有 `run.pid`
+  但进程早已退出) ⇒ 同上（`skipped:'already-gone'`）+ **不补写退出码**；㉔ delete 只删记录（live ⇒ 拒绝
+  且记录全在、无 taskkill；进程消失后才删净）；㉕ `absent` 与 force 无关（kill+`?force=1` 仍 absent、
+  记录全在，随后 delete+force 才删净）。⑮ kill+unknown
+  不带 force ⇒ 什么都不做（无 taskkill、无 `/End`、无 `/Delete`）+ `needsForce` + 文案整串相等；⑯ delete+unknown
+  不带 force ⇒ 目录/索引/注册表全在；⑰ delete+unknown + force（**JSON body 形态**）⇒ 真删 + `forced:true`；
+  ⑱ kill+unknown + `?force=1` ⇒ 门槛解除但如实失败（`forced:true`、`ok:false`）；⑲ `absent` 回归钉子（delete 侧）；
+  ⑳ `live` 回归钉子（带不带 force 都拒绝、无 `forced`）；㉑ 同一任务两次 delete 的 `forced` 前后对照；
+  ㉒ **真起 http server + fetch**（面板的真实调用形态：POST 无 body 不挂起、默认不执行；`body {force:true}`
+  真删）——桩 req 没有 content-length 分帧，验不到"无 body 时 end 会不会来"这个真实风险。
+  ㉓ **面板路径往返**（真 http + 面板 `requestDelete` 的**同一 URL 拼法**：无 force 被拦且 `error` /
+  `warnings` 两段文案俱在 = 面板确认框要显示的东西；`&force=1` 才真删 + `forced:true` + 三处记录清空）。
+  ★ 离线镜像与 CLI 的同一口径另有一轮**隔离环境实测**（临时 `BGJOBS_DSH_HOME` + 注入"反查跑不起来"）：
+  41/41 断言通过（含 `absent` 不受影响）；CLI 分支用真实 `tools/dsh-bgjobs.ps1` + 桩 lib 跑出
+  「无 force ⇒ 退出码 3 + 4 行警告」「force ⇒ 退出码 0 + `[forced]`」15/15 断言通过。
+- **Web 面板**（`lib/client-src/panel.js`；裁定的 ③「面板确认即 force」，本轮落地）：口径与 GUI 一致，
+  但**触发点是 host 回的 `needsForce:true`** —— 面板不自己判进程状态、不新增探针，只认这个标记：
+  - 面板现有两条删除路径（拖拽到垃圾篓 `deleteJob` / 批量清理 `cleanupVisible`）**一律先发不带 force 的**
+    `/bgjobs/delete`（请求参数与以前一字不差）：
+    - `absent` / 普通 `done` ⇒ 成功，行为与 UI **完全不变**（**不添任何确认框**）；
+    - `live`（有活进程）⇒ host 照旧拒绝（提示先 kill），面板把 `error` / `warnings` 弹成 **toast**
+      （此前这条文案被整个吞掉，`live` 拒绝也一样静默）；
+    - `unknown`（`needsForce:true`）⇒ **不删任何东西**，弹**警告型确认框**（标题 `无法判定该任务的进程状态`，
+      正文 = `force.ask.one` / `force.ask.many` + `force.ask.hint`「继续将直接清理删除其记录……
+      可能留下一个看不见却仍在运行的孤儿进程」），并把 host 的 `error` + `warnings` **原文**贴在框里
+      （`data-bgjobs-forceask-src` 锚点）。
+  - 「确认清理」⇒ **只有那时**才补发**带 `?force=1`** 的请求（`requestDelete(id, true)`；
+    **确认框本身就是 force**，与 CLI `-Force` / GUI 确认框同口径）；「取消」⇒ `setForceAsk(null)`，
+    **不发任何请求**，记录原封不动。批量清理遇到多个 unknown 时合并成一个确认框，确认后**逐一**补发。
+  - 唯一性守卫（`tests/panel-force.test.js` ③⑤）：全文件只有**一处** `'&force=1'`（在 `requestDelete` 内），
+    三个 `requestDelete(...)` 调用点里只有一个传 `true`，且它落在 `confirmForce` 函数体内
+    ⇒ **不存在**"未确认就带 force"的路径。
+  - 边界未动：面板**不新增 kill 入口**（`/bgjobs/kill` 在 panel.js 里出现 0 次）⇒ `live` 的"请先 kill"
+    语义不变；`const deletable = (job) => trashOpen && job.status === 'done'` 原样保留（只有 done 可拖）。
+  - 改了 `lib/client-src/**` 必须重建入库产物：`node scripts/build-client.mjs`（`lib/client.js` 与源码同提交）。
+- **回归测试（面板侧）**：`tests/panel-force.test.js`（6 例；panel.js 需 react、node:test 里 require 不起来
+  ⇒ 与 `tests/open-settings.test.js` 同法读源码做**接线守卫**）：① `force.ask.*` / `del.failed*` 中英双改
+  且渲染文本逐字锁定；② 中英键集一致（唯一已知例外 EN 缺 `log.loading` —— 既有缺口，本轮未动）；
+  ③ force 分支唯一 + 调用点全等；④ 门槛只认 `needsForce` 标记、无 kill 入口、`deletable` 未动；
+  ⑤ 取消不发请求 / 确认走 `confirmForce` / 折叠态与完整面板两条 return 都渲染确认框；
+  ⑥ host 的 `error` + `warnings` 进确认框、其余失败有 toast 兜底。宿主侧真实往返见 ㉓（上）。
+
 ## 可选沙箱（bgjob_submit_pwsh，复用 dsh Windows ACL runner）
 
 目标约束：**后台任务权限不得高于会话访问模式**。
@@ -159,14 +365,18 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
 - Windows ACL 沙箱是"尽力而为"非数学边界：workdir 落在 Everyone 可写树（如系统临时目录）会失效。
 - cmd 对被拒重定向不置 errorlevel（exit=0 但实际被拒，denial 只体现在输出文本 `Access is denied.`/「拒绝访问。」）——v1 不特判，日志可见即可。
 - **别把 GUI 子系统 exe 的 stdout 重定向到文件（Windows）**：GUI 子系统进程（Electron 桌面版 DSH 的 `process.execPath`、`notepad.exe`/`wscript.exe`…）不挂控制台，stdout 句柄指向文件时**静默秒退**——表现为日志空白 + 假 `exit 0`（issue #1 的沙箱 pwsh 症状）。所以沙箱 runner 必须由**真 node（console 子系统）**拉起；要拿输出就**走管道或真 node**。`dsh.cmd` 不受影响（cmd + 管道）。
-- **⚠️ 已知缺陷（B1，本轮未修）：运行中的沙箱 pwsh 任务删不掉 / 停不掉——调用返回成功，进程照跑**：
-  - **现象**：对 running 的沙箱 pwsh 任务，面板「删除/垃圾篓」（`/bgjobs/delete`，HTTP 200 `{"ok":true,"removed":"<id>"}`）与离线 CLI `kill` 都**无效**——心跳继续增长，直到脚本自己跑完。
-  - **后果**：① 任务**从面板注册表消失**（`registry.delete` / `indexRemove` 照常执行）⇒ 用户**看不见也管不了**仍在跑的进程；② **作业目录删不掉**（孤儿进程持句柄，`fsp.rm` 失败且被 `.catch(() => {})` 静默吞掉）；③ 已被删的 **sandbox 临时根被孤儿进程复活重建**。
-  - **进程树铁证**（`schtasks /End` + `/Delete` 之后**三个进程全部存活**）：`pwsh.exe -File …\run.ps1` → `node.exe …\dsh-sandbox-windows-acl\lib\runner.js` → `pwsh.exe -File …\job.ps1`；**只有 `taskkill /PID <pid> /T /F` 才真正结束**（一次杀掉三层，日志随即停止增长，任务目录才删得掉）。
-  - **代码定位**：`lib/core/web.js` 的 `removeJob` 对 running 任务只做 `schtasks /End` + `/Delete`，**pid 级 `taskkill /PID /T /F` 兜底只对 `engine === 'mcp'` 生效**（其注释自述"runner 冷启动的子进程不在 schtasks 树里"）；**沙箱 pwsh 是结构上同类情形**——`run.ps1` 多包了一层 node runner，`/End` 够不到下层。删目录/删 sandbox 临时根处两者都 `.catch(() => {})`。离线 CLI 更弱：`tools/dsh-bgjobs-lib.ps1` 的 `Stop-BgjobsJob` **没有 pid 兜底**，且 schtasks 结果全被 `[void](...)` 丢弃。
-  - **影响面**：受限会话下 pwsh 的**默认** sandbox 即会话模式（`lib/sandbox.js:43`）⇒ 受限会话里**每个 pwsh 任务**都进沙箱 runner，也就都删不掉。
-  - **临时规避**：从任务目录/进程树里找到 pid，用 `taskkill /PID <pid> /T /F` 结束；受限会话连 `tasklist` 都可能 `Access denied`，需不受限权限。
-  - **未修声明**：issue #1 只修「日志空白 + 假成功」（`resolveNodeExe` + PE 子系统守卫 + `suspect` 提示），**B1 未修**，仅作已知缺陷记录，修复另案。
+- **✅ B1 已修复（v0.2.0-alpha 修；已发版）：运行中的沙箱 pwsh 任务删不掉 / 停不掉**——旧行为是**调用返回成功、进程照跑**：
+  - **现象（修复前）**：对 running 的沙箱 pwsh 任务，面板「删除/垃圾篓」（`/bgjobs/delete`，HTTP 200 `{"ok":true,"removed":"<id>"}`）与离线 CLI `kill` 都**无效**——心跳继续增长，直到脚本自己跑完。
+  - **后果（修复前）**：① 任务**从面板注册表消失**（`registry.delete` / `indexRemove` 照常执行）⇒ 用户**看不见也管不了**仍在跑的进程；② **作业目录删不掉**（孤儿进程持句柄，`fsp.rm` 失败且被 `.catch(() => {})` 静默吞掉）；③ 已被删的 **sandbox 临时根被孤儿进程复活重建**。
+  - **根因（受控实验证实）**：`schtasks /End` **打印 SUCCESS 却够不到任务根起的后代**；沙箱 pwsh 的真实工作是多层后代 —— `pwsh.exe -File …\run.ps1`（schtasks 任务根）→ `node.exe …\dsh-sandbox-windows-acl\lib\runner.js` → `pwsh.exe -File …\job.ps1`（用户命令）。`/End` 之后**三个进程全部存活**，只有 `taskkill /PID <pid> /T /F` 一次杀穿（与官方 `@deepseek-ai/dsh-tool-jobs` 的 `dsh-subprocess-local` 同口径：pid 级 taskkill + 轮询到整树退出）。原始证据（桌面版 Electron 实测）：`_开发日志/bgjobs-测试报告-桌面沙箱pwsh-v0.1.90-alpha-2026-10-05.md` 的 B1（该报告属方案外发现，不计入 issue #1 判据）；本轮另做沙箱 pwsh 真机复验，读数见下方「回归测试」。
+  - **★ 修复机制（三件套）**：
+    1. **落盘任务根 pid**：`lib/scripts.js` 的 `buildPwshRunner` 让 `run.ps1` **第一件事**写 `<jobDir>\run.pid` = 自己的 `$PID`（= schtasks 任务根 = `taskkill /T` 的树根；沙箱与非沙箱都写；`try/catch` 兜住，pid 写失败绝不拦住用户命令）。离线镜像 = `tools/dsh-bgjobs-lib.ps1` 的 `New-BgjobsPwshRunner`（`__JOBDIR__` 占位符，两处逐字一致）。
+    2. **统一 pid 树杀 + 核验**（`lib/kill-tree.js`，镜像 = 离线 `Stop-BgjobsJobProcesses`）：凡存在 pid 文件（`run.pid`，或 mcp 的 `mcp-server.pid`）就 `taskkill /PID <pid> /T /F`，**先杀树、再 `/End`、再 `/Delete`**；杀前用 `Get-CimInstance Win32_Process` 核验该 pid 的命令行**属于本任务**（含 jobDir/taskName）⇒ **pid 复用防护**（`run.pid` 是硬门禁：running 任务归属不符就**不杀并报错**）；杀后轮询 ≤2s 确认 pid 消失。★ 本轮起"删目录"这一步**不再属于 kill**，见上文「kill / delete 语义」。
+    3. **失败不再静默**：`killJob` / `removeJob`（旧实现是单个 `removeJob` / `Stop-BgjobsJob`）不再无条件 `return { ok: true }`——归属核验失败、`taskkill` 非零、杀后仍活、**job 目录删不掉**一律 `ok:false` + `error`（**kill 失败时记录一律保留**，不丢现场）；`/End`、`/Delete`（任务自删后非零属正常）、sandbox 临时根这类"尽力而为"环节失败记进 `warnings` 一并回传。
+  - **兼容与边界**：① **老任务无 `run.pid`** ⇒ 退化为既有 `/End` + `/Delete` 行为（不报错，连探针都不跑）；② 探针不可用（拿不到 CIM 输出）⇒ 照杀但如实标 `killedVerified:false`，**绝不谎称已证实整树退出**；③ `mcp-server.pid` 记的是用户配置的 stdio server 子进程，命令行**天然不含 jobDir** ⇒ 归属门禁只对 `run.pid` 生效（否则正常孤儿回收会被全部误判），mcp 沿用"尽力而为"语义但失败不再被吞；④ **`bat` 引擎本轮未动**——其根是 `wscript.exe launch.vbs`，单列后续；⑤ `lib/core/watch.js` 的 done 兜底 `/Delete` 未动（此时无 pid 文件、天然跳过）。
+  - **影响面**：受限会话下 pwsh 的**默认** sandbox 即会话模式（`lib/sandbox.js:43`）⇒ 受限会话里**每个 pwsh 任务**都进沙箱 runner，也就是 B1 的命中面。
+  - **回归测试**：`tests/kill-tree.test.js`（**34 例**；经 `setSchtasksRunner` 注入缝，**不真杀进程**）：pid 树杀参数、taskkill 非零/杀后仍活的 `ok:false`、无 pid 文件退化、pid 复用防护、动作顺序（kill 内 taskkill → /End → /Delete ⇒ 再 delete 才删目录）、**kill 不删记录**（job 目录/索引/注册表都在）、**kill 无活进程 ⇒ `mode:'absent'` + 「未发现活进程」且记录/计划任务注册一个都没动**（③b 无 pid 文件 + 反查筛不到；③c 有 `run.pid` 但进程早已退出）、**delete 只删记录**（live ⇒ 拒绝且记录全在、无 taskkill；㉔）、**`absent` 与 force 无关**（㉕）、**kill 补写 `exitcode.txt = 1`（taskkill 在内核里记录的真值）+ job.json 的 `exitCodeSource:'killed'`**、**kill 后 `bgjob_wait` 以 1 返回 / `logic:'all'` 判 failed**、**kill 后再 delete 才清记录**、delete 遇活进程被拒、**无法判定（反查查询失败）⇒ 两条路径默认都不动作**（`needsForce` + 文案整串相等 + 无 taskkill/`/End`/`/Delete`；⑮⑯）、**delete + unknown + force ⇒ 真删 + `forced:true`**（⑰，body 形态）、**kill + unknown + force ⇒ 门槛解除但如实失败**（⑱）、**`absent`（⑲）/ `live`（⑳）不受 force 影响的回归钉子**、**`forced` 只在带 force 时出现**（㉑ 前后对照）、**真实 http 请求（POST 无 body 不挂起 / body `{force:true}` 才真删，㉒）**、`run.ps1` 落盘 `run.pid` 且与 PS 镜像逐字一致、探针脚本形状。另有 `tests/kill-tree-live.test.js`（5 例，**真起 PowerShell 5.1** 查真实进程）——它专门守一个实机才暴露的回归：探针脚本曾把 `if/else` 拼成 `}; else {`，PowerShell 把 `else` 当命令 ⇒ 脚本 exit 1、零输出 ⇒ `probeProcess` 永远 `unknown`、**pid 复用防护静默失效**（注入式单测抓不到"脚本本身跑不起来"）。
+  - **真机验收读数**（沙箱 pwsh、`workspace-write`、真实三层树）：树 = `pwsh(run.ps1) pid 20752` → `conhost` → `node(sandbox-runner.js) pid 20920` → `pwsh(job.ps1) pid 32908`；`taskkill /PID 20752 /T /F` 后 **4 个 pid 全部消失**，job 目录、sandbox 私有临时根、计划任务全部清掉，按 jobDir 筛残留进程 **0**；CLI（当时为 `Stop-BgjobsJob`，本轮已拆成 `Stop-BgjobsJobProcesses`）返回 `{"ok":true,"killedPid":20752,"killedFile":"run.pid","killedVerified":true}`（1122 ms，含 ≤2s 存活核验）；探针在真实树上给出 `{state:'alive', owned:true}`（归属核验命中）。★ 同一次验收还抓到第二个真 bug：CLI 的 `Invoke-BgjobsSchtasks` 把可执行文件写死成 `schtasks.exe`，`taskkill.exe` 只能当参数塞进去 ⇒ schtasks 报"无效参数/选项"exit 1、**CLI 的树杀从未真正执行**；已加 `-FileName` 参数（与宿主侧 `runSchtasks` 的 argv[0] 语义对齐）。★ **该真机读数之后语义已再改一轮**（kill 不再删记录、delete 不杀进程）：见上文「kill / delete 语义」——同样的树杀读数仍然有效（杀进程这一段没变），变的是"记录删不删由 delete 决定"。**该真机复验尚未在拆分后重跑**（记为一个待办）。
 
 ## MCP 引擎（bgjob_submit_mcp / bgjob_mcp_tools）
 
@@ -205,6 +415,7 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
 - token 与端口**只写进该任务的 `mcp.json`**（`prewarm:{url,token}`），不写设置文件、不进日志。代理生命周期挂在插件 dispose 链上。
 - 开关联动：MCP 总开关开启 → 对**启用且 `prewarm:true`** 的 server 预连；关闭 → `unwarmAll()`。被设为「禁用」（`enabled:false`）的 server **不预连**，且切到禁用时立即 `unwarm`。host 不在/代理不可达/坏 token → runner 回退冷启动，**任务照常成功**（"任务脱离 DSH 也能跑"的保证不变）。
 - runner 与 supervisor 共用 `lib/mcp-connect.js`（env 清洗 `/KEY|PASSWORD|SECRET|TOKEN/i` 与 `DSH_*`、transport 构造、`tools/list` 分页、结果投影），避免两套实现漂移。
+- **预热前守卫缺失的 command（v0.2.0-alpha）**：MCP server 配置里 `command` 是**绝对路径但文件不存在**时（典型成因：陈旧或跨机复制的配置），预热在**真正 spawn 之前**就拦住——不 spawn、不退避重连（否则最多刷 10 行噪声）、日志同因只写一次，状态直接判 `down` 并给出可读原因（`missing command: <path>`）。**只对绝对路径生效**（`C:\…`、`C:/…`、`\\server\share`、POSIX `/…`；相对路径与裸命令名照旧交给 PATH/PATHEXT）；含通配符或 `%`/`!`（cmd 会展开）以及判不准的情形一律**放行**，不误封正常 server。**用户处置**：按日志里的原因修好配置里的路径，或把该项 `enabled:false` 禁用；改好配置后守卫自动让路（不粘滞）。
 
 ### 工具列表与缓存（`lib/core/mcp.js`）
 
@@ -351,6 +562,16 @@ submit ─► [pending-running] ──done──► [pending-done]
 
 > 测试脚本中不得出现个人用户名或本机路径。
 
+### 入库脱敏纪律（仅适用于公开仓库：提交到公开仓库的内容不得包含本机具体路径与真实身份）
+
+- **适用边界**：仅适用于公开仓库，本仓库为公开仓库，必须严格遵守。
+- **禁止内容**：提交到公开仓库的所有内容中，不得出现本机绝对路径（比如本机盘符下的工具、运行、用户、镜像目录路径），也不得出现真实的用户名、邮箱、主机名。
+- **路径写法要求**：写路径时请使用占位符（如 `<USER>`、`<PROJECT>`、`<DSH_HOME>`），或直接使用仓库内的相对路径。
+- **注意事项（易漏）**：源码注释、文档示例、测试夹具、提交信息都属于「提交进本仓的内容」，同样要遵守规则。
+  正例（本仓库真实示例）：`lib/client-src/open-settings.js` 中的注释是符合要求的脱敏写法——仅提及上游项目名（`deepseek-harness`），不写它在本机的安装路径。
+  禁止写法：在上游项目名后补充它在本机的具体安装路径，本仓库任何文件都不得出现这类写法。
+- **兜底提示**：隐私扫描工具（门）仅做最后一道兜底，不能完全依赖——它的规则覆盖场景有限，且上游依赖自带的路径属于政策放行范围。提交前请务必通读 `git diff --cached` 的内容（尤其关注新增/修改的注释），不要把判断全交给扫描工具。
+
 ### 文本文件 BOM 规约与清理工具
 
 - **坑**：PowerShell 用 `[System.IO.File]::WriteAllText($p, $text, [System.Text.UTF8Encoding]::new($true))` 写一个**已带 BOM** 的文件时，BOM 会**叠加**（实测累积到 8 个）。PowerShell 只剥第一个，其余变成首行内容里的 U+FEFF → 首行注释被当命令执行（报 `'works' 不是命令` 之类），而 `Parser::ParseFile` 语法检查正常，极难定位。
@@ -381,3 +602,10 @@ pnpm dsh plugin --profile <profile> add link:<插件绝对路径>
 ```
 
 `package.json`（版本号等）变更需重新执行 add；`lib/core|lib/*.js` 改动即时生效；`lib/client-src/` 改动需先 `pnpm build:client` 再刷新（必要时重启）。
+
+### 版本 0.2.0-alpha 变更面（供发版核对）
+
+- **新增**：`bgjob_kill` / `bgjob_delete` 两个工具（`e9703b7`）+ **预热前守卫缺失的 command**（本轮）。
+- **本次发布只到「本地 commit + tag」为止**：`git push` / `git push origin v0.2.0-alpha` 会触发 npm 自动发布（`.github/workflows`），**推送由用户决定**。
+- **M 运行副本未必同步**：M 侧若无完整 git 历史，则约定用**本文件对应版本的 patch** 拉平（M 侧已有的本地改动会被跳过，逐文件报告）。
+- 流程细节见本节「固定发布流程」。
