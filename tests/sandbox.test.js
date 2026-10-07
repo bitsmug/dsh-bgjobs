@@ -376,7 +376,8 @@ test('bgjob_submit_pwsh: 请求沙箱但 runner 不可得 → fail loud + 清理
 // ── 沙箱 runner 的真 node 解析（v0.1.90-alpha，issue #1）──────────────────────────────
 // 症状：桌面版（Electron）DSH 的 process.execPath 是 GUI 子系统 exe，被 run.ps1 重定向
 // stdout 到文件后静默秒退 → 沙箱 pwsh 任务日志空白 + 假 exit 0。修法：真 node 优先
-// （basename 门保 koffi ABI 快路径）→ where.exe node → 都拿不到则 fail-closed + PE 守卫。
+// （basename 门保 koffi ABI 快路径）→ 同源自带 node（v0.1.91：先于 where.exe）→ where.exe node
+// → 都拿不到则 fail-closed + PE 守卫。
 // 三个用例分别覆盖：PE 子系统判据 / 注入缝与 fail-closed / suspect 提示标记。
 
 test('沙箱 runner 的 node：GUI 子系统 exe（Subsystem=2）被守卫拒绝，console 子系统放行', async () => {
@@ -452,10 +453,11 @@ test('setNodeExeResolver 注入缝：替换沙箱 node 解析；解析不出真 
     const meta = JSON.parse(await fsp.readFile(path.join(workdir, '.dsh', 'bgjobs', ok.jobId, 'job.json'), 'utf8'))
     assert.equal(meta.nodeExe, 'C:\\fake\\node.exe', '注入的解析器结果应落盘 meta.nodeExe（PE 读不到 ⇒ 守卫放行）')
     // 解析不出（桌面版 PATH 上没有 node）⇒ fail-closed 明确报错，绝不退回 execPath 假成功
+    // 文案于 v0.1.91 中性化（多层探测，不再写死 where.exe）——判据钉可判别关键字：
     setNodeExeResolver(async () => null)
     const bad = await submit.execute(args, exec)
     assert.equal(bad.ok, false)
-    assert.match(bad.error, /node executable not found/)
+    assert.match(bad.error, /real console-subsystem node executable could not be located/)
     const leftovers = await fsp.readdir(path.join(workdir, '.dsh', 'bgjobs')).catch(() => [])
     assert.deepEqual(leftovers, [ok.jobId], '解析失败应清理自己的 job 目录（只留前一条成功的）')
   } finally {
