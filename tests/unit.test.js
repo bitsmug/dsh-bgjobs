@@ -141,14 +141,55 @@ test('buildLaunchVbs: 纯 ASCII 模板，FSO 自推导目录启动同目录 run.
 })
 
 
-test('buildPs1: 编码 preamble + 用户命令原样保留（含空行）', () => {
+test('buildPs1: 5.1（含 interpreter 缺失的 fail-safe）写编码 preamble + 用户命令原样保留（含空行）', () => {
+  // 无 meta.interpreter ⇒ 判据拿不到 ⇒ fail-safe 当 5.1，preamble 照写（v0.1.92 条件化）
   const job = { meta: { workdir: 'C:\\work', command: 'Write-Output "中文"\n\n1..3 | ForEach-Object { "step $_" }' } }
   const ps1 = buildPs1(job)
   assert.ok(ps1.startsWith('# bgjobs: 强制 UTF-8 输出'))
   assert.ok(ps1.includes('[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)'))
   assert.ok(ps1.includes('$OutputEncoding = [System.Text.UTF8Encoding]::new($false)'))
+  assert.ok(!ps1.includes('Add-Type'), 'v0.1.92：preamble 不再含 Add-Type（现编译 C#，+0.6 s/次且对 5.1 产物零语义）')
   // 命令原样（CRLF 归一，含空行）
   assert.ok(ps1.includes('Write-Output "中文"\r\n\r\n1..3 | ForEach-Object { "step $_" }\r\n'))
+})
+
+
+test('buildPs1: 解释器是 powershell.exe（5.1）时写编码 preamble，但不含 Add-Type（v0.1.92）', () => {
+  const ps51 = buildPs1({
+    meta: { interpreter: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe', command: "Write-Output '中文'" },
+  })
+  assert.ok(ps51.startsWith('# bgjobs: 强制 UTF-8 输出'))
+  assert.ok(ps51.includes('[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)'))
+  assert.ok(ps51.includes('$OutputEncoding = [System.Text.UTF8Encoding]::new($false)'))
+  assert.ok(!ps51.includes('Add-Type'), '5.1 也不需要 Add-Type（乱码由 run.ps1 的 FF FE 转换兜底）')
+})
+
+
+test('buildPs1: 解释器是 pwsh 7（pwsh/pwsh.exe）时整段跳过编码 preamble（v0.1.92）', () => {
+  for (const interpreter of ['C:\\Program Files\\PowerShell\\7\\pwsh.exe', 'pwsh', '/usr/local/bin/pwsh']) {
+    const ps7 = buildPs1({ meta: { interpreter, command: "Write-Output '中文'" } })
+    assert.ok(!ps7.startsWith('# bgjobs:'), interpreter + '：pwsh 7 不应写 preamble 注释（连第一行也不写）')
+    assert.ok(!ps7.includes('OutputEncoding'), interpreter + '：pwsh 7 不应写任何编码设置')
+    assert.equal(ps7, "Write-Output '中文'\r\n", interpreter + '：pwsh 7 的 job.ps1 应只有用户命令')
+  }
+})
+
+
+test('buildPwshRunner: 编码 preamble 同样按解释器条件化，FF FE 兜底转换保留（v0.1.92）', () => {
+  const baseMeta = {
+    workdir: 'C:\\work', jsonPath: 'C:\\work\\job.json', logPath: 'C:\\work\\log.txt',
+    exitcodePath: 'C:\\work\\exit.txt', taskName: 'dsh-bgj-x',
+  }
+  const runner7 = buildPwshRunner({ meta: { ...baseMeta, interpreter: 'C:\\fake\\pwsh.exe' } })
+  assert.ok(!runner7.includes('Add-Type'), 'run.ps1 不应再含 Add-Type')
+  assert.ok(!runner7.includes('OutputEncoding'), 'pwsh 7 的 run.ps1 不应写编码设置')
+  const runner51 = buildPwshRunner({ meta: { ...baseMeta, interpreter: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe' } })
+  assert.ok(runner51.includes('[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)'), '5.1 的 run.ps1 仍写编码设置')
+  assert.ok(!runner51.includes('Add-Type'))
+  // 乱码兜底（5.1 UTF-16LE → UTF-8）两端都必须在
+  for (const runnerText of [runner7, runner51]) {
+    assert.ok(runnerText.includes('0xFF') && runnerText.includes('0xFE'), 'FF FE 检测转换不得丢')
+  }
 })
 
 // ── 工具注册契约 ──

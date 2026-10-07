@@ -131,11 +131,15 @@ test('submitJob(pwsh): 写 job.ps1 + run.ps1（UTF-8 BOM，无 run.bat），/TR 
     const res = await submit.execute({ name: 'pwsh-job', command: "Write-Output '中文'\nexit 2", workdir }, { agent: undefined })
     assert.equal(res.ok, true)
     const jobDir = workdir + '\\.dsh\\bgjobs\\' + res.jobId
-    // job.ps1：以 UTF-8 BOM 开头（5.1 无 BOM 按 GBK 读会乱），preamble + 命令原样
+    // job.ps1：以 UTF-8 BOM 开头（5.1 无 BOM 按 GBK 读会乱）+ 命令原样；preamble 按解释器条件化
     const ps1Buf = await fsp.readFile(path.join(jobDir, 'job.ps1'))
     assert.deepEqual([ps1Buf[0], ps1Buf[1], ps1Buf[2]], [0xef, 0xbb, 0xbf], 'job.ps1 应为 UTF-8 with BOM')
     const ps1 = ps1Buf.toString('utf8')
-    assert.ok(ps1.startsWith('\ufeff# bgjobs: 强制 UTF-8 输出'))
+    // v0.1.92 条件化：fake 解释器是 C:\fake\pwsh.exe（pwsh 7）⇒ 整段跳过编码 preamble，
+    // 且不再含 Add-Type。5.1 分支的「preamble 存在」断言见紧随其后的用例（勿删，只是按解释器分支）。
+    assert.ok(!ps1.startsWith('\ufeff# bgjobs: 强制 UTF-8 输出'), 'pwsh 7（C:\\fake\\pwsh.exe）不应写 preamble 注释')
+    assert.ok(!ps1.includes('OutputEncoding'), 'pwsh 7 不应写任何编码设置')
+    assert.ok(!ps1.includes('Add-Type'), 'v0.1.92：job.ps1 不再含 Add-Type（现编译 C#，+0.6 s/次且零语义）')
     assert.ok(ps1.includes("Write-Output '中文'"))
     assert.ok(ps1.includes('exit 2'))
     // 无 cmd.bat、无 run.bat（pwsh 引擎不再生成 cmd 中间层）
@@ -164,6 +168,37 @@ test('submitJob(pwsh): 写 job.ps1 + run.ps1（UTF-8 BOM，无 run.bat），/TR 
     const runIdx = calls.findIndex((argv) => argv.includes('/Run'))
     const disableIdx = calls.findIndex((argv) => argv.includes('/DISABLE'))
     assert.ok(runIdx >= 0 && disableIdx > runIdx, '/Run 成功后应立即 /Change /DISABLE 任务计划')
+  } finally {
+    dispose()
+    await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+
+test('submitJob(pwsh): 解释器是 powershell.exe（5.1）时写编码 preamble（条件化的另一半，v0.1.92）', async () => {
+  const calls = []
+  setSchtasksRunner(makeFakeRunner(calls))
+  setShellResolver(async () => ({ exe: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe', engine: 'powershell' }))
+  const workdir = await makeWorkdir()
+  const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
+  const dispose = apply(ctx)
+  try {
+    const submit = tools.find((t) => t.name === 'bgjob_submit_pwsh')
+    const res = await submit.execute({ name: 'pwsh51-job', command: "Write-Output '中文'", workdir }, { agent: undefined })
+    assert.equal(res.ok, true)
+    const jobDir = workdir + '\\.dsh\\bgjobs\\' + res.jobId
+    const ps51 = (await fsp.readFile(path.join(jobDir, 'job.ps1'))).toString('utf8')
+    assert.ok(ps51.startsWith('\ufeff# bgjobs: 强制 UTF-8 输出'), '5.1：首行应是 preamble 注释')
+    assert.ok(ps51.includes('[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)'), '5.1：应设 Console.OutputEncoding')
+    assert.ok(ps51.includes('$OutputEncoding = [System.Text.UTF8Encoding]::new($false)'), '5.1：应设 $OutputEncoding')
+    assert.ok(!ps51.includes('Add-Type'), '5.1 也不再含 Add-Type（乱码由 run.ps1 的 FF FE 转换兜底）')
+    assert.ok(ps51.includes("Write-Output '中文'"))
+    // 元数据与 /TR 同 5.1 解释器；run.ps1 的 FF FE 兜底转换仍在
+    const meta51 = JSON.parse(await fsp.readFile(path.join(jobDir, 'job.json'), 'utf8'))
+    assert.equal(meta51.interpreter, 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe')
+    const runner51 = (await fsp.readFile(path.join(jobDir, 'run.ps1'))).toString('utf8')
+    assert.ok(runner51.includes('[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)'), '5.1：run.ps1 仍写编码设置')
+    assert.ok(runner51.includes('0xFF') && runner51.includes('0xFE'), '5.1：FF FE 检测转换不得丢')
   } finally {
     dispose()
     await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})

@@ -288,18 +288,24 @@ function New-BgjobsLaunchVbs {
     ) -join "`r`n") + "`r`n"
 }
 
-# ── pwsh engine: run.ps1 (MUST mirror buildPwshRunner() in lib/index.js) ──────
+# ── pwsh engine: run.ps1 (MUST mirror buildPwshRunner() in lib/scripts.js) ─────
 # schtasks /TR 直接调解释器执行本包装脚本：& job.ps1 *> 重定向、写 exitcode.txt、
 # 自删任务计划——pwsh 路径不再经过 cmd。退出码取 $LASTEXITCODE；try/catch 兜底保证
-# exitcode.txt 必写；5.1 的 *> 输出 UTF-16LE（BOM FF FE），检测到即转 UTF-8。
+# exitcode.txt 必写；5.1 的 *> 输出 UTF-16LE（BOM FF FE），检测到即转 UTF-8——这里才是
+# 乱码兜底的真身。v0.1.92：删掉 Add-Type SetConsoleOutputCP（+0.6 s/次、零语义），
+# 编码 preamble 按解释器条件化（pwsh 7 启动即 UTF-8 ⇒ 整段跳过）。
 # 模板用单引号 here-string：$ 与 ' 全为字面量，路径经占位符替换（避免双引号插值陷阱）。
+function Test-BgjobsPwsh7Interpreter([object]$Interpreter) {
+    # 镜像 lib/scripts.js 的 isPwsh7Interpreter()：判据 = basename；拿不到/认不出 ⇒ 当 5.1（fail-safe）。
+    $baseName = [System.IO.Path]::GetFileName([string]$Interpreter).ToLowerInvariant()
+    return ($baseName -eq 'pwsh' -or $baseName -eq 'pwsh.exe')
+}
+
 function New-BgjobsPwshRunner([object]$Job) {
     $scriptPath = if ($Job.meta.scriptPath) { $Job.meta.scriptPath } else { Join-Path (Split-Path $Job.meta.jsonPath -Parent) 'job.ps1' }
     $tpl = @'
 # bgjobs pwsh runner: 重定向 + exitcode + 自删任务计划
-try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch { }
-try { Add-Type -Namespace BgjobsCon -Name ConCp -MemberDefinition '[DllImport("kernel32.dll")]public static extern bool SetConsoleOutputCP(uint w);[DllImport("kernel32.dll")]public static extern bool SetConsoleCP(uint w);' -ErrorAction SilentlyContinue; [void][BgjobsCon.ConCp]::SetConsoleOutputCP(65001); [void][BgjobsCon.ConCp]::SetConsoleCP(65001) } catch { }
-$utf8 = New-Object System.Text.UTF8Encoding($false)
+__ENCPREAMBLE__$utf8 = New-Object System.Text.UTF8Encoding($false)
 Set-Location -LiteralPath '__WORKDIR__'
 $logPath = '__LOGPATH__'
 $code = 0
@@ -320,21 +326,31 @@ if (Test-Path -LiteralPath $logPath) {
 [System.IO.File]::WriteAllText('__EXITCODEPATH__', [string]$code, $utf8)
 & schtasks /Delete /TN '__TASKNAME__' /F *> $null
 '@
-    $out = $tpl.Replace('__WORKDIR__', $Job.meta.workdir).Replace('__LOGPATH__', $Job.meta.logPath).Replace('__SCRIPTPATH__', $scriptPath).Replace('__EXITCODEPATH__', $Job.meta.exitcodePath).Replace('__TASKNAME__', $Job.meta.taskName)
+    # 编码 preamble 占位符：5.1 注入一行（含换行），pwsh 7 注入空串（整段跳过）。
+    $encPreamble = if (Test-BgjobsPwsh7Interpreter $Job.meta.interpreter) { '' } else { 'try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch { }' + "`r`n" }
+    $out = $tpl.Replace('__ENCPREAMBLE__', $encPreamble).Replace('__WORKDIR__', $Job.meta.workdir).Replace('__LOGPATH__', $Job.meta.logPath).Replace('__SCRIPTPATH__', $scriptPath).Replace('__EXITCODEPATH__', $Job.meta.exitcodePath).Replace('__TASKNAME__', $Job.meta.taskName)
     return (($out -replace "`r?`n", "`r`n") + "`r`n")
 }
 
-# ── pwsh engine: job.ps1 (MUST mirror buildPs1() in lib/index.js) ────────────
-# 编码 preamble + 用户命令原样（CRLF 归一）。注意：写入文件时必须加 UTF-8 BOM
-# （Windows PowerShell 5.1 解析无 BOM 文件按 ANSI/GBK 读，中文会乱）。
+# ── pwsh engine: job.ps1 (MUST mirror buildPs1() in lib/scripts.js) ──────────
+# 编码 preamble（**仅 5.1**，v0.1.92 起）+ 用户命令原样（CRLF 归一）。注意：写入文件时
+# 必须加 UTF-8 BOM（Windows PowerShell 5.1 解析无 BOM 文件按 ANSI/GBK 读，中文会乱）。
+# v0.1.92 删掉 Add-Type SetConsoleOutputCP：每次启动现编译 C#（实测 +0.6 s/次），
+# 而 5.1 的 *> 产物与是否设置控制台代码页无关（字节相同，都是 FF FE UTF-16LE）——
+# 真正救回乱码的是 New-BgjobsPwshRunner 里的 FF FE 检测转换。
 function New-BgjobsPs1([object]$Job) {
-    $preamble = @(
-        '# bgjobs: 强制 UTF-8 输出（Windows PowerShell 5.1 重定向默认 UTF-16 会乱码）',
-        'try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch { }',
-        'try { Add-Type -Namespace BgjobsCon -Name ConCp -MemberDefinition ''[DllImport("kernel32.dll")]public static extern bool SetConsoleOutputCP(uint w);[DllImport("kernel32.dll")]public static extern bool SetConsoleCP(uint w);'' -ErrorAction SilentlyContinue; [void][BgjobsCon.ConCp]::SetConsoleOutputCP(65001); [void][BgjobsCon.ConCp]::SetConsoleCP(65001) } catch { }',
-        '$OutputEncoding = [System.Text.UTF8Encoding]::new($false)'
-    ) -join "`r`n"
-    return $preamble + "`r`n" + (([string]$Job.meta.command -split "\r?\n") -join "`r`n") + "`r`n"
+    $preambleLines = if (Test-BgjobsPwsh7Interpreter $Job.meta.interpreter) {
+        @()
+    } else {
+        @(
+            '# bgjobs: 强制 UTF-8 输出（Windows PowerShell 5.1 重定向默认 UTF-16 会乱码）',
+            'try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch { }',
+            '$OutputEncoding = [System.Text.UTF8Encoding]::new($false)'
+        )
+    }
+    $preamble = ($preambleLines -join "`r`n")
+    $head = if ($preamble.Length -gt 0) { $preamble + "`r`n" } else { '' }
+    return $head + (([string]$Job.meta.command -split "\r?\n") -join "`r`n") + "`r`n"
 }
 
 # ── PowerShell interpreter resolution (mirror resolveShell() in lib/index.js) ─

@@ -170,10 +170,36 @@ Assert-True ($pwshRunner.Contains("& 'C:") -and $pwshRunner.Contains(" *> `$logP
 Assert-True ($pwshRunner.IndexOf('[BGJOB] exit code') -gt $pwshRunner.IndexOf('*>')) 'pwsh run.ps1 writes exitcode after redirect'
 Assert-True ($pwshRunner.IndexOf("schtasks /Delete /TN 'dsh-bgj-smoke-pwsh' /F") -gt $pwshRunner.IndexOf('WriteAllText')) 'pwsh run.ps1 self-deletes after exitcode write'
 Assert-True ($pwshRunner.Contains('0xFF') -and $pwshRunner.Contains('0xFE')) 'pwsh run.ps1 converts UTF-16LE log on PS 5.1'
+Assert-True (-not $pwshRunner.Contains('Add-Type')) 'run.ps1 no longer compiles C# via Add-Type (v0.1.92)'
+# v0.1.92: the encoding preamble is conditional on the interpreter basename. $pwshJob's
+# interpreter is C:\fake\pwsh.exe (pwsh 7) => the preamble is skipped entirely (pwsh 7 is
+# UTF-8 by default). The 5.1 twin below still asserts that the preamble IS written, so the
+# assertions are branched by interpreter, not dropped.
+Assert-True (-not $pwshRunner.Contains('OutputEncoding')) 'pwsh7 run.ps1 skips the encoding preamble (v0.1.92)'
 $ps1 = New-BgjobsPs1 $pwshJob
-Assert-True ($ps1.StartsWith('# bgjobs:')) 'job.ps1 has UTF-8 preamble (first line)'
-Assert-True ($ps1.Contains('[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)')) 'job.ps1 sets Console.OutputEncoding to UTF-8'
+Assert-True (-not $ps1.StartsWith('# bgjobs:')) 'pwsh7 job.ps1 skips the UTF-8 preamble (v0.1.92)'
+Assert-True (-not $ps1.Contains('OutputEncoding')) 'pwsh7 job.ps1 writes no encoding setting'
+Assert-True (-not $ps1.Contains('Add-Type')) 'job.ps1 no longer contains Add-Type (v0.1.92)'
+Assert-True ($ps1.StartsWith("Write-Output 'hello pwsh'")) 'pwsh7 job.ps1 starts with the user command'
 Assert-True ($ps1.Contains("Write-Output 'hello pwsh'")) 'job.ps1 keeps user command as-is'
+# 5.1 twin: same generators + interpreter = Windows PowerShell 5.1 => preamble must be there.
+$ps51Job = [pscustomobject]@{
+    meta = [pscustomobject]@{
+        workdir = $workdir; jsonPath = (Join-Path $jobDir 'job.json')
+        interpreter = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'; scriptPath = (Join-Path $jobDir 'job.ps1')
+        logPath = (Join-Path $jobDir 'stdout.log'); exitcodePath = (Join-Path $jobDir 'exitcode.txt')
+        taskName = 'dsh-bgj-smoke-ps51'; command = "Write-Output 'hello ps51'"
+    }
+}
+$ps51Runner = New-BgjobsPwshRunner $ps51Job
+Assert-True ($ps51Runner.Contains('[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)')) 'ps51 run.ps1 sets Console.OutputEncoding to UTF-8'
+Assert-True ($ps51Runner.Contains('0xFF') -and $ps51Runner.Contains('0xFE')) 'ps51 run.ps1 keeps the UTF-16LE log conversion'
+Assert-True (-not $ps51Runner.Contains('Add-Type')) 'ps51 run.ps1 has no Add-Type either (v0.1.92)'
+$ps51 = New-BgjobsPs1 $ps51Job
+Assert-True ($ps51.StartsWith('# bgjobs:')) 'ps51 job.ps1 has UTF-8 preamble (first line)'
+Assert-True ($ps51.Contains('[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)')) 'ps51 job.ps1 sets Console.OutputEncoding to UTF-8'
+Assert-True ($ps51.Contains('$OutputEncoding = [System.Text.UTF8Encoding]::new($false)')) 'ps51 job.ps1 sets $OutputEncoding'
+Assert-True ($ps51.Contains("Write-Output 'hello ps51'")) 'ps51 job.ps1 keeps user command as-is'
 
 Write-Host ''
 if ($failed -gt 0) { Write-Host "SMOKE FAILED: $failed failure(s)"; exit 1 }
