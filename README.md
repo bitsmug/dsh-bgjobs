@@ -33,7 +33,13 @@
 
 > MCP 引擎（`bgjob_submit_mcp`）由插件自带的 Node 依赖跑：`@modelcontextprotocol/sdk` 与 `yaml` 随包发布，`dsh plugin add` 会自动装上；本地源码开发需先在该目录执行一次 `pnpm install`。DSH 自带的 Node 即可，无需另装。
 
-**方式 A（快速，npm 发布版）**
+**方式 A（最省事，插件管理器（GUI 插件入口）；DSH v0.2.0-rc.2）**
+
+1. 打开 DSH 官方桌面客户端或网页，点击左侧导航栏的插件入口；
+2. 在插件安装输入框中输入 `bgjobs` 并确认安装（或 GitHub 最新版：`github:bitsmug/bgjobs`）；**首次安装时会提示要求允许 `pnpm approve build`，点击允许后再次安装即可**；
+3. **安装完成后完全退出并重新启动官方桌面客户端或 DSH 进程**。
+
+**方式 B（快速，npm 发布版）**
 
 ```sh
 $pf="web"; dsh plugin --profile $pf add bgjobs || dsh plugin --profile $pf approve-builds koffi; dsh plugin --profile $pf add bgjobs && Write-Host "✓ bgjobs安装成功！" -ForegroundColor Green
@@ -41,13 +47,13 @@ $pf="web"; dsh plugin --profile $pf add bgjobs || dsh plugin --profile $pf appro
 
 > 把 `web` 改成你自己的 profile 名，整行粘贴到 PowerShell（pwsh）即可。第一次 `add` 会报 `ERR_PNPM_IGNORED_BUILDS`（koffi 构建脚本未批准），`||` 会自动触发 `approve-builds` 批准并运行 koffi 构建，再 `add` 成功后打印「bgjobs 安装成功」。
 
-**方式 B（从 GitHub 安装，始终最新）**
+**方式 C（从 GitHub 安装，始终最新）**
 
 ```sh
 $pf="web"; dsh plugin --profile $pf add github:bitsmug/dsh-bgjobs || dsh plugin --profile $pf approve-builds koffi; dsh plugin --profile $pf add github:bitsmug/bgjobs && Write-Host "✓ bgjobs安装成功！" -ForegroundColor Green
 ```
 
-> 直接从 GitHub 仓库默认分支拉取，**始终是最新代码**（含刚发布与未发布改动），不受 npm registry 同步延迟影响。两种方式装完包名都是 `bgjobs`，卸载命令相同。
+> 直接从 GitHub 仓库默认分支拉取，**始终是最新代码**（含刚发布与未发布改动），不受 npm registry 同步延迟影响。以上方式装完包名都是 `bgjobs`，卸载命令相同。
 
 **从插件市场(dsh-market)安装报 `ERR_PNPM_IGNORED_BUILDS`？**
 
@@ -75,9 +81,9 @@ allowBuilds:
 
 仅首次安装需要，装好后 koffi 已编译完毕，升级/重装无需重复。
 
-重启 DSH 后生效：网页右下角出现「后台任务监控」面板，agent 获得 `bgjob_submit` / `bgjob_submit_pwsh` / `bgjob_submit_mcp` / `bgjob_mcp_tools` / `bgjob_status` / `bgjob_wait` 工具（MCP 两个工具需先在设置页打开「MCP 任务」开关）。
+重启 DSH 后生效（**完全退出并重新启动**——桌面客户端与网页版都是）：网页右下角出现「后台任务监控」面板，agent 获得 `bgjob_submit` / `bgjob_submit_pwsh` / `bgjob_submit_mcp` / `bgjob_mcp_tools` / `bgjob_status` / `bgjob_wait` 工具（MCP 两个工具需先在设置页打开「MCP 任务」开关）。
 
-**方式 C（本地源码开发）**
+**方式 D（本地源码开发）**
 
 1. 把仓库放到本地插件目录（路径不要含中文），如 `D:\dsh\plugins\bgjobs`；
 2. 让 DSH 的模块解析器能找到它（把插件目录 junction 到 DSH 的 `node_modules\bgjobs`，或把目录加到 DSH 的插件扫描路径）；本地开发还需在插件目录执行一次 `pnpm install`（沙箱 runner 依赖，见下）；
@@ -90,6 +96,8 @@ allowBuilds:
 ```
 
 **卸载：** `dsh plugin --profile <profile> remove bgjobs`
+
+> 方式 A / B / C / D 装完都要**重启 DSH**（完全退出并重新启动）才生效（原因见上）。
 
 ## 使用（agent 工具）
 
@@ -176,7 +184,11 @@ allowBuilds:
 
 架构设计、机制细节、测试与发布流程见 [docs/developer.md](docs/developer.md)。
 
-## 近期更新（v0.1.62 → v0.1.92）
+## 近期更新（v0.1.62 → v0.1.93）
+
+- **设置按钮的提示更准确了**：如果设置面板其实**已经打开**、只是没能跳到「后台任务」/「MCP 任务」那一页，现在会明确说「设置已打开，但没找到分区」并提示手动查找，而不再笼统地说「未能自动打开设置」（v0.1.93）。
+
+- **修复面板上的齿轮 / 🗄 按钮打不开设置（桌面版）**：此前点击后只会弹「未能自动打开设置」，现在能正常打开设置并停在「后台任务」/「MCP 任务」页（v0.1.93）。
 
 - **沙箱 pwsh 任务的启动更快了**：去掉了一处每次进程启动都要现做的开销（它在日志编码上其实没起作用），启动等待更短，**任务行为、日志与退出码完全不变**（v0.1.92）。
 

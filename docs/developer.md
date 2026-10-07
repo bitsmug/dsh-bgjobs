@@ -159,7 +159,7 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
 - Windows ACL 沙箱是"尽力而为"非数学边界：workdir 落在 Everyone 可写树（如系统临时目录）会失效。
 - cmd 对被拒重定向不置 errorlevel（exit=0 但实际被拒，denial 只体现在输出文本 `Access is denied.`/「拒绝访问。」）——v1 不特判，日志可见即可。
 - **别把 GUI 子系统 exe 的 stdout 重定向到文件（Windows）**：GUI 子系统进程（Electron 桌面版 DSH 的 `process.execPath`、`notepad.exe`/`wscript.exe`…）不挂控制台，stdout 句柄指向文件时**静默秒退**——表现为日志空白 + 假 `exit 0`（issue #1 的沙箱 pwsh 症状）。所以沙箱 runner 必须由**真 node（console 子系统）**拉起；要拿输出就**走管道或真 node**。`dsh.cmd` 不受影响（cmd + 管道）。
-- **⚠️ 已知缺陷（B1，本轮未修）：运行中的沙箱 pwsh 任务删不掉 / 停不掉——调用返回成功，进程照跑**。桌面版（Electron）实测，原始证据见 `_开发日志/bgjobs-测试报告-桌面沙箱pwsh-v0.1.90-alpha-2026-10-05.md` 的 B1（该报告属方案外发现，不计入 issue #1 判据）：
+- **⚠️ 已知缺陷（B1，本轮未修）：运行中的沙箱 pwsh 任务删不掉 / 停不掉——调用返回成功，进程照跑**：
   - **现象**：对 running 的沙箱 pwsh 任务，面板「删除/垃圾篓」（`/bgjobs/delete`，HTTP 200 `{"ok":true,"removed":"<id>"}`）与离线 CLI `kill` 都**无效**——心跳继续增长，直到脚本自己跑完。
   - **后果**：① 任务**从面板注册表消失**（`registry.delete` / `indexRemove` 照常执行）⇒ 用户**看不见也管不了**仍在跑的进程；② **作业目录删不掉**（孤儿进程持句柄，`fsp.rm` 失败且被 `.catch(() => {})` 静默吞掉）；③ 已被删的 **sandbox 临时根被孤儿进程复活重建**。
   - **进程树铁证**（`schtasks /End` + `/Delete` 之后**三个进程全部存活**）：`pwsh.exe -File …\run.ps1` → `node.exe …\dsh-sandbox-windows-acl\lib\runner.js` → `pwsh.exe -File …\job.ps1`；**只有 `taskkill /PID <pid> /T /F` 才真正结束**（一次杀掉三层，日志随即停止增长，任务目录才删得掉）。
@@ -327,13 +327,21 @@ submit ─► [pending-running] ──done──► [pending-done]
 - 机制最终形态（v0.1.69）：用户实证 **宿主在 Job Object 内——Ctrl+C 连第一方 open-in-app 拉起的 VS Code/资源管理器都一并消失**，独立控制台/进程组均逃不掉；且 explorer.exe 直开在其 Win10 **堆积 explorer 进程不弹窗** → **打开离线 GUI = schtasks 一次性任务**（`/Create /TN dsh-bgj-gui /F /SC ONCE /ST now+60s /TR "<pwsh> ... -WindowStyle Hidden -File gui.ps1"` → `/Run` → `/Change /DISABLE` 防整分双跑；Task Scheduler 服务起进程，不在宿主 job 内，Ctrl+C/宿主退出不杀；固定任务名 /F 覆盖不堆积）；reveal 回退为**第一方原语 powershell Invoke-Item + 客户端优先官方 open-in-app 端点**（不再 spawn explorer.exe）。
 - schtasks /TR 长度上限补丁（v0.1.70）：商店(pnpm)深路径安装（`node_modules\.pnpm\bgjobs@…`）使 `/TR "<pwsh> … -File <深路径>"` 达 258 字符即越界（任务 Last Result 64、静默不跑）→ `/TR` 改为 `"cmd.exe" /c "%TEMP%\bgjobs-gui-launch.cmd"`，长命令（`start "" "<pwsh>" … -File "<gui>"`）写入该短路径批处理；进程父链仍 = 任务，脱离宿主 job 性质不变。
 - Toggle：轨道/滑块组件，`onColor` 自定义开启色——「全权限」用 `--dsw-alias-state-warn-primary`（与 dsh 审批提升面板同色）；「仅当前会话」默认 `--dsw-alias-state-business-primary`。
+- **设置面板打开机制（v0.1.93）**——齿轮 / 🗄 按钮（`lib/client-src/panel.js` 两处 CtrlBtn）调 `lib/client-src/open-settings.js` 的 `openBgjobsSettings({ label, rowId?, slots })`，三层依次尝试：
+  - ⓪ **首选：slot store**（新增）。`openViaShellStore` 取 `slots.entries('sidebar.settings')` → `entry.store.create()` → `instance.actions.openSection(rowId)`（ui-settings-general 把外壳 store 挂在 `sidebar.settings` 注册上，动作 = `{ activeId = rowId; open = true }`；`create()` 被覆写为外壳正在用的同一单例）。任一步缺失/抛错静默跳过，全跳过继续 DOM 兜底；`waitFor` 到 `WAIT_MS=1500` 没等到面板 ⇒ 也当没走通。
+  - ① **兜底 A：账号 launcher 菜单**（新增）。根因：`settings.launcher` 是 **single slot**，被 ui-settings-account **无条件占用** ⇒ 外壳 fallback（`aria-haspopup="dialog"`）永不渲染 ⇒ 原先唯一的 `TRIGGER_SELECTOR` 恒不命中（症状 = toast `settings.open.failed`）。故新增 `LAUNCHER_SELECTOR` = `… button[aria-haspopup="menu"]`：点它 → 在 **document** 上找 `button[role="menuitem"]`（菜单是 portal 渲染，**不在** `sidebar.settings` 子树内）→ 按 `SETTINGS_ITEM_LABELS`（设置/Settings/偏好设置/Preferences）命中，文案对不上时退回**第一个可用 menuitem**（菜单 items 顺序里 settings 恒为第一项）→ 点它。
+  - ② **兜底 B：原有 DOM 导航链（全部保留）**。`locateSection` 顺序不变：`findByRowId`（`data-snav-row` 精确 id）→ `findByLabel`（归一化文案，含 `DECOR` 去箭头 / 去 `(N)` 后缀）→ `PARENTS`「插件入口」父级展开后的同名 `role="tab"` 子项（折叠兼容分支，用户明确要求保留）→ 最终复查。面板句柄先认 `[data-shortcut-modal="settings"]`，再回退 `[role="dialog"][aria-modal="true"]`。
+  - **返回码**：`api`（store 开面板且锚点落位）/ `section`（顶层导航行命中）/ `tab`（父级展开后子项命中）/ `opened-no-section`（**v0.1.93 新增**：面板确由 store 打开了、但面板里没有本插件的分区行 ⇒ `locateSection` 返回 `notfound`）/ `notfound`（DOM 兜底开/已开的面板里没找到目标页）/ `no-trigger`（没有设置入口）。成功判定共用 `isOpenOk`（`api|section|tab|opened-no-section`）；`settings.open.noSection` 只在 `opened-no-section` 时弹，其余非成功码仍弹 `settings.open.failed`（**文案与判定口径均未变**）。
+  - **`opened-no-section` 何时出现（v0.1.93）**：⓪ 首选路径走通（`openSection` 生效、`settingsDialog` 已出现）⇒ 面板**确实打开了**，但 `locateSection` 三条分支（`data-snav-row` / 归一化文案 / 「插件入口」父级展开后的子页签）全落空 ⇒ 渲染回退到首行（shell 既有行为，不报错）。此时「打开设置」这个主目的已达成，**算成功**（旧代码返回 `notfound` ⇒ `panel.js` 弹 `settings.open.failed`「未能自动打开设置」，与事实不符）。典型成因：目标分区未注册、插件未加载、分区被收纳到别处。`panel.js` 两处调用点（齿轮 / 🗄）对该码弹 `settings.open.noSection`（`{section}` 注入各自分区名：后台任务 / MCP 任务）。**`notfound`/`no-trigger` 的语义与文案一字未改**（DOM 兜底路径下目标页缺失仍是 `notfound` + 旧失败文案）。
+  - 改动纪律：**只加不删**——新增 store 路径 / launcher 分支 / 面板显式句柄 / seam / `isOpenOk`，既有三条定位分支与 `'tab'` 语义一字未动。
+  - 注意：`lib/client-src/open-settings.js` 的导出**不能写成 `module.exports = {…}` 整体替换**——esbuild 内联后这里就是 bundle 入口的 `module.exports`（`index.js` 已挂 `{ name, inject, apply }`），整体替换会把 `apply` 冲掉、插件直接失效；必须只挂属性（`module.exports.openBgjobsSettings = …`）。
 
 ## 测试与发布
 
 ### 测试
 
 - `pnpm test`（=`node --test "tests/**/*.test.js"`，不依赖 DSH）。用例按功能分布在 `tests/*.test.js`（unit / tools / submit / watch / routes / sandbox / notify / wait / mcp / mcp-web），共享工具与套件隔离在 `tests/helpers/common.js`。覆盖：纯函数、工具注册契约、提交/完成/恢复/保留、webServer 路由、沙箱决策矩阵与审批、notify 矩阵与送达路由、wait/交付标记、MCP（开关双层拦截 / 提交与 mcp.json 落盘 / server 登记解析 / runner 端到端 / 工具列表与缓存 / 预热通道与回退 / profile 判定与 DSH 导入 / 端点）。MCP 用例一律用 `tests/fixtures/demo-mcp-server.mjs`（本地、离线）。
-- 测试替身 seam（模块级，测试内成对恢复）：`setSchtasksRunner`（schtasks/icacls/taskkill 都走它）、`setShellResolver`、`setSandboxRunnerResolver`、`setNodeSearchContext`（node 搜索上下文：execPath/env/resourcesPath）、`setNodeVersionProber`（`node --version` 探测；`null` = 恢复生产实现）、`setPrewarmFactory`（捕获本 apply 的预热域以驱动 warm/endpoint 断言）。
+- 测试替身 seam（模块级，测试内成对恢复）：`setSchtasksRunner`（schtasks/icacls/taskkill 都走它）、`setShellResolver`、`setSandboxRunnerResolver`、`setNodeSearchContext`（node 搜索上下文：execPath/env/resourcesPath）、`setNodeVersionProber`（`node --version` 探测；`null` = 恢复生产实现）、`setPrewarmFactory`（捕获本 apply 的预热域以驱动 warm/endpoint 断言）、`setOpenSettingsEnv`（client 侧 `lib/client-src/open-settings.js` 的 DOM / rAF / 时钟注入缝，供 `tests/open-settings.test.js` 用「选择器 → 元素」映射桩驱动定位链；不传/传非函数 = 恢复生产实现）。
 - 回归注意：
   - `/bgjobs/state` 路由含 `await readFullAccess()` → 测试调 `handler` 必须 `await`；
   - makeCtx mock 需提供 `ctx.on`（apply 注册了 `agent/inbox/claimed`）；触发事件 = `onCallbacks.find(...)?.fn(payload)`；
@@ -354,6 +362,7 @@ submit ─► [pending-running] ──done──► [pending-done]
 
 - 沙箱 runner 依赖 + koffi（原生）需在**插件目录内** `pnpm install`（Node 从插件真实路径向上解析 require；宿主 `link:` 装不进插件目录）。
 - pnpm ≥10 不再读 package.json 的 `pnpm` 字段；构建白名单在 `pnpm-workspace.yaml`（`allowBuilds: { esbuild: true, koffi: true }` + `onlyBuiltDependencies: [esbuild, koffi]`）；alpha 依赖在 `minimumReleaseAgeExclude`。`pnpm-lock.yaml`/`node_modules` 均被 .gitignore 排除（esbuild 属 devDep，仅插件仓库开发时需要；profile 经 link 安装不需装它）。
+- **GUI 插件入口（插件管理器）装的就是同一件事**：README「方式 A」的插件安装框相当于 `dsh plugin --profile <profile> add <包名>`（`bgjobs` 或 `github:bitsmug/bgjobs`）；首次安装弹出的「允许 `pnpm approve build`」就是上面的 koffi 构建白名单（落到 profile 的 `pnpm-workspace.yaml` 里的 `allowBuilds`，手工等价于 `pnpm approve-builds`；本地实测 dsh 0.2.0-rc.2 的 `dsh plugin` 自定义子命令为 `allow-version` / `revoke-version` / `version-exemptions`，**没有** `approve-builds`）；装完同样要重启 DSH 才加载插件的面板与 bundle。
 
 ### 固定发布流程（每次改动）
 

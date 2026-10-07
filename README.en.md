@@ -33,7 +33,13 @@ Prereqs: DSH (`@deepseek-ai/dsh`), PowerShell 7, and Node.js (`^22.19.0` or ≥2
 
 > The MCP engine (`bgjob_submit_mcp`) runs on the plugin's own Node dependencies: `@modelcontextprotocol/sdk` and `yaml` ship with the package and are installed by `dsh plugin add`; a local source checkout needs one `pnpm install`. DSH's bundled Node is enough — nothing else to install.
 
-**Method A (recommended, npm release)**
+**Method A (easiest: plugin manager (the GUI plugin entry); DSH v0.2.0-rc.2)**
+
+1. Open the official DSH desktop client or the web page, and click the plugin entry in the left navigation bar;
+2. Enter `bgjobs` in the plugin install box and confirm (or the latest from GitHub: `github:bitsmug/bgjobs`); **on the first install it asks you to allow `pnpm approve build` — click allow and install again**;
+3. **When it finishes, fully quit and restart the official desktop client or the DSH process.**
+
+**Method B (fast, npm release)**
 
 ```sh
 $pf="web"; dsh plugin --profile $pf add bgjobs || dsh plugin --profile $pf approve-builds koffi; dsh plugin --profile $pf add bgjobs && Write-Host "✓ bgjobs installed successfully!" -ForegroundColor Green
@@ -41,13 +47,13 @@ $pf="web"; dsh plugin --profile $pf add bgjobs || dsh plugin --profile $pf appro
 
 > Replace `web` with your own profile name and paste the whole line into PowerShell (pwsh). The first `add` raises `ERR_PNPM_IGNORED_BUILDS` (koffi build script not approved); `||` then automatically runs `approve-builds` to approve and build koffi, the second `add` succeeds, and "bgjobs installed" is printed.
 
-**Method B (from GitHub, always latest)**
+**Method C (always latest, from GitHub)**
 
 ```sh
 $pf="web"; dsh plugin --profile $pf add github:bitsmug/dsh-bgjobs || dsh plugin --profile $pf approve-builds koffi; dsh plugin --profile $pf add github:bitsmug/bgjobs && Write-Host "✓ bgjobs installed successfully!" -ForegroundColor Green
 ```
 
-> Pulls the default branch directly from the GitHub repo — **always the newest code** (published and unpublished alike), no registry-lag. Both methods install under the name `bgjobs`, so the uninstall command is the same.
+> Pulls the default branch directly from the GitHub repo — **always the newest code** (published and unpublished alike), no registry-lag. All methods above install under the name `bgjobs`, so the uninstall command is the same.
 
 **From dsh-market install fails with `ERR_PNPM_IGNORED_BUILDS`?**
 
@@ -75,9 +81,9 @@ allowBuilds:
 
 Only the first install needs this — once koffi is compiled it stays compiled, and upgrades/reinstalls don't repeat the step.
 
-Restart DSH afterwards: the "Background Jobs Monitor" panel appears bottom-right of the web page and the agent gains `bgjob_submit` / `bgjob_submit_pwsh` / `bgjob_submit_mcp` / `bgjob_mcp_tools` / `bgjob_status` / `bgjob_wait` tools (the two MCP tools require turning on the "MCP jobs" switch in Settings first).
+Restart DSH afterwards (that means **fully quit and relaunch** — both the desktop client and the web version): the "Background Jobs Monitor" panel appears bottom-right of the web page and the agent gains `bgjob_submit` / `bgjob_submit_pwsh` / `bgjob_submit_mcp` / `bgjob_mcp_tools` / `bgjob_status` / `bgjob_wait` tools (the two MCP tools require turning on the "MCP jobs" switch in Settings first).
 
-**Method C (local source)**
+**Method D (local source)**
 
 1. Put the repo in a local plugin directory (avoid non-ASCII in the path), e.g. `D:\dsh\plugins\bgjobs`;
 2. Make DSH's module resolver find it (junction the plugin dir to DSH's `node_modules\bgjobs`, or add the dir to DSH's plugin scan paths); for local dev also run `pnpm install` once inside the plugin dir (sandbox runner deps, below);
@@ -90,6 +96,8 @@ Restart DSH afterwards: the "Background Jobs Monitor" panel appears bottom-right
 ```
 
 **Uninstall:** `dsh plugin --profile <profile> remove bgjobs`
+
+> Methods A / B / C / D all need a **DSH restart** (fully quit and relaunch) to take effect (why: see above).
 
 ## Usage (agent tools)
 
@@ -177,7 +185,11 @@ Double-click `tools\dsh-bgjobs-gui.bat` to open a standalone window (no DSH need
 
 Architecture, mechanism details, testing and release flow: see [docs/developer.md](docs/developer.md).
 
-## Recent updates (v0.1.62 → v0.1.92)
+## Recent updates (v0.1.62 → v0.1.93)
+
+- **Clearer message from the Settings buttons**: if Settings did open but could not jump to the "Background Jobs" / "MCP jobs" page, you now get "Settings is open, but the section was not found" plus a hint to look for it manually, instead of the vague "Could not open Settings automatically" (v0.1.93).
+
+- **Fixed the panel's gear / 🗄 buttons failing to open Settings**: clicking them used to only show "Could not open Settings automatically"; they now open Settings on the "Background Jobs" / "MCP jobs" page (v0.1.93).
 
 - **Sandboxed pwsh jobs start faster**: a per-process cost that was paid on every launch (and that did nothing for log encoding anyway) is gone, so startup waits are shorter — **job behaviour, logs and exit codes are unchanged** (v0.1.92).
 
