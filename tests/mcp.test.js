@@ -15,6 +15,7 @@ import {
 } from '../lib/index.js'
 import { createStore } from '../lib/core/store.js'
 import { createJobs } from '../lib/core/jobs.js'
+import { missingCommandPath } from '../lib/mcp-prewarm.js'
 import {
   makeCtx, makeWorkdir, makeFakeRunner, setFullAccessEnabled, installSuiteHooks,
 } from './helpers/common.js'
@@ -328,7 +329,26 @@ test('mcp 守卫：绝对路径 command 不存在 → 不 spawn、状态 down、
   }
 })
 
-// ── 5b. 与 DSH 一致：会话访问模式不限制 MCP ───────────────────────────────
+// ── 5b. command 含空格的绝对路径不得被误判为缺失（spawn 不再被误拦） ──
+// 动机（实测）：node 装在 `C:\Program Files\nodejs\node.exe` 时，按空白切首个 token 会得到
+// `C:\Program`（本机无此目录）⇒ 守卫误判"缺失"、连正常 server 一起拦掉（demo server 全挂）。
+
+test('mcp 守卫: 含空格的绝对路径 command 不误判为缺失（unquoted/quoted）', () => {
+  const home = process.env.DSH_HOME
+  const spacedMissing = path.join(home, 'no such dir-xyz', 'x.exe')   // 含空格且不存在
+  const plainMissing = path.join(home, 'no-such-dir-xyz', 'x.exe')    // 不含空格且不存在
+  assert.equal(missingCommandPath(process.execPath), null, '存在的绝对路径（本机含空格）必须放行')
+  assert.equal(missingCommandPath('"' + process.execPath + '"'), null, '带引号的已存在路径放行')
+  assert.deepEqual(missingCommandPath(plainMissing), { path: plainMissing }, '不含空格的缺失绝对路径必须拦')
+  assert.deepEqual(missingCommandPath('"' + spacedMissing + '"'), { path: spacedMissing }, '带引号的含空格缺失路径必须拦')
+  assert.equal(missingCommandPath(spacedMissing), null, '未加引号且含空格：判不准 → 放行')
+  assert.equal(missingCommandPath('node'), null, '裸命令名放行')
+  assert.equal(missingCommandPath(''), null, '空串放行')
+  assert.equal(missingCommandPath(undefined), null, '非字符串放行')
+  assert.equal(missingCommandPath('"unterminated'), null, '引号未闭合放行')
+})
+
+// ── 5c. 与 DSH 一致：会话访问模式不限制 MCP ───────────────────────────────
 
 test('mcp: 受限会话（read-only）+ full access 关 → 仍可提交；对照 bat 被拒', async () => {
   await enableMcp()

@@ -684,10 +684,16 @@ test('webServer: /bgjobs/uiprefs display 默认/持久化/一键恢复默认/非
       r = await callWith('/bgjobs/uiprefs', 'POST', { elements: { mcpSettingsButton: false } })
       assert.equal(r.elements.mcpSettingsButton, false, '可单独隐藏 MCP 设置入口')
       assert.equal(r.elements.settingsButton, false, '改 MCP 入口不影响设置入口齿轮的现值')
+      // 两个完成横幅行为开关：一键恢复默认**不**重置它们（只重置 6 个显隐元素）
+      r = await callWith('/bgjobs/uiprefs', 'POST', { elements: { bannerEnabled: false, bannerMemo: false } })
+      assert.equal(r.elements.bannerEnabled, false, '可关闭完成横幅总开关')
+      assert.equal(r.elements.bannerMemo, false, '可关闭横幅去重开关')
       r = await call('/bgjobs/uiprefs?action=resetDisplay', 'POST')
       assert.equal(r.elements.settingsButton, true, '一键恢复默认恢复设置入口齿轮')
       assert.equal(r.elements.mcpSettingsButton, true, '一键恢复默认恢复 MCP 设置入口')
       assert.equal(r.elements.notify, true, '一键恢复默认同时重置 elements')
+      assert.equal(r.elements.bannerEnabled, false, '一键恢复默认不动完成横幅总开关')
+      assert.equal(r.elements.bannerMemo, false, '一键恢复默认不动横幅去重开关')
       assert.equal(r.display.name, 'list', '一键恢复默认重置 display')
 
       // v0.1.85：字段 runtime（默认 list）与「默认等待超时」（waitTimeoutSeconds，null = 不限时）

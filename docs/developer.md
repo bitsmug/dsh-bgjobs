@@ -415,7 +415,7 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
 - token 与端口**只写进该任务的 `mcp.json`**（`prewarm:{url,token}`），不写设置文件、不进日志。代理生命周期挂在插件 dispose 链上。
 - 开关联动：MCP 总开关开启 → 对**启用且 `prewarm:true`** 的 server 预连；关闭 → `unwarmAll()`。被设为「禁用」（`enabled:false`）的 server **不预连**，且切到禁用时立即 `unwarm`。host 不在/代理不可达/坏 token → runner 回退冷启动，**任务照常成功**（"任务脱离 DSH 也能跑"的保证不变）。
 - runner 与 supervisor 共用 `lib/mcp-connect.js`（env 清洗 `/KEY|PASSWORD|SECRET|TOKEN/i` 与 `DSH_*`、transport 构造、`tools/list` 分页、结果投影），避免两套实现漂移。
-- **预热前守卫缺失的 command（v0.2.0-alpha）**：MCP server 配置里 `command` 是**绝对路径但文件不存在**时（典型成因：陈旧或跨机复制的配置），预热在**真正 spawn 之前**就拦住——不 spawn、不退避重连（否则最多刷 10 行噪声）、日志同因只写一次，状态直接判 `down` 并给出可读原因（`missing command: <path>`）。**只对绝对路径生效**（`C:\…`、`C:/…`、`\\server\share`、POSIX `/…`；相对路径与裸命令名照旧交给 PATH/PATHEXT）；含通配符或 `%`/`!`（cmd 会展开）以及判不准的情形一律**放行**，不误封正常 server。**用户处置**：按日志里的原因修好配置里的路径，或把该项 `enabled:false` 禁用；改好配置后守卫自动让路（不粘滞）。
+- **预热前守卫缺失的 command（v0.2.0-alpha）**：MCP server 配置里 `command` 是**绝对路径但文件不存在**时（典型成因：陈旧或跨机复制的配置），预热在**真正 spawn 之前**就拦住——不 spawn、不退避重连（否则最多刷 10 行噪声）、日志同因只写一次，状态直接判 `down` 并给出可读原因（`missing command: <path>`）。**只对绝对路径生效**（`C:\…`、`C:/…`、`\\server\share`、POSIX `/…`；相对路径与裸命令名照旧交给 PATH/PATHEXT）；含通配符或 `%`/`!`（cmd 会展开）以及判不准的情形一律**放行**，不误封正常 server。**未加引号的 `command` 含空白**（如 `C:\Program Files\nodejs\node.exe`）时无法区分「带空格的路径」与「内嵌参数」⇒ **放行**（不得按空白切首个 token，否则会把 `C:\Program` 误判为缺失、连正常 server 一起拦掉）；**带引号**的 `command` 取引号内内容判定，缺失仍拦。**用户处置**：按日志里的原因修好配置里的路径，或把该项 `enabled:false` 禁用；改好配置后守卫自动让路（不粘滞）。
 
 ### 工具列表与缓存（`lib/core/mcp.js`）
 
@@ -450,7 +450,7 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
 
 ### 设置页结构与凭据口径（client / 安全）
 
-- **两页**：`settings.section` 是 list seat，本插件注册两项 —— `bgjobs`（「后台任务」：入口/面板/离线 GUI/字段显示）与 `bgjobs-mcp`（「MCP 任务」：总开关 / server 登记（含编辑）/ 导出导入 / 从 DSH 导入）。拆页是为了避免单页过长；导航 label 走 i18n `settings.nav` / `settings.mcp.nav`。
+- **两页**：`settings.section` 是 list seat，本插件注册两项 —— `bgjobs`（「后台任务」：入口/面板/完成横幅开关/离线 GUI/字段显示）与 `bgjobs-mcp`（「MCP 任务」：总开关 / server 登记（含编辑）/ 导出导入 / 从 DSH 导入）。拆页是为了避免单页过长；导航 label 走 i18n `settings.nav` / `settings.mcp.nav`。
 - **「编辑」**：`GET /bgjobs/mcpservers?name=<n>` 取单条明细（含值）回填表单 → 保存仍走同一个 `POST /bgjobs/mcpservers`（同名覆盖）。列表用列表端点（不含值），**不要**用列表数据做编辑回填，否则会把 env/headers 清空。
 - 提示文案：预热说明与明文密钥提示写在各区块的说明行（i18n `settings.mcp.prewarmHint` / `settings.mcp.secretHint`）；每行的三态说明走 `settings.mcp.modeHint`（另有 `modeCold` / `modeDisabled` / `modeTitlePrewarm|Cold|Disabled`）。
 - **每行三态按钮**：不用 `Switch`（右侧的 36×20 开关易被误认成总开关），改为带文字的互斥按钮 `预热` / `冷启动` / `禁用`，以「文字 + 语义色」双重区分（预热=琥珀 `--dsw-alias-state-warn-label`、冷启动=绿 `--dsw-alias-state-success-primary`、禁用=灰 `--dsw-alias-label-secondary`，激活态另加 `--dsw-specific-selector` 底色与描边）；点击分别发 `?enabled=1&prewarm=1` / `?enabled=1&prewarm=0` / `?enabled=0`。总开关仍用 `Switch`。
@@ -485,7 +485,7 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
 - **★ 空基线窗口**：`/bgjobs/state` 出参 `ready`（`store.setReady`/`isReady`）在 **watch 的 `recover()` 与一次性种子都跑完**之后才置 true；client 见 `ready === false` **跳过整段横幅判定、且不动内存基线**——把空列表记进基线正是"重复弹出"的成因。
 - **★ 一次性种子**（`lib/core/watch.js#seedBannerState`，`bannerSeedVersion`）：首次带上 toasted 判定的那次启动，把「`status === 'done'` 且无 `toastedAt`」的存量任务批量补写 `toastedAt = Date.now()`、`toastedBy = 'seed'`（内存 `job.meta` 同步，本轮快照即带 `toasted`），并在 `ui-prefs.json` 记 `bannerSeedVersion: 1` ⇒ **只跑一次**；此后新完成的任务（含关页面/宿主重启期间完成的）保持未标记，才能照常弹。种子全程 try/catch，**失败不影响 recover 与 ready**。
 - **判定口径**（`lib/client-src/banner.js` 的纯函数 `shouldToast(job, prevSeen, opts)`，便于单测）：优先级 `enabled > memo > toasted > 首轮 > 基线`。首轮已 done 且未 toasted ⇒ **不弹**（只记基线）；新完成 ⇒ **弹 + 写回**；已 toasted ⇒ **不弹**。
-- **两个开关**（DSH 设置页「后台任务 → 字段显示 → 界面元素」，落在 `ui-prefs.json` 的 `elements`）：
+- **两个开关**（DSH 设置页「后台任务 → 完成横幅」独立开关组：弹出完成横幅 / 横幅去重，落在 `ui-prefs.json` 的 `elements`）：
 
 | 开关 | 默认 | 关掉后的行为 |
 |---|---|---|
@@ -530,7 +530,7 @@ submit ─► [pending-running] ──done──► [pending-done]
 - 宿主集成（v0.1.64）：面板 occupant 在 `shell.overlay`（root/list，id `bgjobs-monitor`，order 50）；**新增左侧栏脚部入口** occupant（`sidebar.footer.action` root/list，id `bgjobs-monitor-toggle`，order 60），ui-cordis 同款 best-effort——宿主组合无 ui-sidebar 时该 inject 静默等待、不注册，面板照常、boot 不失败；入口无需 import 任何 harness 包（slot 名 = 字符串契约），不新增 external。
 - 显隐共享 store（v0.1.64）：`lib/client-src/monitor.js` 的 apply 级 `createMonitorStore`（`getVisible`/`toggle`/`subscribe` 对齐 `useSyncExternalStore`）+ `useMonitorVisible` hook（monitor 缺位恒 true）。面板「隐藏」用 **display:none 保持挂载**（几何/折叠/悬浮球/jobs 状态保留，轮询照常）；toast 独立不受影响。入口组件 `lib/client-src/sidebar-action.js`：宽栏 = 图标 + 「后台任务」行，rail（56px）= 仅图标；`aria-expanded`/键盘可用。
 - DSH 设置 section（v0.1.65）：新增 occupant 注册进 `settings.section`（root/list，id `bgjobs`、order 30、label thunk `settings.nav`），组件 `lib/client-src/settings-section.js` 自绘：① `Switch`（primitives，缺位自绘退化）控制**左栏入口显隐**（偏好持久化 `$DSH_HOME/bgjobs/ui-prefs.json`，缺省 false → 入口默认隐藏）；② 「打开离线 GUI / 打开所在文件夹」走 host `/bgjobs/gui` POST（`gui-launch.js`：`resolveShell()` 解析解释器 + `spawn -WindowStyle Hidden -File tools/dsh-bgjobs-gui.ps1`，或 `explorer /select,` 定位）；③ 展示 GUI 脚本路径（GET 回显）。偏好共享 store `lib/client-src/gui-prefs.js`（`createGuiPrefsStore`/`loadGuiPrefs`/`useGuiPrefsEnabled`），sidebar-action 空渲染门控、设置开关即时生效。
-- **设置页配置项与同步点（v0.1.85）**：① 开关/字段显示/界面元素 → `display`/`elements`；② **「默认等待超时」= `waitTimeoutSeconds`**（数字输入 + 保存按钮；`GET/POST /bgjobs/uiprefs` 回体含 `waitTimeoutSeconds` 与 `defaultWaitTimeoutSeconds`；host 归一 `normalizeWaitTimeout`＝正有限数取整、否则 `null`＝不限时，client 侧 `applyWaitTimeout`/`setWaitTimeout`/`useGuiPrefsWaitTimeout` 同口径）。**新增字段键须同时改 5 处**：host `store.js` 的 `DISPLAY_FIELDS`+`DEFAULT_DISPLAY`、client `gui-prefs.js` 的 `DEFAULT_DISPLAY`、client `settings-section.js` 的 `DISPLAY_FIELD_KEYS`、client `panel.js` 的 `FIELD_KEYS`+`fieldText`、i18n `field.<key>`（zh+en）——漏一处表现为「设置页缺该项」或「改了不生效」（与元素键同款约定，见上文）。`resetDisplay`（一键恢复默认）只重置 display+elements，**不动** `waitTimeoutSeconds`。
+- **设置页配置项与同步点（v0.1.85）**：① 开关/字段显示/界面元素 → `display`/`elements`；② **「默认等待超时」= `waitTimeoutSeconds`**（数字输入 + 保存按钮；`GET/POST /bgjobs/uiprefs` 回体含 `waitTimeoutSeconds` 与 `defaultWaitTimeoutSeconds`；host 归一 `normalizeWaitTimeout`＝正有限数取整、否则 `null`＝不限时，client 侧 `applyWaitTimeout`/`setWaitTimeout`/`useGuiPrefsWaitTimeout` 同口径）。**新增字段键须同时改 5 处**：host `store.js` 的 `DISPLAY_FIELDS`+`DEFAULT_DISPLAY`、client `gui-prefs.js` 的 `DEFAULT_DISPLAY`、client `settings-section.js` 的 `DISPLAY_FIELD_KEYS`、client `panel.js` 的 `FIELD_KEYS`+`fieldText`、i18n `field.<key>`（zh+en）——漏一处表现为「设置页缺该项」或「改了不生效」（与元素键同款约定，见上文）。`resetDisplay`（一键恢复默认）只重置 display + 6 个显隐元素，**不动** `waitTimeoutSeconds`，也**不动**两个完成横幅行为开关（bannerEnabled/bannerMemo）。
 - **面板「运行时长」字段（v0.1.85）**：`lib/client-src/panel.js` 的 `fmtDuration`（`12s`/`3m05s`/`2h03m`/`1d04h`）+ `runtimeText`（running → `Date.now() - createdAt`，done → `finishedAt - createdAt`，时间戳缺失/异常 → `-`），仅在 `display.runtime` 为 `list`/`detail` 时渲染；运行中的数值靠既有**每秒 `GET /bgjobs/state`** 重渲染自然增长，不新增定时器。
 - 路由扩展（v0.1.65）：`/bgjobs/uiprefs`（GET/POST `?sidebarEntry=0|1`）与 `/bgjobs/gui`（GET 信息 / POST `?action=open|reveal`）；spawn 经 `gui-launch.setGuiSpawn` 注入（测试替身同 runners 模式）。
 - 设置页修复与增强（v0.1.66）：`/bgjobs/gui` GET 附 `version`（`lib/meta.js` 读包版本，模块级缓存）；「打开所在文件夹」客户端**优先第一方 `POST /open-in-app/open`**（`{app:'explorer', path:<tools 目录>}`，DSH 已验证的 explorer 打开机制；官方端点只收现存目录），不可用回退宿主 reveal；spawn 等 `'spawn'` 事件确认真实拉起（`'error'` → `{ok:false,error}`），失败一律透出到设置页结果行；监控面板显隐开关复用 monitor store 的 `setVisible`。附带修复：tools 三个 ps1 曾被反复写入**双 BOM**（运行时首行解析噪音，pwsh 报 `'works' 不是命令`），已规范为单一 UTF-8 BOM（字节级 EF BB BF + `#`）。
@@ -603,9 +603,9 @@ pnpm dsh plugin --profile <profile> add link:<插件绝对路径>
 
 `package.json`（版本号等）变更需重新执行 add；`lib/core|lib/*.js` 改动即时生效；`lib/client-src/` 改动需先 `pnpm build:client` 再刷新（必要时重启）。
 
-### 版本 0.2.0-alpha 变更面（供发版核对）
+### 版本 0.2.1 变更面（供发版核对）
 
-- **新增**：`bgjob_kill` / `bgjob_delete` 两个工具（`e9703b7`）+ **预热前守卫缺失的 command**（本轮）。
-- **本次发布只到「本地 commit + tag」为止**：`git push` / `git push origin v0.2.0-alpha` 会触发 npm 自动发布（`.github/workflows`），**推送由用户决定**。
+- **新增 / 变更**：设置页「完成横幅」两个开关独立成组（`bannerEnabled` / `bannerMemo`，且「一键恢复默认」不重置它们）；**修复预热前守卫把「含空格的绝对路径」误判为缺失**（`missingCommandPath` 不再按空白切首个 token）；**修复沙箱 pwsh 任务日志中文乱码**（runner 设一次 `Console.OutputEncoding`，提交 `88c7686`，本版一并发布）。
+- **本次发布只到「本地 commit + tag」为止**：`git push` / `git push origin v0.2.1` 会触发 npm 自动发布（`.github/workflows`）；v0.2.1 是**纯数字**版本 ⇒ 推 tag 即自动发布，**推送由用户决定**。
 - **M 运行副本未必同步**：M 侧若无完整 git 历史，则约定用**本文件对应版本的 patch** 拉平（M 侧已有的本地改动会被跳过，逐文件报告）。
 - 流程细节见本节「固定发布流程」。

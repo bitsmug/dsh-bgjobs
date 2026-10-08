@@ -192,7 +192,13 @@ Double-click `tools\dsh-bgjobs-gui.bat` to open a standalone window (no DSH need
 
 Architecture, mechanism details, testing and release flow: see [docs/developer.md](docs/developer.md).
 
-## Recent updates (v0.1.62 → v0.2.0-alpha)
+## Recent updates (v0.1.62 → v0.2.1)
+
+- **Fixed pre-warm being blocked when node lives under a path containing spaces**: with node under a directory such as `C:\Program Files\...`, the pre-warm guard split the command at the first space, treated `C:\Program` as a missing file and refused to open the resident connection (log: `missing command: C:\Program`). It now asserts existence only when the command is unambiguously a path, so spaced paths start normally (v0.2.1).
+
+- **The two "completion banner" switches now form their own settings group**: the two items previously buried under Settings → Field display → UI elements are now a dedicated "Completion banner" group with real switches (Show completion banner / Banner dedup), and "Restore defaults" **no longer resets** them (v0.2.1).
+
+- **Fixed mojibake in sandboxed pwsh job logs**: the runner now sets the console output encoding once (`Console.OutputEncoding`), so Chinese log lines emitted as GBK are no longer recorded as UTF-8 mojibake (v0.2.1).
 
 - **Added bgjob_kill and bgjob_delete tools** (v0.2.0-alpha).
 
