@@ -175,19 +175,33 @@ test('buildPs1: 解释器是 pwsh 7（pwsh/pwsh.exe）时整段跳过编码 prea
 })
 
 
-test('buildPwshRunner: 编码 preamble 同样按解释器条件化，FF FE 兜底转换保留（v0.1.92）', () => {
+test('buildPwshRunner: 两种解释器的 run.ps1 都设 [Console]::OutputEncoding = $utf8（v0.1.95 乱码修复），FF FE 兜底保留', () => {
   const baseMeta = {
     workdir: 'C:\\work', jsonPath: 'C:\\work\\job.json', logPath: 'C:\\work\\log.txt',
     exitcodePath: 'C:\\work\\exit.txt', taskName: 'dsh-bgj-x',
   }
+  const fixLine = '[Console]::OutputEncoding = $utf8'
+  const redirectLine = "& 'C:\\work\\job.ps1' *> $logPath"
   const runner7 = buildPwshRunner({ meta: { ...baseMeta, interpreter: 'C:\\fake\\pwsh.exe' } })
   assert.ok(!runner7.includes('Add-Type'), 'run.ps1 不应再含 Add-Type')
-  assert.ok(!runner7.includes('OutputEncoding'), 'pwsh 7 的 run.ps1 不应写编码设置')
+  // v0.1.95 乱码修复：pwsh 7 只在 stdout 被重定向时才强制 UTF-8；进程拥有控制台时（schtasks /
+  // -WindowStyle Hidden）保留继承的 CP 936 ⇒ native node 的 UTF-8 中文被按 936 解码成乱码。
+  // 正向断言：pwsh 7 的 run.ps1 也必须含该行（旧断言「pwsh 7 不应写编码设置」已作废，勿改回）。
+  assert.ok(runner7.includes(fixLine), 'pwsh 7 的 run.ps1 必须含编码兜底行（期望：' + fixLine + '）')
+  assert.ok(runner7.includes('[Console]::OutputEncoding'), 'pwsh 7 的 run.ps1 必须含 [Console]::OutputEncoding')
   const runner51 = buildPwshRunner({ meta: { ...baseMeta, interpreter: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe' } })
-  assert.ok(runner51.includes('[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)'), '5.1 的 run.ps1 仍写编码设置')
+  assert.ok(runner51.includes('[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)'), '5.1 的 run.ps1 仍写编码 preamble')
+  assert.ok(runner51.includes(fixLine), '5.1 的 run.ps1 同样含编码兜底行（与 preamble 幂等，同一个 $utf8）')
   assert.ok(!runner51.includes('Add-Type'))
-  // 乱码兜底（5.1 UTF-16LE → UTF-8）两端都必须在
   for (const runnerText of [runner7, runner51]) {
+    // 行序：$utf8 先定义（复用同一处定义、不重复 new）→ 兜底行 → 重定向
+    const defineIndex = runnerText.indexOf('$utf8 = New-Object System.Text.UTF8Encoding($false)')
+    const fixIndex = runnerText.indexOf(fixLine)
+    const redirectIndex = runnerText.indexOf(redirectLine)
+    assert.ok(defineIndex >= 0 && fixIndex >= 0 && redirectIndex >= 0, '三行都必须在')
+    assert.ok(defineIndex < fixIndex, '$utf8 必须先定义（禁止重复 new）')
+    assert.ok(fixIndex < redirectIndex, '编码设置必须在 `*> $logPath` 之前')
+    // 乱码兜底（5.1 UTF-16LE → UTF-8）两端都必须在
     assert.ok(runnerText.includes('0xFF') && runnerText.includes('0xFE'), 'FF FE 检测转换不得丢')
   }
 })

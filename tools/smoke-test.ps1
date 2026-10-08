@@ -171,11 +171,16 @@ Assert-True ($pwshRunner.IndexOf('[BGJOB] exit code') -gt $pwshRunner.IndexOf('*
 Assert-True ($pwshRunner.IndexOf("schtasks /Delete /TN 'dsh-bgj-smoke-pwsh' /F") -gt $pwshRunner.IndexOf('WriteAllText')) 'pwsh run.ps1 self-deletes after exitcode write'
 Assert-True ($pwshRunner.Contains('0xFF') -and $pwshRunner.Contains('0xFE')) 'pwsh run.ps1 converts UTF-16LE log on PS 5.1'
 Assert-True (-not $pwshRunner.Contains('Add-Type')) 'run.ps1 no longer compiles C# via Add-Type (v0.1.92)'
-# v0.1.92: the encoding preamble is conditional on the interpreter basename. $pwshJob's
-# interpreter is C:\fake\pwsh.exe (pwsh 7) => the preamble is skipped entirely (pwsh 7 is
-# UTF-8 by default). The 5.1 twin below still asserts that the preamble IS written, so the
-# assertions are branched by interpreter, not dropped.
-Assert-True (-not $pwshRunner.Contains('OutputEncoding')) 'pwsh7 run.ps1 skips the encoding preamble (v0.1.92)'
+# v0.1.92: the encoding *preamble* is conditional on the interpreter basename. $pwshJob's
+# interpreter is C:\fake\pwsh.exe (pwsh 7) => the preamble line is skipped entirely. v0.1.95
+# adds one unconditional runner-side line: [Console]::OutputEncoding = $utf8, set BEFORE the
+# `*>` redirect (`&` is the call operator => same process as job.ps1 and the native children
+# it spawns). Why: pwsh 7 only forces UTF-8 when stdout is redirected; when the process owns a
+# console (schtasks / -WindowStyle Hidden) it keeps the inherited code page (measured CP 936),
+# so native node UTF-8 output was decoded as CP 936 and came out mojibake. The 5.1 twin below
+# still asserts that the preamble IS written, so the branching is by interpreter, not dropped.
+Assert-True ($pwshRunner.Contains("[Console]::OutputEncoding = `$utf8")) 'pwsh run.ps1 sets Console.OutputEncoding before *> (v0.1.95)'
+Assert-True ($pwshRunner.IndexOf('[Console]::OutputEncoding') -lt $pwshRunner.IndexOf('*>')) 'the encoding line comes before the *> redirect'
 $ps1 = New-BgjobsPs1 $pwshJob
 Assert-True (-not $ps1.StartsWith('# bgjobs:')) 'pwsh7 job.ps1 skips the UTF-8 preamble (v0.1.92)'
 Assert-True (-not $ps1.Contains('OutputEncoding')) 'pwsh7 job.ps1 writes no encoding setting'

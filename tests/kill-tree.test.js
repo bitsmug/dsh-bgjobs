@@ -18,8 +18,9 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { promises as fsp } from 'node:fs'
 import http from 'node:http'
+import os from 'node:os'
 import path from 'node:path'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 import { apply, setSchtasksRunner, setShellResolver, buildPwshRunner, buildProbeScript, buildProcessQueryScript, orderKillSet } from '../lib/index.js'
@@ -1147,6 +1148,65 @@ test('scripts: run.ps1 的 pid 两行与 PS 镜像（tools/dsh-bgjobs-lib.ps1）
   assert.ok(psLines.includes(writeLine), 'PS 镜像的 WriteAllText 行必须与 JS 侧逐字一致')
   assert.ok(psText.includes(".Replace('__JOBDIR__', $jobDir)"), 'PS 侧必须替换 __JOBDIR__ 占位符')
   assert.ok(psText.includes('$jobDir = Split-Path $Job.meta.jsonPath -Parent'), 'PS 侧 jobDir 必须与 JS 同源（jsonPath 的父目录）')
+})
+
+// 用 PS 镜像生成器造 run.ps1（参数经文件/argv 传递，避开 Windows 命令行引号陷阱）。
+const MIRROR_BUILD_PS1 = [
+  'param([string]$LibPath, [string]$MetaPath, [string]$OutPath)',
+  "$ErrorActionPreference = 'Stop'",
+  '. $LibPath',
+  '$meta = Get-Content -LiteralPath $MetaPath -Raw -Encoding UTF8 | ConvertFrom-Json',
+  '$job = [pscustomobject]@{ meta = $meta }',
+  '$text = New-BgjobsPwshRunner $job',
+  '[System.IO.File]::WriteAllText($OutPath, $text, (New-Object System.Text.UTF8Encoding($false)))',
+].join('\r\n') + '\r\n'
+
+/** 找一个可用的 PowerShell（优先 pwsh 7，退 Windows PowerShell 5.1）；找不到返回 null。 */
+function findPowerShell() {
+  const candidates = [
+    'pwsh',
+    path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+  ]
+  for (const exe of candidates) {
+    const probe = spawnSync(exe, ['-NoProfile', '-NonInteractive', '-Command', 'exit 0'], { encoding: 'utf8' })
+    if (probe.status === 0) return exe
+  }
+  return null
+}
+
+test('scripts: run.ps1 编码兜底行 —— 同一个 synthetic job 的 JS 产物与 PS 镜像产物逐字节一致（v0.1.95）', async (t) => {
+  const psText = await fsp.readFile(PS_LIB, 'utf8')
+  const encodingLine = '    try { [Console]::OutputEncoding = $utf8 } catch { }'
+  assert.ok(psText.split(/\r?\n/).includes(encodingLine),
+    'PS 镜像模板必须含与 JS 侧逐字一致的编码兜底行（含 4 空格缩进）；期望：' + JSON.stringify(encodingLine))
+  const meta = {
+    workdir: 'C:\\work', logPath: 'C:\\work\\.dsh\\bgjobs\\bg-x\\stdout.log',
+    exitcodePath: 'C:\\work\\.dsh\\bgjobs\\bg-x\\exitcode.txt', jsonPath: 'C:\\work\\.dsh\\bgjobs\\bg-x\\job.json',
+    taskName: 'dsh-bgj-bg-x', interpreter: 'C:\\fake\\pwsh.exe',
+  }
+  const jsText = buildPwshRunner({ meta })
+  assert.ok(jsText.includes(encodingLine), 'JS 侧产物必须含该行（缩进必须与镜像一致）')
+  const shell = findPowerShell()
+  if (shell === null) { t.skip('未找到 pwsh / Windows PowerShell，跳过实机镜像比对'); return }
+  const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'bgjobs-mirror-'))
+  try {
+    const metaPath = path.join(tmpDir, 'meta.json')
+    const buildPath = path.join(tmpDir, 'build-mirror.ps1')
+    const mirrorPath = path.join(tmpDir, 'mirror-run.ps1')
+    await fsp.writeFile(metaPath, JSON.stringify(meta), 'utf8')
+    await fsp.writeFile(buildPath, MIRROR_BUILD_PS1, 'utf8')
+    const res = spawnSync(shell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', buildPath,
+      '-LibPath', PS_LIB, '-MetaPath', metaPath, '-OutPath', mirrorPath], { encoding: 'utf8' })
+    assert.equal(res.status, 0, 'PS 镜像生成器必须跑通：' + (res.stderr || res.stdout))
+    const mirrorBytes = await fsp.readFile(mirrorPath)
+    const jsBytes = Buffer.from(jsText, 'utf8')
+    // 判据先打印期望/实际长度，便于读数对账（逐字节一致 ⇒ 长度必然相等）
+    console.log(`[mirror] js=${jsBytes.length} bytes / ps=${mirrorBytes.length} bytes / byte-equal=${jsBytes.equals(mirrorBytes)}`)
+    assert.ok(mirrorBytes.equals(jsBytes),
+      `两处产物必须逐字节一致：js=${jsBytes.length} 字节、ps=${mirrorBytes.length} 字节`)
+  } finally {
+    await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {})
+  }
 })
 
 // ── ⑩ 探针脚本形状（实机验收抓到的真回归）────────────────────────────────

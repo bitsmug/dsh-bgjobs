@@ -306,7 +306,11 @@ function New-BgjobsLaunchVbs {
 # 自删任务计划——pwsh 路径不再经过 cmd。退出码取 $LASTEXITCODE；try/catch 兜底保证
 # exitcode.txt 必写；5.1 的 *> 输出 UTF-16LE（BOM FF FE），检测到即转 UTF-8——这里才是
 # 乱码兜底的真身。v0.1.92：删掉 Add-Type SetConsoleOutputCP（+0.6 s/次、零语义），
-# 编码 preamble 按解释器条件化（pwsh 7 启动即 UTF-8 ⇒ 整段跳过）。
+# 编码 preamble 按解释器条件化（pwsh 7 整段跳过 preamble）。
+# ★ 更正（v0.1.95 实测）：pwsh 7 **并非**「启动即 UTF-8」——它只在 stdout 被重定向时才强制
+# UTF-8，进程拥有控制台时保留继承的代码页（schtasks / -WindowStyle Hidden 下实测
+# CodePage = 936）⇒ 跳过 preamble 之后，由模板里那行 `try { [Console]::OutputEncoding = $utf8 }
+# catch { }`（在 `*>` 之前）统一兜底，job.ps1 与它拉起的 native 子进程同进程继承。
 # ★ B1（已修）：模板第 2-3 行落盘 `<jobDir>\run.pid` = 本 run.ps1 的 $PID（= schtasks 任务根），
 # 删任务时据此 `taskkill /PID <pid> /T /F` 才杀得穿 node runner 与受限子进程。
 # 这两行必须与 lib/scripts.js 的 buildPwshRunner 逐字一致（同一处改动必须双写）。
@@ -329,6 +333,7 @@ Set-Location -LiteralPath '__WORKDIR__'
 $logPath = '__LOGPATH__'
 $code = 0
 try {
+    try { [Console]::OutputEncoding = $utf8 } catch { }
     & '__SCRIPTPATH__' *> $logPath
     if ($null -ne $LASTEXITCODE) { $code = $LASTEXITCODE }
 } catch {
@@ -357,6 +362,12 @@ if (Test-Path -LiteralPath $logPath) {
 # v0.1.92 删掉 Add-Type SetConsoleOutputCP：每次启动现编译 C#（实测 +0.6 s/次），
 # 而 5.1 的 *> 产物与是否设置控制台代码页无关（字节相同，都是 FF FE UTF-16LE）——
 # 真正救回乱码的是 New-BgjobsPwshRunner 里的 FF FE 检测转换。
+# ★ 更正（v0.1.95，镜像 lib/scripts.js 的 buildPs1 注释）：pwsh 7 **并非**「启动即 UTF-8」——
+# 它只在 stdout 被重定向时才强制 UTF-8，进程拥有控制台时（schtasks / -WindowStyle Hidden）
+# 保留继承的代码页（实测 CodePage = 936）。job.ps1 之所以仍可整段跳过 preamble：
+# `& job.ps1` 是 call operator、与 run.ps1 同进程，而 run.ps1 已在 `*>` 之前设过一次
+# [Console]::OutputEncoding（见 New-BgjobsPwshRunner），job.ps1 与其拉起的 native 子进程
+# 直接继承 ⇒ 无需在这里重复设置。
 function New-BgjobsPs1([object]$Job) {
     $preambleLines = if (Test-BgjobsPwsh7Interpreter $Job.meta.interpreter) {
         @()
