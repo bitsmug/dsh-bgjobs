@@ -665,9 +665,9 @@ test('webServer: /bgjobs/uiprefs display 默认/持久化/一键恢复默认/非
       assert.equal(r.sidebarEntry, true, '旧 sidebarEntry query 仍生效')
       assert.equal(r.display.name, 'list', 'sidebarEntry POST 不影响 display')
 
-      // 界面元素显隐（v0.1.71；v0.1.88 增两个完成横幅开关）：默认全显示；POST body {elements} 改单个；一键恢复同时重置
+      // 界面元素显隐（v0.1.71；v0.1.88 增两个完成横幅开关；后增面板行为开关 followScrollDefault）：默认全显示；POST body {elements} 改单个；一键恢复同时重置
       r = await call('/bgjobs/uiprefs')
-      assert.deepEqual(r.elements, { settingsButton: true, mcpSettingsButton: true, onlySession: true, fullAccess: true, groupHeader: true, notify: true, bannerEnabled: true, bannerMemo: true }, '缺省 elements = 全显示（含横幅两开关）')
+      assert.deepEqual(r.elements, { settingsButton: true, mcpSettingsButton: true, onlySession: true, fullAccess: true, groupHeader: true, notify: true, bannerEnabled: true, bannerMemo: true, followScrollDefault: true }, '缺省 elements = 全显示（含横幅两开关 + 面板自动滚动默认值）')
       assert.deepEqual(r.defaultElements, r.elements, 'defaultElements 与默认一致')
       r = await callWith('/bgjobs/uiprefs', 'POST', { elements: { notify: false } })
       assert.equal(r.elements.notify, false, 'POST body 改 elements.notify=false')
@@ -688,12 +688,17 @@ test('webServer: /bgjobs/uiprefs display 默认/持久化/一键恢复默认/非
       r = await callWith('/bgjobs/uiprefs', 'POST', { elements: { bannerEnabled: false, bannerMemo: false } })
       assert.equal(r.elements.bannerEnabled, false, '可关闭完成横幅总开关')
       assert.equal(r.elements.bannerMemo, false, '可关闭横幅去重开关')
+      // 面板行为开关 followScrollDefault（面板「自动滚动」勾选框的初值）：独立可写、默认 true
+      r = await callWith('/bgjobs/uiprefs', 'POST', { elements: { followScrollDefault: false } })
+      assert.equal(r.elements.followScrollDefault, false, '可把面板自动滚动默认值改关')
+      assert.equal(r.elements.bannerEnabled, false, '改 followScrollDefault 不影响横幅开关现值')
       r = await call('/bgjobs/uiprefs?action=resetDisplay', 'POST')
       assert.equal(r.elements.settingsButton, true, '一键恢复默认恢复设置入口齿轮')
       assert.equal(r.elements.mcpSettingsButton, true, '一键恢复默认恢复 MCP 设置入口')
       assert.equal(r.elements.notify, true, '一键恢复默认同时重置 elements')
       assert.equal(r.elements.bannerEnabled, false, '一键恢复默认不动完成横幅总开关')
       assert.equal(r.elements.bannerMemo, false, '一键恢复默认不动横幅去重开关')
+      assert.equal(r.elements.followScrollDefault, false, '一键恢复默认不动面板自动滚动默认值（行为开关不重置）')
       assert.equal(r.display.name, 'list', '一键恢复默认重置 display')
 
       // v0.1.85：字段 runtime（默认 list）与「默认等待超时」（waitTimeoutSeconds，null = 不限时）

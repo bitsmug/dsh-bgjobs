@@ -158,7 +158,9 @@ test('webServer: bannerMemo=false ⇒ /bgjobs/toasted 直接 no-op（不写盘�
     let prefs = (await call('/bgjobs/uiprefs')).body
     assert.equal(prefs.elements.bannerEnabled, true, 'bannerEnabled 默认 true')
     assert.equal(prefs.elements.bannerMemo, true, 'bannerMemo 默认 true')
+    assert.equal(prefs.elements.followScrollDefault, true, 'followScrollDefault（面板自动滚动初值）默认 true')
     assert.equal(prefs.defaultElements.bannerEnabled, true)
+    assert.equal(prefs.defaultElements.followScrollDefault, true, 'defaultElements 同样含 followScrollDefault')
     assert.equal(prefs.bannerSeedVersion, 0, '未跑种子时为 0')
 
     await tick()
