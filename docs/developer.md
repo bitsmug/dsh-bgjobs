@@ -86,7 +86,12 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
 
 ### 完成检测 / 读日志 / 恢复
 
-- **事件驱动 + 兜底**：fs.watch 监视任务目录，`exitcode.txt` 出现即触发（200ms 节流）迁移 done；tick 每 5s 补查防 watch 丢事件/合并。`checkCompletion` 是唯一 running→done 迁移点。
+- **事件驱动 + 兜底**：fs.watch 监视任务目录，`exitcode.txt` 出现即触发（200ms 节流）迁移 done；tick 每 5s 补查防 watch 丢事件/合并。`checkCompletion` 是内存路径 running→done 的**唯一迁移点**（只负责落盘/通知/收尾这类副作用）。
+- **★ 终态判定只有一个所有者（v0.2.3）**：`lib/core/wrapper-gone.js` 的 `resolveWrapperGone`。两条路径都汇到它——内存路径 `watch.checkCompletion` 与磁盘路径 `registry.statusFromDisk`；以前两处**各自**从 `exitcode.txt` 反推终态，于是"包装器死了却没写成 `exitcode.txt`"（GUI 子系统程序静默退出 / 包装器被非正常终止 / **重启或注销**——计划任务"仅用户登录时运行"，一重启全灭且都不留退出口）会让任务**永久停在 running**：面板显示「运行中」而实际没有任何进程。
+  - 判定（只在"`status==='running'` 且 `exitcode.txt` 缺失/不可解析"时问它）：① 无 pid 文件 ⇒ 保持 running；② 进程内廉价预检（`process.kill(pid,0)`，**零 spawn**）`gone` ⇒ 终态；`unknown` ⇒ 保持 running；③ pid 上确实有进程时，按任务目录**节流**（5 min）起一次既有探针 `probeProcess` 做归属复核：`run.pid` 活着但**不属于本任务** ⇒ 终态（`pid-reused`，防 pid 复用被读成"还活着"），活着且属于本任务 ⇒ 保持 running，复核不可用 ⇒ 保持 running。
+  - 终态表达：**不新增 `status` 枚举值**，用 `exitCode: null` + `exitCodeSource: 'wrapper-gone'` + `wrapperGoneReason`(`pid-gone`|`pid-reused`)/`wrapperGoneAt`/`wrapperGonePid`/`wrapperGoneFile` 表达"包装器已消失、且**没有**退出码"。`exitcode.txt` 存在时**依旧以它为准**（不经过探活）；kill 的 `exitCodeSource:'killed'` 一字未改。
+  - **存量僵尸会被追认**：判定发生在**读取时**（磁盘路径是实时投影：只读、不写盘），无需迁移脚本、也无需人工 kill；内存路径的 tick 一跑就把终态落盘。面板/`bgjob_status` 经 `wrapperGoneOf`（`view` / `statusFromDisk` / `tools.js` 共用同一份字段名）透出上述字段，UI 对 `exitCode: null` 显示「无退出码」而不是 `null`。
+  - **有意不做的**：`run.pid` 缺失时不做反查（少一个确证就不改状态）；探针 `unknown` 一律保持 running（探针跑不起来 ≠ 死）。
 - **增量读**：按字节位置只读增量，TextDecoder 流式避免截断多字节；完成前补读一次捕获 marker 行。
 - **恢复（中央索引优先）**：索引只存 `jobDir` 当"地图"，状态实时读 `job.json`——索引过期/缺失不影响正确性。recover 挂 done 直接显示终态、running 继续跟踪；重启不重复通知（见 notify 幂等）。
 

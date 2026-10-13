@@ -105,7 +105,7 @@ allowBuilds:
 - `bgjob_submit_pwsh(name, command, workdir, [wait], [sandbox], [justification], [notify], [notify_mode])` — 提交后台任务（command 为 **PowerShell** 语法，UTF-8 日志、`exit <code>` 语义安全）；`wait` 同上；**沙箱任务**（`sandbox` 非 `off`）经独立 runner 拉起，需要**真 `node`**（console 子系统，优先与 DSH 同源的那份，见近期更新 v0.1.91）；找不到 ⇒ **提交时直接报错**（不会出现「日志空白 + 假 exit 0」的假成功）；
 - `bgjob_submit_mcp(name, workdir, tool, [arguments], server | server_config, [timeout_seconds], [wait], [notify], [notify_mode])` — 把一次 **MCP 工具调用**提交为后台任务（第三引擎，同样由 schtasks 托管、面板可见、可 wait/notify）。`server` 是设置页登记的 server 名，`server_config` 是内联配置（stdio 或 streamable-http），二者二选一。任务里连接该 server 调用一次工具，结果写日志与 `<jobDir>/result.json`（含执行通道），退出码 `0` 成功 / `1` 工具报错 / `2` 连接或调用失败 / `3` 超时；`timeout_seconds` **缺省不限时**（该 server 在设置页登记了 `timeoutMs` 时以它为准），也可传任意正数秒。**默认关闭，需先在设置页打开「MCP 任务」开关**（未开启时调用会被拒绝）；与 DSH 一致，会话访问模式（read-only 等）**不限制** MCP 任务。建议先用 `bgjob_mcp_tools` 确认工具名；
 - `bgjob_mcp_tools(server | server_config, [refresh])` — 列出该 MCP server 的注册工具（工具名/描述/必填字段名），提交前用它确认工具名与参数形状；结果有缓存，`refresh: true` 强制刷新；同样受「MCP 任务」开关限制；
-- `bgjob_status(jobId)` — 查询状态 / 退出码 / 日志尾部；仅用于查看当前状态，不要拿它循环轮询（等待用 `bgjob_wait`）；
+- `bgjob_status(jobId)` — 查询状态 / 退出码 / 日志尾部；仅用于查看当前状态，不要拿它循环轮询（等待用 `bgjob_wait`）。状态权威依次是 `job.json` 终态 → `<jobDir>\exitcode.txt`；**若包装器已消失却没留下退出码**（GUI 子系统程序静默退出 / 包装器被非正常终止 / **重启或注销**——计划任务默认「仅用户登录时运行」，一重启全灭且都不留退出口），会判**终态**并如实给 `exitCode: null` + `exitCodeSource: 'wrapper-gone'`（`wrapperGoneReason` = `pid-gone` / `pid-reused`）——**存量僵尸记录一查即被追认**，不再永久显示「运行中」，也不需要人工 `kill`；进程真还在跑时绝不会被误判为死（探针跑不起来同样保守保持运行中）；
 - `bgjob_wait(jobId | jobIds, [timeoutSeconds], [logic])` — 等待后台任务结束并**立即返回**退出码与日志尾部（`timeoutSeconds` **缺省 = 设置页「默认等待超时」**，该设置未配置＝不限时（一直等到任务结束）；显式传 `0`/负数 = 本次强制不限时，传正数才到点返回 `timedOut: true` 快照）。两种模式（`logic`）：
   - **`any`（缺省）**：单个 `jobId` 等该任务；`jobIds` 数组 = **任一先结束即返回**（any 竞速，返回完成者 + 其余 `pending`）——**并行提交多个任务时的默认姿势**：先拿到先处理，其余用 `pending` 继续等，不必等齐；两者都缺省 = 等**本会话**任务任一结束；
   - **`all`（合取）**：等一批任务**全部成功**才返回 `allDone: true` + 每个任务的退出码/日志尾；**任一任务失败即立刻返回** `failed: true` + `failedJobId` + 已结束者的 `results` + 其余 `pending`（非 0 退出码，或被清理/找不到都算失败），不再等齐；超时返回部分状态可续等。只在「必须全部成功才能继续」且「一个失败就马上停」时使用——只想边拿边推进请用缺省的 `any`；`jobIds` 缺省 = 本会话全部任务；
@@ -190,7 +190,9 @@ allowBuilds:
 
 架构设计、机制细节、测试与发布流程见 [docs/developer.md](docs/developer.md)。
 
-## 近期更新（v0.1.62 → v0.2.1）
+## 近期更新（v0.1.62 → v0.2.3）
+
+- **修复「死任务显示运行中」**：状态权威原先只看 `<jobDir>\exitcode.txt` —— 包装器（`run.ps1` / MCP server）**死了却没写成它**时，记录就**永久停在 running**：面板显示「运行中」而实际没有任何进程。最典型的触发是**重启/注销**（计划任务默认「仅用户登录时运行」，一重启全灭且都不留退出口）。现在终态判定收拢到**唯一所有者**（`lib/core/wrapper-gone.js`，磁盘查询与后台 tick 两条路径共用）：pid 已不存在 ⇒ 判终态并如实给 `exitCode: null` + `exitCodeSource: 'wrapper-gone'` + `wrapperGoneReason`；pid 被复用给无关进程 ⇒ 同样判终态（不误判存活）；进程真还在跑、或探针跑不起来 ⇒ 保守保持「运行中」。`exitcode.txt` 存在时依旧以它为准；**存量僵尸记录一查即被追认**，不需要迁移脚本、也不需要人工 `kill`（v0.2.3）。
 
 - **修复 `node` 安装路径含空格时 MCP 预热被误拦**：`node` 装在 `C:\Program Files\...` 这类带空格的目录时，预热守卫把 `...\node.exe` 按空格截成 `C:\Program` 判为「文件不存在」，于是拒绝建立常驻连接（日志出现 `missing command: C:\Program`）。现在只在能确定是路径时才做存在性断言，含空格的路径照常启动（v0.2.1）。
 
