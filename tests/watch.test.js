@@ -13,7 +13,10 @@ import {
   setSchtasksRunner, setShellResolver, setSandboxRunnerResolver,
   resolveBgjobsHome, bgjobsIndexPath, readBgjobsIndex, writeBgjobsIndex,
   updateBgjobsIndex, rebuildBgjobsIndex, buildBgjobsGuidance,
+  setPidProbe, resetOwnershipProbeThrottle,
 } from '../lib/index.js'
+// 完成检测域：直接对收尾路径本身做并发用例（apply 不对外暴露 checkCompletion）。
+import { createWatch } from '../lib/core/watch.js'
 import {
   makeDshHome, makeWorkdir, makeCtx, makeFakeRunner, attachWebServer,
   runningPlugin, waitFor, setFullAccessEnabled, restrictedPolicy, fullPolicy,
@@ -394,4 +397,167 @@ test('state 视图含 finishedAt：面板可据此区分"超 24h 清理"范围',
 })
 
 // ── webServer 路由 ──
+
+// ── 完成收尾的并发单飞（v0.2.4）：同一任务只准有一个处理者 ─────────────────────
+//
+// 竞态（用户报的偶发：同一任务收到 **2 次** followup 通知）：`checkCompletion` 只在**函数入口**
+// 判一次 `job.status !== 'running'`，而 `job.status = 'done'` 要等 readLog / 读 exitcode /
+// 包装器探针这些 await 之后才写 ⇒ 两个调用者（fs.watch 事件 与 5s 兜底 tick）在窗口内可以
+// **双双通过**那道守卫 ⇒ 同一任务被收尾两次：重复 followup 通知、重复落盘、重复 `/Delete`。
+//
+// 下面两个用例把竞态**变成必现**（不靠"偶尔撞上"）：checkCompletion 的守卫是**同步**的，
+// 而第一次调用会挂到 await 上 ⇒ 把两次调用放进**同一个同步块**发出（`[]` 里的第二个表达式
+// 必在第一次挂起**之前**求值），第二次必然通过守卫。窗口有多宽、机器多快都与结论无关。
+
+test('收尾单飞: 同一任务并发进入 checkCompletion（exitcode 在场）⇒ 只 1 次通知 + 1 次 delivered 落盘', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  const workdir = await makeWorkdir()
+  const jobDir = path.join(workdir, '.dsh', 'bgjobs', 'bg-race-code')
+  await fsp.mkdir(jobDir, { recursive: true })
+  const meta = {
+    id: 'bg-race-code', name: 'race', workdir, jobDir,
+    logPath: path.join(jobDir, 'stdout.log'),
+    exitcodePath: path.join(jobDir, 'exitcode.txt'),
+    jsonPath: path.join(jobDir, 'job.json'),
+    taskName: 'dsh-bgj-race-code', command: 'echo x',
+    notify: 'on-exit', createdBySession: 's1',
+  }
+  await fsp.writeFile(meta.logPath, 'final-line\n', 'utf8')
+  await fsp.writeFile(meta.exitcodePath, '7\n', 'utf8')
+  const notified = []
+  const delivered = []
+  const watch = createWatch(
+    { interval: () => () => {}, get: () => undefined },
+    { registry: new Map() },
+    {
+      notify: { deliverCompletionNotice: (job) => { notified.push(job.id); return true } },
+      registry: { markDelivered: async (job) => { delivered.push(job.id) }, indexUpsert: () => {} },
+    },
+  )
+  const job = {
+    id: 'bg-race-code', meta, status: 'running', exitCode: undefined, pos: 0, tail: '',
+    decoder: new TextDecoder(), watch: undefined, checkTimer: undefined, lastCompletionCheck: 0,
+  }
+  try {
+    // ★ 竞态必现：两次调用在同一个同步块内进入，第二次必在第一次的 await 之前通过入口守卫。
+    await Promise.all([watch.api.checkCompletion(job), watch.api.checkCompletion(job)])
+    assert.equal(job.status, 'done')
+    assert.equal(job.exitCode, 7)
+    assert.equal(notified.length, 1, '收尾只准有一个处理者：重复 followup 通知就是这条竞态的症状')
+    assert.equal(delivered.length, 1, '投递成功后的 notifiedAt 二次落盘也只准一次')
+    assert.ok(job.tail.includes('final-line'), '单飞不得吞掉收尾动作（日志补读照常发生）')
+    const onDisk = JSON.parse(await fsp.readFile(meta.jsonPath, 'utf8'))
+    assert.equal(onDisk.status, 'done')
+    assert.equal(onDisk.exitCode, 7)
+  } finally {
+    await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+test('收尾单飞: 同一任务并发进入（无 exitcode + 包装器已消失）⇒ 只 1 次终态收尾', async () => {
+  const calls = []
+  setSchtasksRunner(makeFakeRunner(calls))
+  const probes = []
+  setPidProbe((pid) => { probes.push(pid); return 'gone' })
+  const workdir = await makeWorkdir()
+  const jobDir = path.join(workdir, '.dsh', 'bgjobs', 'bg-race-gone')
+  await fsp.mkdir(jobDir, { recursive: true })
+  const meta = {
+    id: 'bg-race-gone', name: 'gone', workdir, jobDir,
+    logPath: path.join(jobDir, 'stdout.log'),
+    exitcodePath: path.join(jobDir, 'exitcode.txt'),
+    jsonPath: path.join(jobDir, 'job.json'),
+    taskName: 'dsh-bgj-race-gone', command: 'echo x',
+    notify: 'on-exit', createdBySession: 's1',
+  }
+  await fsp.writeFile(path.join(jobDir, 'run.pid'), String(process.pid), 'utf8')
+  const watch = createWatch(
+    { interval: () => () => {}, get: () => undefined },
+    { registry: new Map() },
+    {
+      notify: { deliverCompletionNotice: () => { throw new Error('无退出码不得通知') } },
+      registry: { markDelivered: async () => {}, indexUpsert: () => {} },
+    },
+  )
+  const job = {
+    id: 'bg-race-gone', meta, status: 'running', exitCode: undefined, pos: 0, tail: '',
+    decoder: new TextDecoder(), watch: undefined, checkTimer: undefined, lastCompletionCheck: 0,
+  }
+  try {
+    await Promise.all([watch.api.checkCompletion(job), watch.api.checkCompletion(job)])
+    assert.equal(job.status, 'done')
+    assert.equal(job.exitCode, null)
+    assert.equal(job.meta.exitCodeSource, 'wrapper-gone')
+    assert.equal(probes.length, 1, 'v0.2.3 的唯一收尾判定所有者只准被调一次')
+    assert.equal(calls.filter((argv) => argv.includes('/Delete')).length, 1, '兜底 /Delete 也只准发一次')
+  } finally {
+    setPidProbe()
+    await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+test('收尾单飞（集成）: tick 与 fs.watch 双双通过入口守卫 ⇒ 收尾仍只跑一次', async () => {
+  const calls = []
+  const probeEntries = []
+  const gate = []
+  // 探针被挂住 = 把收尾窗口**确定性地**撑开：不靠时序碰运气，靠一个可控的 await。
+  setSchtasksRunner(async (argv) => {
+    calls.push(argv)
+    if (Array.isArray(argv) && argv.includes('-Command')) {
+      probeEntries.push(argv)
+      await new Promise((resolve) => gate.push(resolve))
+      return { exitCode: 0, stdout: 'BGJOBS-PID 1 0', stderr: '' } // 活着但不属于本任务 ⇒ pid-reused
+    }
+    return { exitCode: 0, stdout: '', stderr: '' }
+  })
+  setPidProbe() // 真实预检：run.pid 写的是本测试进程自己的 pid ⇒ 必然 alive
+  resetOwnershipProbeThrottle()
+  const handle = agentHandle('s1', 'idle')
+  const workdir = await makeWorkdir()
+  const { ctx, tools, intervals } = makeCtx({
+    services: { agents: { get: () => handle }, workspaceRegistry: { list: () => [] } },
+  })
+  const dispose = apply(ctx)
+  try {
+    const submit = tools.find((t) => t.name === 'bgjob_submit')
+    const res = await submit.execute(
+      { name: 'race-int', command: 'echo x', workdir, notify: 'on-exit' },
+      { agent: { session: { id: 's1' } } },
+    )
+    assert.equal(res.ok, true)
+    const jobDir = workdir + '\\.dsh\\bgjobs\\' + res.jobId
+    await fsp.writeFile(path.join(jobDir, 'run.pid'), String(process.pid), 'utf8')
+    const tick = intervals.find((i) => i.ms === 1000).fn
+    // 入口 A = tick（无 exitcode ⇒ 走「包装器是否已消失」判定，探针被挂住）。
+    const tickDone = tick()
+    await waitFor(() => probeEntries.length >= 1, 2000)
+    // 入口 B = fs.watch（写 exitcode.txt 触发；内容不可解析 ⇒ 同一个收尾判定入口）。
+    // 节流表只是性能护栏（同一任务目录 5 min 内不重复起探针），不是收尾幂等的所有者：
+    // 退出码在场的收尾路径根本没有这个节流，幂等必须由入口单飞保证。
+    resetOwnershipProbeThrottle()
+    const sawSecondEntry = new Promise((resolve) => {
+      const timer = setInterval(() => {
+        if (probeEntries.length >= 2) { clearInterval(timer); resolve(true) }
+      }, 10)
+      setTimeout(() => { clearInterval(timer); resolve(false) }, 1500)
+    })
+    await fsp.writeFile(path.join(jobDir, 'exitcode.txt'), '', 'utf8')
+    await sawSecondEntry
+    for (const release of gate) release()
+    await tickDone
+    await new Promise((resolve) => setTimeout(resolve, 150)) // 让 watch 触发的收尾跑完（已过闸门，无竞态）
+    assert.equal(handle.calls.followup.length, 0, '无退出码（wrapper-gone）不得通知：v0.2.3 语义不变')
+    assert.equal(calls.filter((argv) => argv.includes('/Delete')).length, 1, '同一任务只准收尾一次')
+    const meta = JSON.parse(await fsp.readFile(path.join(jobDir, 'job.json'), 'utf8'))
+    assert.equal(meta.status, 'done')
+    assert.equal(meta.exitCode, null)
+    assert.equal(meta.exitCodeSource, 'wrapper-gone')
+    assert.equal(meta.wrapperGoneReason, 'pid-reused')
+  } finally {
+    dispose()
+    setPidProbe()
+    resetOwnershipProbeThrottle()
+    await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
+  }
+})
 

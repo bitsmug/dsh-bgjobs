@@ -190,7 +190,9 @@ allowBuilds:
 
 架构设计、机制细节、测试与发布流程见 [docs/developer.md](docs/developer.md)。
 
-## 近期更新（v0.1.62 → v0.2.3）
+## 近期更新（v0.1.62 → v0.2.4）
+
+- **修复同一任务被收尾两次（完成通知偶发收到 2 次）的并发缺陷**：`checkCompletion` 只在**函数入口**判一次 `status !== 'running'`，而 `status='done'` 要等读日志、读 `exitcode.txt`、包装器探针这些 `await` 之后才写 —— 于是**两个调用者**（`fs.watch` 事件 与 5s 兜底 tick；`bgjob_wait` 轮询也走同一个函数）能在那个窗口里**双双通过**守卫，同一任务被收尾两次：同一条完成通知发两遍（偶发，取决于窗口里 fs 的耗时）、`job.json` 重复落盘、兜底 `/Delete` 重复发。现在收尾有**单一所有者闸门**：同一任务在飞时只允许一个处理者，第二个调用者直接**复用**它的 promise（**不是**把守卫改成"再判一次"那种治标做法）。修前有 3 条确定性用例必现失败（2 次通知 / 2 次探针 / 2 次 `/Delete`），修后全绿；`exitcode.txt` 优先、`exitCodeSource:'killed'`、`wrapper-gone` 三态与实际终态落盘行为一律不变（v0.2.4）。
 
 - **修复「死任务显示运行中」**：状态权威原先只看 `<jobDir>\exitcode.txt` —— 包装器（`run.ps1` / MCP server）**死了却没写成它**时，记录就**永久停在 running**：面板显示「运行中」而实际没有任何进程。最典型的触发是**重启/注销**（计划任务默认「仅用户登录时运行」，一重启全灭且都不留退出口）。现在终态判定收拢到**唯一所有者**（`lib/core/wrapper-gone.js`，磁盘查询与后台 tick 两条路径共用）：pid 已不存在 ⇒ 判终态并如实给 `exitCode: null` + `exitCodeSource: 'wrapper-gone'` + `wrapperGoneReason`；pid 被复用给无关进程 ⇒ 同样判终态（不误判存活）；进程真还在跑、或探针跑不起来 ⇒ 保守保持「运行中」。`exitcode.txt` 存在时依旧以它为准；**存量僵尸记录一查即被追认**，不需要迁移脚本、也不需要人工 `kill`（v0.2.3）。
 

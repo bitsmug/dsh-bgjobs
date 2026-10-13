@@ -87,6 +87,12 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
 ### 完成检测 / 读日志 / 恢复
 
 - **事件驱动 + 兜底**：fs.watch 监视任务目录，`exitcode.txt` 出现即触发（200ms 节流）迁移 done；tick 每 5s 补查防 watch 丢事件/合并。`checkCompletion` 是内存路径 running→done 的**唯一迁移点**（只负责落盘/通知/收尾这类副作用）。
+- **★ 收尾只能有一个处理者（v0.2.4，修「同一任务被收尾两次」）**：`checkCompletion` 现在是**门面 + 单飞闸门**（真正的收尾体是 `runCompletionCheck`）——同一任务在飞时（按任务记在飞 promise `job.completionTask`）第二个调用者直接**复用**它的 promise，不再各跑一遍收尾。
+  - **症状**：同一条完成通知**偶发**收到 2 次（用户报的 `tests/notify.test.js:90` 曾数到 2 次 followup；随后 3 次全量 + 4/4 单文件都过 ⇒ 竞态而非稳定失败），并伴随 `job.json` 重复落盘、兜底 `/Delete` 重复发。
+  - **根因**：入口守卫（`job.status !== 'running'`）与 `job.status = 'done'` 之间隔着 `await`（`readLog` / 读 `exitcode.txt` / `resolveWrapperGone` 的探针）⇒ 两个**独立**调用者（`fs.watch` 事件 与 5s 兜底 tick；`bgjob_wait` 的轮询快照也调同一个函数）可以双双通过守卫。窗口宽度取决于 fs 耗时（线程池繁忙时可达数百毫秒）⇒ 表现为偶发。
+  - **修法**：幂等性的所有者定成"**同一任务只有一个在飞处理者**"，**不是**把守卫改成"再判一次"（那只缩小窗口、不消除竞态）。闸门设在内存路径的唯一迁移点（`lib/core/watch.js`），所有调用方（watch / tick / wait）都经它，没有绕过口子。
+  - **判据**：`tests/watch.test.js` 的三条「收尾单飞」用例——两条把两次调用放进**同一个同步块**（入口守卫是同步的 ⇒ 第二次必在第一次挂到 `await` 之前通过，与机器快慢无关，修前必现），一条集成用例用"挂住的探针"把收尾窗口撑开、把 tick 与 `fs.watch` 双双放进窗口。修前：2 次通知 / 2 次探针 / 2 次 `/Delete`；修后：全部为 1。
+  - **不得改变的语义**：`exitcode.txt` 存在时依旧以它为准、`exitCodeSource:'killed'` 一字未改、`wrapper-gone` 三态（`null` 退出码 + `exitCodeSource` + `wrapperGoneReason`）与实际终态落盘行为不变；v0.2.3 的收尾判定所有权仍**只在** `lib/core/wrapper-gone.js`（本次只改"谁来跑收尾"，不改"收尾怎么判"）。
 - **★ 终态判定只有一个所有者（v0.2.3）**：`lib/core/wrapper-gone.js` 的 `resolveWrapperGone`。两条路径都汇到它——内存路径 `watch.checkCompletion` 与磁盘路径 `registry.statusFromDisk`；以前两处**各自**从 `exitcode.txt` 反推终态，于是"包装器死了却没写成 `exitcode.txt`"（GUI 子系统程序静默退出 / 包装器被非正常终止 / **重启或注销**——计划任务"仅用户登录时运行"，一重启全灭且都不留退出口）会让任务**永久停在 running**：面板显示「运行中」而实际没有任何进程。
   - 判定（只在"`status==='running'` 且 `exitcode.txt` 缺失/不可解析"时问它）：① 无 pid 文件 ⇒ 保持 running；② 进程内廉价预检（`process.kill(pid,0)`，**零 spawn**）`gone` ⇒ 终态；`unknown` ⇒ 保持 running；③ pid 上确实有进程时，按任务目录**节流**（5 min）起一次既有探针 `probeProcess` 做归属复核：`run.pid` 活着但**不属于本任务** ⇒ 终态（`pid-reused`，防 pid 复用被读成"还活着"），活着且属于本任务 ⇒ 保持 running，复核不可用 ⇒ 保持 running。
   - 终态表达：**不新增 `status` 枚举值**，用 `exitCode: null` + `exitCodeSource: 'wrapper-gone'` + `wrapperGoneReason`(`pid-gone`|`pid-reused`)/`wrapperGoneAt`/`wrapperGonePid`/`wrapperGoneFile` 表达"包装器已消失、且**没有**退出码"。`exitcode.txt` 存在时**依旧以它为准**（不经过探活）；kill 的 `exitCodeSource:'killed'` 一字未改。
