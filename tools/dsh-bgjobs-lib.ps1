@@ -321,9 +321,24 @@ function Test-BgjobsPwsh7Interpreter([object]$Interpreter) {
     return ($baseName -eq 'pwsh' -or $baseName -eq 'pwsh.exe')
 }
 
+function ConvertTo-BgjobsPsQuote([string]$Value) {
+    # 镜像 lib/scripts.js 的 psQuote()：整体单引号包裹、内部 ' 双写。★ 逐元素引用后拼接，
+    # 绝不整串拼接（含空格/单引号的路径会被拆参）。
+    return "'" + ([string]$Value).Replace("'", "''") + "'"
+}
+
 function New-BgjobsPwshRunner([object]$Job) {
     $scriptPath = if ($Job.meta.scriptPath) { $Job.meta.scriptPath } else { Join-Path (Split-Path $Job.meta.jsonPath -Parent) 'job.ps1' }
     $jobDir = Split-Path $Job.meta.jsonPath -Parent
+    # 镜像 lib/scripts.js 的 buildPwshRunner：dsh 后端（实验）直接执行提交期由
+    # ctx.sandbox.confine() 包装好的 argv；其余（ACL 后端 / 无沙箱）逐字保持老形态。
+    # ★★ dsh 行必须以调用运算符 & 开头：带引号的字符串在语句开头会被当【表达式】解析 ⇒ 解析失败。
+    $runLine = "    & '__SCRIPTPATH__' *> `$logPath"
+    if ($Job.meta.sandboxBackend -eq 'dsh') {
+        $argv = @($Job.meta.confinedArgv)
+        if ($argv.Count -eq 0) { throw 'New-BgjobsPwshRunner: dsh sandbox backend requires meta.confinedArgv' }
+        $runLine = '& ' + (($argv | ForEach-Object { ConvertTo-BgjobsPsQuote ([string]$_) }) -join ' ') + ' *> $logPath'
+    }
     $tpl = @'
 # bgjobs pwsh runner: 重定向 + exitcode + 自删任务计划
 $pidPath = '__JOBDIR__\run.pid'
@@ -334,7 +349,7 @@ $logPath = '__LOGPATH__'
 $code = 0
 try {
     try { [Console]::OutputEncoding = $utf8 } catch { }
-    & '__SCRIPTPATH__' *> $logPath
+__RUNLINE__
     if ($null -ne $LASTEXITCODE) { $code = $LASTEXITCODE }
 } catch {
     $code = 1
@@ -352,7 +367,7 @@ if (Test-Path -LiteralPath $logPath) {
 '@
     # 编码 preamble 占位符：5.1 注入一行（含换行），pwsh 7 注入空串（整段跳过）。
     $encPreamble = if (Test-BgjobsPwsh7Interpreter $Job.meta.interpreter) { '' } else { 'try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch { }' + "`r`n" }
-    $out = $tpl.Replace('__ENCPREAMBLE__', $encPreamble).Replace('__JOBDIR__', $jobDir).Replace('__WORKDIR__', $Job.meta.workdir).Replace('__LOGPATH__', $Job.meta.logPath).Replace('__SCRIPTPATH__', $scriptPath).Replace('__EXITCODEPATH__', $Job.meta.exitcodePath).Replace('__TASKNAME__', $Job.meta.taskName)
+    $out = $tpl.Replace('__ENCPREAMBLE__', $encPreamble).Replace('__JOBDIR__', $jobDir).Replace('__WORKDIR__', $Job.meta.workdir).Replace('__LOGPATH__', $Job.meta.logPath).Replace('__RUNLINE__', $runLine).Replace('__SCRIPTPATH__', $scriptPath).Replace('__EXITCODEPATH__', $Job.meta.exitcodePath).Replace('__TASKNAME__', $Job.meta.taskName)
     return (($out -replace "`r?`n", "`r`n") + "`r`n")
 }
 

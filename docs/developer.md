@@ -357,6 +357,12 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
 ### runner 获取与任务 wiring
 
 - `resolveSandboxRunner()`：插件依赖 `@deepseek-ai/dsh-sandbox-windows-acl`（exports `./runner` → `lib/runner.js`）→ 环境变量 `BGJOBS_SANDBOX_RUNNER` 兜底；都不可得且请求沙箱 → fail loud + 清理。
+- **沙箱后端选择（实验，默认关；v0.2.5）**：开关落盘 `$DSH_HOME/bgjobs/sandbox-backends.json`（`{ enabled: false }`；无文件/读失败 ⇒ 关，fail-safe）。面板「沙箱后端」开关写它，路由 `GET|POST /bgjobs/sandboxbackends`，`/bgjobs/state` 回显 `sandboxBackends`。
+  - **关（缺省）= 与加本开关之前逐字相同的老路径**：沙箱任务一律走内置 ACL runner（上文那套）。
+  - **开** ⇒ `bgjob_submit_pwsh` 可传 `sandbox_backend: 'dsh'`：提交期 `ctx.get('sandbox')`（**惰性可选查找**，照 `jobs.js` 里 `ctx.get('sandboxPolicy')` 的先例；**不动** `lib/index.js` 顶层 `inject`）取会话的 dsh 沙箱 provider，调 `confine(argv, { mode, workspaceRoot })`（**纯 argv 包装、不 spawn**），把返回 argv 记进 `job.json` 的 `confinedArgv`，并**逐元素引用**烘进 `run.ps1`（`lib/scripts.js` 的 `psQuoteArgv`；镜像 `tools/dsh-bgjobs-lib.ps1` 的 `ConvertTo-BgjobsPsQuote`）。该分支**跳过** ACL 档专属的 runner 解析 / 真 node（koffi N-API ABI）/ PE 子系统守卫 / 私有 temp 根。
+  - **失败一律 fail loud**：开关关 + `'dsh'` ⇒ `DSH_BACKEND_DISABLED_ERROR`（工具层与提交层**共享同一常量**，同 `MCP_DISABLED_ERROR` 的纪律）且**零副作用**（不建 jobDir、不建计划任务、不写盘）；开关开但本 profile 未合成沙箱 provider ⇒ 明确报错，**绝不回退**成"未沙箱执行"。非法取值（非 `acl|dsh`）在建 jobDir **之前**拒绝。
+  - ★ **运行中任务不受开关影响**：argv 在提交期已落盘 ⇒ 之后翻转开关**不改写**已提交任务。
+  - ★ **运维前提（实测）**：被 confine 的 `node`/`pwsh` 在任何路径上启动都会 `realpathSync` 到**卷根** ⇒ 沙箱策略必须授**该卷根**的读。**只授子目录不够。**
 - `job.json` 恒记 resolved `sandbox`（含 off）；沙箱任务另记 `sandboxRunnerPath` / `sandboxTempPath`（`$DSH_HOME/bgjobs/sandbox/<id>`，工作区外）/ `nodeExe` / `nodeExeSource`（来源标签，见下）/ `nodeExeVersion`（v0.1.91）。`nodeExe` 由 `resolveNodeExe` / `resolveNodeExeInfo`（`lib/runners.js`；测试经 `setNodeExeResolver` 整体替换，镜像 `setShellResolver`）解析——**v0.1.91 重排优先级，逐层**：
   1. **basename 快路径**——`process.execPath` 的文件名是 `node`/`node.exe` 时原样使用（= DSH 进程同款 Node，koffi ABI 匹配）；
   2. `DSH_DESKTOP_NODE_EXECUTABLE`（桌面版 runtime 引用的变量；运行时可能为空，只当加分项）；

@@ -23,7 +23,8 @@
 | 会话内等待 | `bgjob_wait` 让 agent 等结果而**不必占住对话**：缺省不限时（可在设置页配「默认等待超时」），期间被新入站消息让路或被用户停止会立即释放；支持 any 竞速（先完成先返回）与 all 合取（任一失败即刻返回） |
 | 断线续跟 | DSH 重启自动恢复跟踪；旧任务 id 也能从磁盘查询状态 |
 | 离线管理 | 不依赖 DSH 的 CLI / GUI：list / status / log / submit / kill（终止进程）/ delete（删记录）/ cleanup |
-| 可选沙箱 | `bgjob_submit_pwsh` 可选 `sandbox` 约束后台任务文件权限，权限不高于当前会话模式 |
+| 可选沙箱 | `bgjob_submit_pwsh` 可选 `sandbox` 约束后台任务文件权限，权限不高于当前会话模式；可选 `sandbox_backend: 'dsh'`（实验，需面板开「沙箱选择」）复用**当前会话的沙箱 provider**（档位/路径白名单与会话一致） |
+| 可选沙箱后端 | **实验开关（默认关）**：开启后 `bgjob_submit_pwsh` 可传 `sandbox_backend: 'dsh'`，改为复用当前会话的 dsh 沙箱 provider（`ctx.sandbox.confine`）在**提交期**包装任务 argv（任务仍脱离 DSH 独立运行；关闭时该取值一律拒绝且零副作用）。开关 = 面板「沙箱后端」 |
 | MCP 调用托管 | `bgjob_submit_mcp` 把一次 MCP 工具调用提交为后台任务（**设置页开关，默认关闭**）；可登记 server 或从 DSH 配置一键导入；每个 server 可选「预热 / 冷启动 / 禁用」三态（禁用后 agent 调用被拒） |
 | 零残留 | 任务跑完自删任务计划；done 任务默认保留展示，用户手动清理 |
 
@@ -102,7 +103,7 @@ allowBuilds:
 ## 使用（agent 工具）
 
 - `bgjob_submit(name, command, workdir, [wait], [notify], [notify_mode])` — 提交后台任务（command 为 **bat** 语法）；`wait`=提交后原地等待的秒数（0/缺省不等待；>0 语义同 bgjob_wait 全缺省——等本会话任一任务先结束，无会话信息时回退等刚提交任务）；
-- `bgjob_submit_pwsh(name, command, workdir, [wait], [sandbox], [justification], [notify], [notify_mode])` — 提交后台任务（command 为 **PowerShell** 语法，UTF-8 日志、`exit <code>` 语义安全）；`wait` 同上；**沙箱任务**（`sandbox` 非 `off`）经独立 runner 拉起，需要**真 `node`**（console 子系统，优先与 DSH 同源的那份，见近期更新 v0.1.91）；找不到 ⇒ **提交时直接报错**（不会出现「日志空白 + 假 exit 0」的假成功）；
+- `bgjob_submit_pwsh(name, command, workdir, [wait], [sandbox], [sandbox_backend], [justification], [notify], [notify_mode])` — 提交后台任务（command 为 **PowerShell** 语法，UTF-8 日志、`exit <code>` 语义安全）；`wait` 同上；**沙箱任务**（`sandbox` 非 `off`）经独立 runner 拉起，需要**真 `node`**（console 子系统，优先与 DSH 同源的那份，见近期更新 v0.1.91）；找不到 ⇒ **提交时直接报错**（不会出现「日志空白 + 假 exit 0」的假成功）；**`sandbox_backend`**（实验，`'acl'` | `'dsh'`，缺省 `'acl'`）——选 `'dsh'` 时改用当前会话的 dsh 沙箱 provider 在提交期包装 argv（不走 ACL runner、也不需要真 node），沙箱档位与会话一致；需先在面板打开「**沙箱选择**」开关，关闭时传 `'dsh'` 一律拒绝且零副作用；
 - `bgjob_submit_mcp(name, workdir, tool, [arguments], server | server_config, [timeout_seconds], [wait], [notify], [notify_mode])` — 把一次 **MCP 工具调用**提交为后台任务（第三引擎，同样由 schtasks 托管、面板可见、可 wait/notify）。`server` 是设置页登记的 server 名，`server_config` 是内联配置（stdio 或 streamable-http），二者二选一。任务里连接该 server 调用一次工具，结果写日志与 `<jobDir>/result.json`（含执行通道），退出码 `0` 成功 / `1` 工具报错 / `2` 连接或调用失败 / `3` 超时；`timeout_seconds` **缺省不限时**（该 server 在设置页登记了 `timeoutMs` 时以它为准），也可传任意正数秒。**默认关闭，需先在设置页打开「MCP 任务」开关**（未开启时调用会被拒绝）；与 DSH 一致，会话访问模式（read-only 等）**不限制** MCP 任务。建议先用 `bgjob_mcp_tools` 确认工具名；
 - `bgjob_mcp_tools(server | server_config, [refresh])` — 列出该 MCP server 的注册工具（工具名/描述/必填字段名），提交前用它确认工具名与参数形状；结果有缓存，`refresh: true` 强制刷新；同样受「MCP 任务」开关限制；
 - `bgjob_status(jobId)` — 查询状态 / 退出码 / 日志尾部；仅用于查看当前状态，不要拿它循环轮询（等待用 `bgjob_wait`）。状态权威依次是 `job.json` 终态 → `<jobDir>\exitcode.txt`；**若包装器已消失却没留下退出码**（GUI 子系统程序静默退出 / 包装器被非正常终止 / **重启或注销**——计划任务默认「仅用户登录时运行」，一重启全灭且都不留退出口），会判**终态**并如实给 `exitCode: null` + `exitCodeSource: 'wrapper-gone'`（`wrapperGoneReason` = `pid-gone` / `pid-reused`）——**存量僵尸记录一查即被追认**，不再永久显示「运行中」，也不需要人工 `kill`；进程真还在跑时绝不会被误判为死（探针跑不起来同样保守保持运行中）；
@@ -190,7 +191,10 @@ allowBuilds:
 
 架构设计、机制细节、测试与发布流程见 [docs/developer.md](docs/developer.md)。
 
-## 近期更新（v0.1.62 → v0.2.4）
+## 近期更新（v0.1.62 → v0.2.5）
+
+- **新增「沙箱选择」（实验，默认关）：后台任务可选用 dsh 沙箱后端**。打开面板「沙箱选择」开关后，`bgjob_submit_pwsh` 可传 `sandbox_backend: 'dsh'` —— 任务不再走内置 ACL runner，而是在**提交期**用当前会话的 dsh 沙箱 provider（`ctx.sandbox.confine`）把命令 argv 连同策略一起包装好、烘进 `run.ps1`：任务照样由计划任务托管、**关掉 DSH 也不影响运行**（实测：300 秒任务跨 DSH 重启跑满、退出码 0），而沙箱档位与路径白名单**与会话完全一致**（例如 MXC 容器内可直接跑 `node`/`python`/MATLAB，而 ACL 档下这些真程序会因命名管道被拒）。开关关闭时该取值一律拒绝且**零副作用**（不建任务目录、不建计划任务）；不传 = 老行为逐字不变。该开关的显隐可在「设置 → 后台任务 → 字段显示 → 界面元素」里单独控制（v0.2.5）。
+- **面板开关改名**：「沙箱后端」→「**沙箱选择**」，并新增独立显隐键（可在「字段显示 → 界面元素」单独显示/隐藏）（v0.2.5）。
 
 - **修复同一任务被收尾两次（完成通知偶发收到 2 次）的并发缺陷**：`checkCompletion` 只在**函数入口**判一次 `status !== 'running'`，而 `status='done'` 要等读日志、读 `exitcode.txt`、包装器探针这些 `await` 之后才写 —— 于是**两个调用者**（`fs.watch` 事件 与 5s 兜底 tick；`bgjob_wait` 轮询也走同一个函数）能在那个窗口里**双双通过**守卫，同一任务被收尾两次：同一条完成通知发两遍（偶发，取决于窗口里 fs 的耗时）、`job.json` 重复落盘、兜底 `/Delete` 重复发。现在收尾有**单一所有者闸门**：同一任务在飞时只允许一个处理者，第二个调用者直接**复用**它的 promise（**不是**把守卫改成"再判一次"那种治标做法）。修前有 3 条确定性用例必现失败（2 次通知 / 2 次探针 / 2 次 `/Delete`），修后全绿；`exitcode.txt` 优先、`exitCodeSource:'killed'`、`wrapper-gone` 三态与实际终态落盘行为一律不变（v0.2.4）。
 
