@@ -181,6 +181,23 @@ Assert-True (-not $pwshRunner.Contains('Add-Type')) 'run.ps1 no longer compiles 
 # still asserts that the preamble IS written, so the branching is by interpreter, not dropped.
 Assert-True ($pwshRunner.Contains("[Console]::OutputEncoding = `$utf8")) 'pwsh run.ps1 sets Console.OutputEncoding before *> (v0.1.95)'
 Assert-True ($pwshRunner.IndexOf('[Console]::OutputEncoding') -lt $pwshRunner.IndexOf('*>')) 'the encoding line comes before the *> redirect'
+# v0.2.6: per-job encoding selection. meta.outputEncoding = 'native' => decode with the INHERITED code
+# page (local-code-page programs such as MATLAB -batch, measured CP 936); default (field absent) must
+# stay byte-identical => the default runner must not mention $nativeEnc at all (mutual proof).
+$nativeJob = [pscustomobject]@{
+    meta = [pscustomobject]@{
+        workdir = $workdir; jsonPath = (Join-Path $jobDir 'job.json')
+        interpreter = 'C:\fake\pwsh.exe'; scriptPath = (Join-Path $jobDir 'job.ps1')
+        logPath = (Join-Path $jobDir 'stdout.log'); exitcodePath = (Join-Path $jobDir 'exitcode.txt')
+        taskName = 'dsh-bgj-smoke-native'; outputEncoding = 'native'
+    }
+}
+$nativeRunner = New-BgjobsPwshRunner $nativeJob
+Assert-True ($nativeRunner.Contains('$nativeEnc = [Console]::OutputEncoding')) 'native run.ps1 captures the inherited code page first'
+Assert-True ($nativeRunner.Contains('[Console]::OutputEncoding = $nativeEnc')) 'native run.ps1 decodes with $nativeEnc'
+Assert-True (-not $nativeRunner.Contains('[Console]::OutputEncoding = $utf8')) 'native run.ps1 must not decode as UTF-8'
+Assert-True ($nativeRunner.IndexOf('$nativeEnc') -lt $nativeRunner.IndexOf('$pidPath')) 'the capture must precede $pidPath (i.e. any override)'
+Assert-True (-not $pwshRunner.Contains('$nativeEnc')) 'the default run.ps1 must not mention $nativeEnc (byte-identical)'
 $ps1 = New-BgjobsPs1 $pwshJob
 Assert-True (-not $ps1.StartsWith('# bgjobs:')) 'pwsh7 job.ps1 skips the UTF-8 preamble (v0.1.92)'
 Assert-True (-not $ps1.Contains('OutputEncoding')) 'pwsh7 job.ps1 writes no encoding setting'

@@ -330,6 +330,10 @@ function ConvertTo-BgjobsPsQuote([string]$Value) {
 function New-BgjobsPwshRunner([object]$Job) {
     $scriptPath = if ($Job.meta.scriptPath) { $Job.meta.scriptPath } else { Join-Path (Split-Path $Job.meta.jsonPath -Parent) 'job.ps1' }
     $jobDir = Split-Path $Job.meta.jsonPath -Parent
+    # ★ 逐任务编码选择（output_encoding，v0.2.6；镜像 lib/scripts.js 的 buildPwshRunner）：默认 utf8
+    #   （老行为**逐字节不变**）；native = 按**进程继承的控制台码页**解码（本地码页程序，如 MATLAB -batch）。
+    #   ★ $nativeEnc 必须在**任何覆盖之前**取 —— 5.1 的 preamble 会把 [Console]::OutputEncoding 设成 UTF-8。
+    $encNative = ($Job.meta.outputEncoding -eq 'native')
     # 镜像 lib/scripts.js 的 buildPwshRunner：dsh 后端（实验）直接执行提交期由
     # ctx.sandbox.confine() 包装好的 argv；其余（ACL 后端 / 无沙箱）逐字保持老形态。
     # ★★ dsh 行必须以调用运算符 & 开头：带引号的字符串在语句开头会被当【表达式】解析 ⇒ 解析失败。
@@ -341,6 +345,7 @@ function New-BgjobsPwshRunner([object]$Job) {
     }
     $tpl = @'
 # bgjobs pwsh runner: 重定向 + exitcode + 自删任务计划
+__NATIVEENC__
 $pidPath = '__JOBDIR__\run.pid'
 try { [System.IO.File]::WriteAllText($pidPath, [string]$PID, (New-Object System.Text.UTF8Encoding($false))) } catch { }
 __ENCPREAMBLE__$utf8 = New-Object System.Text.UTF8Encoding($false)
@@ -367,7 +372,20 @@ if (Test-Path -LiteralPath $logPath) {
 '@
     # 编码 preamble 占位符：5.1 注入一行（含换行），pwsh 7 注入空串（整段跳过）。
     $encPreamble = if (Test-BgjobsPwsh7Interpreter $Job.meta.interpreter) { '' } else { 'try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch { }' + "`r`n" }
-    $out = $tpl.Replace('__ENCPREAMBLE__', $encPreamble).Replace('__JOBDIR__', $jobDir).Replace('__WORKDIR__', $Job.meta.workdir).Replace('__LOGPATH__', $Job.meta.logPath).Replace('__RUNLINE__', $runLine).Replace('__SCRIPTPATH__', $scriptPath).Replace('__EXITCODEPATH__', $Job.meta.exitcodePath).Replace('__TASKNAME__', $Job.meta.taskName)
+    # ★ 先归一换行（here-string 的 EOL 取决于文件本身），再替换占位符 —— 这样「默认路径」才与
+    #   lib/scripts.js 的产物**逐字节一致**（模板里那两行字面量绝不能被动过 ✗）。
+    $tpl = $tpl -replace "`r?`n", "`r`n"
+    # native 编码两行（与 lib/scripts.js 逐字一致）；非 native ⇒ 把那一行**连换行一起**删掉 ⇒ 不留空行
+    $nativeLines = if ($encNative) {
+        '$nativeEnc = [Console]::OutputEncoding' + "`r`n" +
+        'if ($nativeEnc.CodePage -eq 65001) { $nativeEnc = [System.Text.Encoding]::GetEncoding([System.Globalization.CultureInfo]::CurrentCulture.TextInfo.ANSICodePage) }' + "`r`n"
+    } else { '' }
+    $out = $tpl.Replace("__NATIVEENC__`r`n", $nativeLines)
+    # native 才换掉兜底行的目标；默认保留模板里的字面行（逐字 ✗ 不许动）
+    if ($encNative) {
+        $out = $out.Replace('    try { [Console]::OutputEncoding = $utf8 } catch { }', '    try { [Console]::OutputEncoding = $nativeEnc } catch { }')
+    }
+    $out = $out.Replace('__ENCPREAMBLE__', $encPreamble).Replace('__JOBDIR__', $jobDir).Replace('__WORKDIR__', $Job.meta.workdir).Replace('__LOGPATH__', $Job.meta.logPath).Replace('__RUNLINE__', $runLine).Replace('__SCRIPTPATH__', $scriptPath).Replace('__EXITCODEPATH__', $Job.meta.exitcodePath).Replace('__TASKNAME__', $Job.meta.taskName)
     return (($out -replace "`r?`n", "`r`n") + "`r`n")
 }
 

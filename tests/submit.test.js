@@ -1,7 +1,7 @@
 // bgjobs tests —— 提交路径（v0.1.61 自 tests/index.test.js 拆分）。
 // 共享工具与套件隔离见 ./helpers/common.js。
 
-import { test } from 'node:test'
+import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { promises as fsp } from 'node:fs'
 import os from 'node:os'
@@ -14,6 +14,8 @@ import {
   resolveBgjobsHome, bgjobsIndexPath, readBgjobsIndex, writeBgjobsIndex,
   updateBgjobsIndex, rebuildBgjobsIndex, buildBgjobsGuidance,
 } from '../lib/index.js'
+// v0.2.6：解释器解析（跳过 MSIX 应用执行别名）——直接取内部实现与解析缝来钉分支
+import { resolveShellImpl, isMsixAliasPath, setShellProbes } from '../lib/runners.js'
 import {
   makeDshHome, makeWorkdir, makeCtx, makeFakeRunner, attachWebServer,
   runningPlugin, waitFor, setFullAccessEnabled, restrictedPolicy, fullPolicy,
@@ -21,6 +23,74 @@ import {
 } from './helpers/common.js'
 
 installSuiteHooks()
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PowerShell 解释器解析（v0.2.6）：★ 跳过 MSIX 应用执行别名
+//
+// 现场：本机**没装 MSI 版 pwsh7**（`%ProgramFiles%\PowerShell\7\pwsh.exe` 不存在）⇒ 旧逻辑经
+// `where pwsh` 命中 `%LOCALAPPDATA%\Microsoft\WindowsApps\pwsh.exe`（**MSIX 应用执行别名**）；
+// 而 MXC 沙箱容器**拒绝启动 MSIX 打包应用**（`… appears to be a packaged (MSIX) app. Packaged
+// apps cannot be launched inside a sandboxed container.` / `backend_error`）⇒ dsh 沙箱任务连锁失败
+// 修复：跳过 MSIX 别名（本机最终解析到 5.1 powershell.exe）。
+// ─────────────────────────────────────────────────────────────────────────────
+const MSIX_PWSH = 'C:\\Users\\demo\\AppData\\Local\\Microsoft\\WindowsApps\\pwsh.exe'
+const MSIX_PS = 'C:\\Users\\demo\\AppData\\Local\\Microsoft\\WindowsApps\\powershell.exe'
+const PS51 = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+
+/** 注入解析缝：access 白名单 + whereAll 合成输出（大小写不敏感，模拟 Windows 行为）。 */
+function stubShellProbes({ where = {}, access = [] } = {}) {
+  const accessSet = new Set(access.map((s) => String(s).toLowerCase()))
+  setShellProbes(async () => ({
+    access: async (p) => {
+      if (!accessSet.has(String(p).toLowerCase())) { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e }
+    },
+    whereAll: async (name) => where[name] || [],
+  }))
+}
+after(() => setShellProbes(null))
+
+test('isMsixAliasPath：WindowsApps 别名 ✓ / 便携版与 MSI 版 ✗（正反例）', () => {
+  assert.equal(isMsixAliasPath(MSIX_PWSH), true)
+  assert.equal(isMsixAliasPath(MSIX_PS), true)
+  assert.equal(isMsixAliasPath('C:\\pwsh7.7\\pwsh.exe'), false)
+  assert.equal(isMsixAliasPath('C:\\Program Files\\PowerShell\\7\\pwsh.exe'), false)
+  assert.equal(isMsixAliasPath(''), false)
+})
+
+test('resolveShellImpl：where pwsh 只命中 MSIX 别名 ⇒ 跳过并回落 5.1（绝不选 MSIX）', async () => {
+  stubShellProbes({ where: { pwsh: [MSIX_PWSH] }, access: [PS51] })
+  const r = await resolveShellImpl()
+  assert.equal(r.exe, PS51)
+  assert.equal(r.engine, 'powershell')
+})
+
+test('resolveShellImpl：where pwsh 多条命中 ⇒ 取第一个非 MSIX', async () => {
+  const portable = 'C:\\pwsh7.7\\pwsh.exe'
+  stubShellProbes({ where: { pwsh: [MSIX_PWSH, portable] }, access: [] })
+  const r = await resolveShellImpl()
+  assert.equal(r.exe, portable)
+  assert.equal(r.engine, 'pwsh')
+})
+
+test('resolveShellImpl：BGJOBS_PWSH 可访问 ⇒ 最高优先（压过 ProgramFiles/where/5.1）', async () => {
+  const override = 'C:\\pwsh7.7\\pwsh.exe'
+  const old = process.env.BGJOBS_PWSH
+  process.env.BGJOBS_PWSH = override
+  try {
+    stubShellProbes({ where: { pwsh: [MSIX_PWSH] }, access: [override, PS51] })
+    const r = await resolveShellImpl()
+    assert.equal(r.exe, override)
+    assert.equal(r.engine, 'pwsh')
+  } finally {
+    if (old === undefined) delete process.env.BGJOBS_PWSH
+    else process.env.BGJOBS_PWSH = old
+  }
+})
+
+test('resolveShellImpl：全部候选都是 MSIX ⇒ 返回 null（fail loud，不退化成 MSIX）', async () => {
+  stubShellProbes({ where: { pwsh: [MSIX_PWSH], powershell: [MSIX_PS] }, access: [] })
+  assert.equal(await resolveShellImpl(), null)
+})
 
 test('submitJob: 成功路径完整落盘（run.bat+cmd.bat+job.json）+ /Create /Run /Delete 调用', async () => {
   const calls = []
@@ -199,6 +269,60 @@ test('submitJob(pwsh): 解释器是 powershell.exe（5.1）时写编码 preamble
     const runner51 = (await fsp.readFile(path.join(jobDir, 'run.ps1'))).toString('utf8')
     assert.ok(runner51.includes('[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)'), '5.1：run.ps1 仍写编码设置')
     assert.ok(runner51.includes('0xFF') && runner51.includes('0xFE'), '5.1：FF FE 检测转换不得丢')
+  } finally {
+    dispose()
+    await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+
+test('submitJob(pwsh): output_encoding=native 落 meta 且 run.ps1 用 $nativeEnc（v0.2.6）', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  setShellResolver(async () => ({ exe: 'C:\\fake\\pwsh.exe', engine: 'pwsh' }))
+  const workdir = await makeWorkdir()
+  const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
+  const dispose = apply(ctx)
+  try {
+    const submit = tools.find((t) => t.name === 'bgjob_submit_pwsh')
+    const res = await submit.execute({ name: 'native-job', command: "Write-Output '中文'", workdir, output_encoding: 'native' }, { agent: undefined })
+    assert.equal(res.ok, true)
+    const jobDir = workdir + '\\.dsh\\bgjobs\\' + res.jobId
+    const runner = (await fsp.readFile(path.join(jobDir, 'run.ps1'))).toString('utf8')
+    assert.ok(runner.includes('$nativeEnc = [Console]::OutputEncoding'), 'native：run.ps1 先取继承码页')
+    assert.ok(runner.includes('[Console]::OutputEncoding = $nativeEnc'), 'native：用 $nativeEnc 解码')
+    assert.ok(!runner.includes('[Console]::OutputEncoding = $utf8'), 'native：不得按 UTF-8 解码')
+    const metaNative = JSON.parse(await fsp.readFile(path.join(jobDir, 'job.json'), 'utf8'))
+    assert.equal(metaNative.outputEncoding, 'native', "meta.outputEncoding 应落盘 'native'")
+  } finally {
+    dispose()
+    await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+
+test('submitJob(pwsh): 缺省不写 meta.outputEncoding；非法 output_encoding ⇒ fail loud 且零副作用（v0.2.6）', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  setShellResolver(async () => ({ exe: 'C:\\fake\\pwsh.exe', engine: 'pwsh' }))
+  const workdir = await makeWorkdir()
+  const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
+  const dispose = apply(ctx)
+  try {
+    const submit = tools.find((t) => t.name === 'bgjob_submit_pwsh')
+    // 缺省：meta 不含该键（job.json 与加参数之前一致）
+    const def = await submit.execute({ name: 'default-enc', command: 'echo ok', workdir }, { agent: undefined })
+    assert.equal(def.ok, true)
+    const defMeta = JSON.parse(await fsp.readFile(path.join(workdir, '.dsh', 'bgjobs', def.jobId, 'job.json'), 'utf8'))
+    assert.equal(Object.prototype.hasOwnProperty.call(defMeta, 'outputEncoding'), false, '缺省不得写 outputEncoding')
+    const defRunner = (await fsp.readFile(path.join(workdir, '.dsh', 'bgjobs', def.jobId, 'run.ps1'))).toString('utf8')
+    assert.ok(!defRunner.includes('$nativeEnc'), '缺省 run.ps1 不得含 $nativeEnc')
+    // 非法值：fail loud + 不建 jobDir / 不建计划任务
+    for (const bad of ['utf-16', 'NATIVE', 'gbk']) {
+      const r = await submit.execute({ name: 'bad-enc', command: 'echo ok', workdir, output_encoding: bad }, { agent: undefined })
+      assert.equal(r.ok, false, 'output_encoding=' + bad + ' 必须被拒')
+      assert.ok(String(r.error).includes('invalid output_encoding'), '错误应指明 invalid output_encoding，实际: ' + r.error)
+    }
+    const entries = await fsp.readdir(path.join(workdir, '.dsh', 'bgjobs')).catch(() => [])
+    assert.deepEqual(entries.filter((n) => n.startsWith('bg-') && n !== def.jobId), [], '被拒的提交不得留下 jobDir（零副作用）')
   } finally {
     dispose()
     await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})

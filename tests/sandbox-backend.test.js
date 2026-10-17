@@ -346,3 +346,42 @@ test('镜像一致性：tools/dsh-bgjobs-lib.ps1 的 dsh 行也带 & 且镜像�
   assert.ok(mirror.includes('__RUNLINE__'), '模板应使用 __RUNLINE__ 占位')
   assert.equal(psParseErrors(MIRROR_PS1), 0, 'tools/dsh-bgjobs-lib.ps1 必须 parse-errors=0')
 })
+
+test('解析器验收：output_encoding=native 的 run.ps1 与镜像同款分支都可解析（v0.2.6）', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  setShellResolver(async () => SHELL)
+  setSandboxRunnerResolver(async () => ACL_RUNNER)
+  const workdir = await makeWorkdir()
+  const { ctx, tools } = makeCtx({ services: servicesFor(workdir) })
+  apply(ctx)
+  const res = await findSubmit(tools).execute(
+    { name: 't', command: 'echo ok', workdir, sandbox: 'workspace-write', output_encoding: 'native' },
+    { agent: undefined },
+  )
+  assert.equal(res.ok, true)
+  const runnerPath = path.join(jobDirOf(workdir, res.jobId), 'run.ps1')
+  const text = await fsp.readFile(runnerPath, 'utf8')
+  assert.ok(text.includes('$nativeEnc = [Console]::OutputEncoding'), 'native：run.ps1 先取继承码页')
+  assert.ok(text.includes('[Console]::OutputEncoding = $nativeEnc'), 'native：用 $nativeEnc 解码')
+  assert.ok(!text.includes('[Console]::OutputEncoding = $utf8'), 'native：不得按 UTF-8 解码')
+  assert.equal(psParseErrors(runnerPath), 0, 'native 形态 run.ps1 必须 parse-errors=0')
+  // 镜像：占位与判据都在，且自身可解析（两处逐字一致的纪律）。
+  // ★ 模板必须【独立成行】地留占位、并【逐字保留】默认编码行 —— 否则"默认逐字节一致"被破坏
+  //   （半行占位会让 $pidPath / 兜底行的字面量消失，kill-tree.test.js 的两条守卫会抓住）。
+  const mirror = await fsp.readFile(MIRROR_PS1, 'utf8')
+  assert.ok(mirror.includes('__NATIVEENC__'), '镜像模板应用 __NATIVEENC__ 占位')
+  assert.ok(
+    mirror.includes('\n__NATIVEENC__\r\n$pidPath = \'__JOBDIR__\\run.pid\''),
+    '镜像里 __NATIVEENC__ 必须独立成行，下一行逐字是 $pidPath = …（默认逐字节不变的前提）',
+  )
+  assert.ok(
+    mirror.includes('    try { [Console]::OutputEncoding = $utf8 } catch { }'),
+    '镜像必须逐字保留默认编码兜底行（native 时才在运行时替换）',
+  )
+  assert.ok(!mirror.includes('__ENCTARGET__'), '不得再用半行占位 __ENCTARGET__（会抹掉字面默认行）')
+  assert.ok(
+    mirror.includes("$encNative = ($Job.meta.outputEncoding -eq 'native')"),
+    '镜像应从 meta.outputEncoding 判定 native',
+  )
+  assert.equal(psParseErrors(MIRROR_PS1), 0, '镜像必须 parse-errors=0')
+})

@@ -4,41 +4,74 @@
 
 [![npm version](https://img.shields.io/npm/v/bgjobs)](https://www.npmjs.com/package/bgjobs)
 [![GitHub tag](https://img.shields.io/github/v/tag/bitsmug/dsh-bgjobs)](https://github.com/bitsmug/dsh-bgjobs/tags)
+[![publish](https://github.com/bitsmug/dsh-bgjobs/actions/workflows/publish.yml/badge.svg)](https://github.com/bitsmug/dsh-bgjobs/actions/workflows/publish.yml)
 [![License](https://img.shields.io/npm/l/bgjobs)](LICENSE)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/bitsmug/dsh-bgjobs)
 [![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)
 
-**让 DSH 提交的命令脱离 DSH 进程独立运行**：任务交给 Windows 任务计划程序服务托管，关掉 DSH、关掉网页都不影响执行；网页弹 Toast 提醒完成，随时看实时输出；DSH 离线时还能用独立 CLI/GUI 管理。
+让 DSH 提交的命令脱离 DSH 进程独立运行：任务交给 Windows 任务计划程序服务托管，关掉 DSH 进程、关掉网页都不影响执行；网页悬浮面板实时展示输出；DSH 离线时还能用独立 CLI/GUI 管理。
 
-适合大文件下载、批量脚本、编译、数据同步/导出这类长任务——提交后不用守着 DSH，随时回来看结果。
+适合大文件下载、批量脚本、编译、数据同步/导出这类长任务—— **DSH 崩溃（通常因内存不足OOM）亦不影响任务运行**。
+
+## 快速安装
+
+1. 打开 DSH 官方桌面客户端或网页，点击左侧导航栏的“插件”入口，转至插件页，点击右上角的“添加插件”；
+2. 在插件安装输入框中输入 `bgjobs` （或 GitHub 最新版：`github:bitsmug/dsh-bgjobs`）并确认安装；首次安装时会提示要求允许 `pnpm approve build`，点击允许后再次安装即可。
+
+## 目录
+
+- [快速安装](#快速安装)
+- [特性一览](#特性一览)
+- [前置依赖与兼容性](#前置依赖与兼容性)
+- [安装 / 卸载](#安装--卸载)
+- [使用（agent 工具）](#使用agent-工具)
+- [网页面板](#网页面板)
+- [离线管理 CLI（DSH 不运行也能用）](#离线管理-clidsd-不运行也能用)
+- [图形面板（GUI）](#图形面板gui)
+- [配置与数据](#配置与数据)
+- [使用须知](#使用须知)
+- [维护与开发](#维护与开发)
+- [贡献](#贡献)
+- [近期更新](#近期更新)
+- [许可证](#许可证)
 
 ## 特性一览
 
 | 能力 | 说明 |
 |---|---|
 | 进程外独立运行 | 任务经 `schtasks` 托管，DSH 崩溃/关闭不影响 |
-| 实时输出面板 | 网页右下角浮动面板每秒刷新输出：可拖拽、最小化为悬浮球、折叠为仅任务列表、随主题换肤；按工作区分组、可调大小；左栏底部入口可一键隐藏/唤出。任务行显示**运行时长**（运行中实时增长、完成后为总耗时），字段显示位置可按「列表 / 详情 / 隐藏」逐项配置 |
-| 清理已完成 | 🧹 点击右上角清理图标开启垃圾篓：拖拽单条已结束任务删除，或批量清理（仅超 24h / 全部，与视图过滤一致）；**判定不出进程状态**的任务（探针/反查本身跑不起来）会先弹**警告确认框**（说清"继续可能留下看不见的孤儿进程"并原样展示原因），点「确认清理」才带 `force` 动手 —— 取消则一个记录都不删 |
+| 实时输出面板 | 网页右下角浮动面板每秒刷新输出：可拖拽、最小化为悬浮球、折叠为仅任务列表、随主题换肤；按工作区分组、可调大小；左栏底部入口可一键隐藏/唤出。任务行显示运行时长（运行中实时增长、完成后为总耗时），字段显示位置可按「列表 / 详情 / 隐藏」逐项配置 |
+| 清理已完成 | 🧹 点击右上角清理图标开启垃圾篓：拖拽单条已结束任务删除，或批量清理（仅超 24h / 全部，与视图过滤一致）；判定不出进程状态的任务（探针/反查本身跑不起来）会先弹**警告确认框**（说清"继续可能留下看不见的孤儿进程"并原样展示原因），点「确认清理」才带 `force` 动手 —— 取消则一个记录都不删 |
 | 完成通知 | 任务退出即弹 Toast（不打扰会话）；可选把通知发回创建它的 agent（`notify` 参数） |
-| 会话内等待 | `bgjob_wait` 让 agent 等结果而**不必占住对话**：缺省不限时（可在设置页配「默认等待超时」），期间被新入站消息让路或被用户停止会立即释放；支持 any 竞速（先完成先返回）与 all 合取（任一失败即刻返回） |
+| 会话内等待 | `bgjob_wait` 让 agent 等结果而**不阻塞对话**：缺省不限时（可在设置页配「默认等待超时」），期间被新入站消息让路或被用户停止会立即释放；支持 any 竞速（先完成先返回）与 all 合取（任一失败即刻返回） |
 | 断线续跟 | DSH 重启自动恢复跟踪；旧任务 id 也能从磁盘查询状态 |
 | 离线管理 | 不依赖 DSH 的 CLI / GUI：list / status / log / submit / kill（终止进程）/ delete（删记录）/ cleanup |
-| 可选沙箱 | `bgjob_submit_pwsh` 可选 `sandbox` 约束后台任务文件权限，权限不高于当前会话模式；可选 `sandbox_backend: 'dsh'`（实验，需面板开「沙箱选择」）复用**当前会话的沙箱 provider**（档位/路径白名单与会话一致） |
-| 可选沙箱后端 | **实验开关（默认关）**：开启后 `bgjob_submit_pwsh` 可传 `sandbox_backend: 'dsh'`，改为复用当前会话的 dsh 沙箱 provider（`ctx.sandbox.confine`）在**提交期**包装任务 argv（任务仍脱离 DSH 独立运行；关闭时该取值一律拒绝且零副作用）。开关 = 面板「沙箱后端」 |
-| MCP 调用托管 | `bgjob_submit_mcp` 把一次 MCP 工具调用提交为后台任务（**设置页开关，默认关闭**）；可登记 server 或从 DSH 配置一键导入；每个 server 可选「预热 / 冷启动 / 禁用」三态（禁用后 agent 调用被拒） |
+| 可选沙箱 | `bgjob_submit_pwsh` 可选 `sandbox` 约束后台任务文件权限，权限不高于当前会话模式 。沙箱后端选择开关（默认关）：开启后可传 `sandbox_backend: 'dsh'`，改为复用当前会话的 dsh 沙箱 provider（`ctx.sandbox.confine`），支持 [dsh-sandbox-mxc](https://github.com/bitsmug/dsh-sandbox-mxc) 沙箱后端（约束文件权限和网络权限） 。沙箱后端选择开关 = 面板「沙箱选择」 |
+| MCP 调用托管 | `bgjob_submit_mcp` 把一次 MCP 工具调用提交为后台任务（设置页开关，默认关闭）（暂不支持沙箱）；可登记 server 或从 DSH 配置一键导入；每个 server 可选「预热 / 冷启动 / 禁用」三态（禁用后 agent 调用被拒） |
 | 零残留 | 任务跑完自删任务计划；done 任务默认保留展示，用户手动清理 |
+
+## 前置依赖与兼容性
+
+| 前置 | 兼容 | 推荐 |
+|---|---|---|
+| Windows | `10`-`11` | `11` (build `>=26300`) |
+| PowerShell 7+ | `>=7.6.5`（沙箱功能需[ zip 解压版 PowerShell](https://learn.microsoft.com/zh-cn/powershell/scripting/install/install-powershell-on-windows?view=powershell-7.6#install-the-zip-package)） | [`>=7.7.0`](https://github.com/PowerShell/PowerShell/releases#release-v7.7.0-preview.5) |
+| DSH |`0.1.2-rc.1` ~ `0.2.1-rc.2`（rc版）  （[官方桌面版](https://www.deepseek.com/harness/)/以`win`+`R` 运行 [npx @deepseek-ai/dsh web](https://github.com/deepseek-ai/deepseek-harness#run-from-npm)） |  `0.2.1-rc.2` |
+| Node.js | `^22.19.0 \|\| >=24.0.0`（或自动使用官方桌面版自带Node） | [`>=24.22.0`](https://nodejs.org/zh-cn/download) |
+
+| 插件（可选） | 兼容 |
+|---|---|
+| [dsh-sandbox-mxc](https://github.com/bitsmug/dsh-sandbox-mxc) | `0.1.1` |
+| [dsh-multi-folder](https://github.com/AngelosZou/dsh-multi-folder) | `0.3.3` |
+
 
 ## 安装 / 卸载
 
-前置：已安装 DSH（`@deepseek-ai/dsh`）、PowerShell 7 与 Node.js（`^22.19.0` 或 ≥24），Windows 系统。（已在网页版 DSH `0.1.2-rc.1` ~ `0.2.0-rc.2` · Windows 10 · PowerShell 7 · Node.js 24 上验证）（已支持桌面版 DSH `0.2.0-rc.2` 并通过验证）（沙箱安全性未充分验证）
-
-> MCP 引擎（`bgjob_submit_mcp`）由插件自带的 Node 依赖跑：`@modelcontextprotocol/sdk` 与 `yaml` 随包发布，`dsh plugin add` 会自动装上；本地源码开发需先在该目录执行一次 `pnpm install`。DSH 自带的 Node 即可，无需另装。
 
 **方式 A（最省事，插件管理器（GUI 插件入口）；DSH v0.2.0-rc.2）**
 
-1. 打开 DSH 官方桌面客户端或网页，点击左侧导航栏的插件入口；
-2. 在插件安装输入框中输入 `bgjobs` 并确认安装（或 GitHub 最新版：`github:bitsmug/bgjobs`）；**首次安装时会提示要求允许 `pnpm approve build`，点击允许后再次安装即可**；
-3. **安装完成后完全退出并重新启动官方桌面客户端或 DSH 进程**。
+1. 打开 DSH 官方桌面客户端或网页，点击左侧导航栏的“插件”入口，转至插件页，点击右上角的“添加插件”；
+2. 在插件安装输入框中输入 `bgjobs` （或 GitHub 最新版：`github:bitsmug/dsh-bgjobs`）并确认安装；首次安装时会提示要求允许 `pnpm approve build`，点击允许后再次安装即可。
 
 **方式 B（快速，npm 发布版）**
 
@@ -51,7 +84,7 @@ $pf="web"; dsh plugin --profile $pf add bgjobs || dsh plugin --profile $pf appro
 **方式 C（从 GitHub 安装，始终最新）**
 
 ```sh
-$pf="web"; dsh plugin --profile $pf add github:bitsmug/dsh-bgjobs || dsh plugin --profile $pf approve-builds koffi; dsh plugin --profile $pf add github:bitsmug/bgjobs && Write-Host "✓ bgjobs安装成功！" -ForegroundColor Green
+$pf="web"; dsh plugin --profile $pf add github:bitsmug/dsh-bgjobs || dsh plugin --profile $pf approve-builds koffi; dsh plugin --profile $pf add github:bitsmug/dsh-bgjobs && Write-Host "✓ bgjobs安装成功！" -ForegroundColor Green
 ```
 
 > 直接从 GitHub 仓库默认分支拉取，**始终是最新代码**（含刚发布与未发布改动），不受 npm registry 同步延迟影响。以上方式装完包名都是 `bgjobs`，卸载命令相同。
@@ -98,22 +131,23 @@ allowBuilds:
 
 **卸载：** `dsh plugin --profile <profile> remove bgjobs`
 
-> 方式 A / B / C / D 装完都要**重启 DSH**（完全退出并重新启动）才生效（原因见上）。
+> 方式  B / C / D 装完都要**重启 DSH**（完全退出并重新启动）才生效。
 
 ## 使用（agent 工具）
 
-- `bgjob_submit(name, command, workdir, [wait], [notify], [notify_mode])` — 提交后台任务（command 为 **bat** 语法）；`wait`=提交后原地等待的秒数（0/缺省不等待；>0 语义同 bgjob_wait 全缺省——等本会话任一任务先结束，无会话信息时回退等刚提交任务）；
-- `bgjob_submit_pwsh(name, command, workdir, [wait], [sandbox], [sandbox_backend], [justification], [notify], [notify_mode])` — 提交后台任务（command 为 **PowerShell** 语法，UTF-8 日志、`exit <code>` 语义安全）；`wait` 同上；**沙箱任务**（`sandbox` 非 `off`）经独立 runner 拉起，需要**真 `node`**（console 子系统，优先与 DSH 同源的那份，见近期更新 v0.1.91）；找不到 ⇒ **提交时直接报错**（不会出现「日志空白 + 假 exit 0」的假成功）；**`sandbox_backend`**（实验，`'acl'` | `'dsh'`，缺省 `'acl'`）——选 `'dsh'` 时改用当前会话的 dsh 沙箱 provider 在提交期包装 argv（不走 ACL runner、也不需要真 node），沙箱档位与会话一致；需先在面板打开「**沙箱选择**」开关，关闭时传 `'dsh'` 一律拒绝且零副作用；
-- `bgjob_submit_mcp(name, workdir, tool, [arguments], server | server_config, [timeout_seconds], [wait], [notify], [notify_mode])` — 把一次 **MCP 工具调用**提交为后台任务（第三引擎，同样由 schtasks 托管、面板可见、可 wait/notify）。`server` 是设置页登记的 server 名，`server_config` 是内联配置（stdio 或 streamable-http），二者二选一。任务里连接该 server 调用一次工具，结果写日志与 `<jobDir>/result.json`（含执行通道），退出码 `0` 成功 / `1` 工具报错 / `2` 连接或调用失败 / `3` 超时；`timeout_seconds` **缺省不限时**（该 server 在设置页登记了 `timeoutMs` 时以它为准），也可传任意正数秒。**默认关闭，需先在设置页打开「MCP 任务」开关**（未开启时调用会被拒绝）；与 DSH 一致，会话访问模式（read-only 等）**不限制** MCP 任务。建议先用 `bgjob_mcp_tools` 确认工具名；
-- `bgjob_mcp_tools(server | server_config, [refresh])` — 列出该 MCP server 的注册工具（工具名/描述/必填字段名），提交前用它确认工具名与参数形状；结果有缓存，`refresh: true` 强制刷新；同样受「MCP 任务」开关限制；
-- `bgjob_status(jobId)` — 查询状态 / 退出码 / 日志尾部；仅用于查看当前状态，不要拿它循环轮询（等待用 `bgjob_wait`）。状态权威依次是 `job.json` 终态 → `<jobDir>\exitcode.txt`；**若包装器已消失却没留下退出码**（GUI 子系统程序静默退出 / 包装器被非正常终止 / **重启或注销**——计划任务默认「仅用户登录时运行」，一重启全灭且都不留退出口），会判**终态**并如实给 `exitCode: null` + `exitCodeSource: 'wrapper-gone'`（`wrapperGoneReason` = `pid-gone` / `pid-reused`）——**存量僵尸记录一查即被追认**，不再永久显示「运行中」，也不需要人工 `kill`；进程真还在跑时绝不会被误判为死（探针跑不起来同样保守保持运行中）；
-- `bgjob_wait(jobId | jobIds, [timeoutSeconds], [logic])` — 等待后台任务结束并**立即返回**退出码与日志尾部（`timeoutSeconds` **缺省 = 设置页「默认等待超时」**，该设置未配置＝不限时（一直等到任务结束）；显式传 `0`/负数 = 本次强制不限时，传正数才到点返回 `timedOut: true` 快照）。两种模式（`logic`）：
-  - **`any`（缺省）**：单个 `jobId` 等该任务；`jobIds` 数组 = **任一先结束即返回**（any 竞速，返回完成者 + 其余 `pending`）——**并行提交多个任务时的默认姿势**：先拿到先处理，其余用 `pending` 继续等，不必等齐；两者都缺省 = 等**本会话**任务任一结束；
-  - **`all`（合取）**：等一批任务**全部成功**才返回 `allDone: true` + 每个任务的退出码/日志尾；**任一任务失败即立刻返回** `failed: true` + `failedJobId` + 已结束者的 `results` + 其余 `pending`（非 0 退出码，或被清理/找不到都算失败），不再等齐；超时返回部分状态可续等。只在「必须全部成功才能继续」且「一个失败就马上停」时使用——只想边拿边推进请用缺省的 `any`；`jobIds` 缺省 = 本会话全部任务；
-- `bgjob_list` — 列出当前 agent 会话提交的全部任务（id/状态/退出码），配合 wait 工具缺省使用。
-- `bgjob_kill(jobId, [force], [reason])` — **终止任务的进程**（进程树）。★ **只终止进程、不删记录**：job 目录 / 中央索引 / 注册表**全部保留**，终止后仍可用 `bgjob_status` / `bgjob_list` 查到它，记录要清得另外用 `bgjob_delete`。被终止的任务补写**非 0 退出码**（1，`taskkill /F` 记录的真值）+ `exitCodeSource: 'killed'` / `killedAt` / `killedBy`（`reason` 会记进 `killedBy`）⇒ `bgjob_wait` 拿到失败口径，绝不会被读成「成功完成」。**若没有可终止的活进程 ⇒ 什么都不做**（不杀、也**不删任何记录**），返回 `mode: 'absent'` + `note` 说明。返回值 `mode` 三态：`kill`（终止了活进程）/ `absent`（未发现活进程 ⇒ 什么都没做）/ `unknown`（无法判定）。`unknown` 时**默认不动作**并回 `needsForce: true`，须显式 `force: true` 才继续——`force` **只用于越过这道门槛**（不是「更用力地杀」），对 `kill` / `absent` 两种情形**毫无影响**；
-- `bgjob_delete(jobId, [force])` — **删除任务的记录**（job 目录 + 计划任务注册 + 中央索引）。★ **只删记录、不杀进程**：**仍有活进程时会被拒绝**（回 `mode: 'kill'` + `error`，提示先 `kill` 再 `delete`）——绝不越界杀进程，否则会造出「面板看不见、进程还在跑」的孤儿。`mode` 三态：`delete`（只删了记录）/ `kill`（有活进程 ⇒ 拒绝）/ `unknown`（无法判定）。`unknown` 的门槛同 `bgjob_kill`（默认不删任何记录 + `needsForce: true`，显式 `force: true` 才继续）；
-- **不要用 sleep 轮询**：等结果用 `bgjob_wait`；不要用 `sleep` / `Start-Sleep` / `timeout`，也不要用「循环 `bgjob_status`」代替（占住回合、收不到新消息）。
+**工具总览**（完整参数、取值与边界见 [docs/developer.md](docs/developer.md)；逐项语义随后并入该文档）
+
+| 工具 | 一句话 |
+|---|---|
+| `bgjob_submit` | 提交后台任务（`command` 为 **bat** 语法） |
+| `bgjob_submit_pwsh` | 提交后台任务（**PowerShell** 语法；UTF-8 日志、`exit <code>` 语义安全；可选 `sandbox` / `sandbox_backend` / `output_encoding`） |
+| `bgjob_submit_mcp` | 把一次 **MCP 工具调用**提交为后台任务（默认关闭，需「MCP 任务」开关；退出码 0/1/2/3） |
+| `bgjob_mcp_tools` | 列出某 MCP server 的工具名 / 描述 / 必填字段（有缓存，`refresh: true` 强制刷新） |
+| `bgjob_status` | 查询状态 / 退出码 / 日志尾部（**别拿它轮询**；终态权威与 `wrapper-gone` 三态见 developer.md） |
+| `bgjob_wait` | 等任务结束并立即返回；`logic: 'any'`（缺省，竞速）/ `'all'`（合取）；`timeoutSeconds` 缺省 = 设置页「默认等待超时」 |
+| `bgjob_list` | 列出当前 agent 会话提交的全部任务（id/状态/退出码） |
+| `bgjob_kill` | **只终止进程树、不删记录**（补写非 0 退出码 1 + `exitCodeSource: 'killed'`；`mode` 三态，`unknown` 需显式 `force`） |
+| `bgjob_delete` | **只删记录、不杀进程**（有活进程时拒绝并提示先 `kill`；`mode` 三态） |
 
 直接对 AI 说一句即可（说清工作目录、任务名，以及要不要等结果 / 通知）：
 
@@ -169,7 +203,19 @@ allowBuilds:
 
 双击 `tools\dsh-bgjobs-gui.bat` 即可启动独立窗口（不依赖 DSH）：任务列表/日志、提交（bat 或 pwsh）、终止进程（kill，记录保留）、删除记录（delete，只对已结束/无进程的任务）、清理（超期小时数可调，或全部）、重建索引。工具栏**「📌 桌面快捷方式」**可一键在当前用户桌面创建指向本 GUI 的快捷方式（双击即开，不弹黑窗）。GUI 与 Toast 文案跟随系统 UI 语言（zh → 简体中文，其他 → 英文）；CLI 输出固定为英文。**找不到 GUI？** DSH 设置 → 后台任务 → 「打开离线 GUI / 打开所在文件夹」可直接启动或定位脚本位置。
 
-## 数据与存储
+## 配置与数据
+
+### 环境变量
+
+以下变量都是**可选**的（通常无需设置）：
+
+- `BGJOBS_SANDBOX_RUNNER` — 显式指定沙箱 runner 的路径（缺省自动探测；找不到时提交沙箱任务会明确报错）。
+- `BGJOBS_DSH_HOME` — 离线 GUI / CLI 的「便携优先」home；需要钉死时显式指定。
+- `DSH_HOME` — 全局状态目录的来源（状态落在 `$DSH_HOME\bgjobs\`）；通常由 DSH 提供。
+- `DSH_DESKTOP_NODE_EXECUTABLE` — 桌面版 runtime 的 node 来源（沙箱任务所需的「真 node」优先取自它）。
+- `BGJOBS_PWSH` 显式指定 PowerShell 解释器路径。
+
+### 数据与存储
 
 - 任务数据：`<workdir>\.dsh\bgjobs\<jobId>\`（`job.json` 元数据、`stdout.log` 日志、`exitcode.txt` 退出码；MCP 任务另有 `mcp.json` 调用说明与 `result.json` 结果）；
 - 全局状态：`$DSH_HOME\bgjobs\`（`index.json` 任务"地图"、`fullaccess.json` 全权限开关、`ui-prefs.json` 网页 UI 偏好、`mcp-*.json` MCP 开关/登记/缓存；逐项含义见 [docs/developer.md](docs/developer.md)）；
@@ -185,66 +231,53 @@ allowBuilds:
 - **MCP 任务**：默认关闭（设置页开启）；任务**被 kill 时**会按记录的 pid 回收其 stdio MCP server 子进程（`delete` 只删记录、不杀进程；若 server 子进程仍活着，delete 会拒绝并提示先 kill）；每个 server 在设置页可切「预热 / 冷启动 / 禁用」三态——**禁用**会让 `bgjob_submit_mcp` / `bgjob_mcp_tools` 拒绝该 server 并断开其常驻连接（「列出工具」仍可用）；「预热」连接只在 DSH 存活期有效，不改变"任务脱离 DSH 也能跑"；离线 CLI/GUI 只读查看、终止进程与删除记录 MCP 任务，不在离线侧提交 MCP；`mcp-servers.json`、导出文本与任务目录的 `mcp.json` 都含**明文密钥**，分享/归档前请脱敏。
 - **等待被停止 ≠ 任务失败**：agent 等待任务时你点「停止/打断」，本次等待会**以错误结束**（错误文案写明各任务当前状态并提示可续等）。这是 DSH 的取消语义——调用方取消后，成功返回的东西送不到模型，只能以错误形态呈现；任务本身继续后台运行、不标记已交付，agent 可再次 `bgjob_wait` 续等。等待期间收到其它 agent 的消息则正常返回让路（`stoppedBy: 'message'`）：该返回**不含消息正文**，但这次调用会**声明终结当前回合**——DSH 随即把你/它发来的消息作为正式用户消息投递给 agent（排在本轮之后的排队消息亦然）；agent 不应再用等待或阻塞操作顶替它。
 - **MCP 超时收尾有 1–2 秒宽限**：MCP 任务超时/失败后 host 会关闭连接并回收 server 子进程（关连接本身要等约 2 秒），所以 `result.json` 里的 `durationMs` 可能比 `timeoutMs` 多 1–2 秒（同文件也记了 `timeoutMs` 便于对照）。
-- **✅ 已修复：运行中的「沙箱 pwsh」任务现在能真正停下来了**——以前面板「删除」和离线 CLI `kill` 会**返回成功、任务却还在跑**（还从面板列表里消失，于是你**既看不见也管不了**，任务目录也删不掉；**受限会话下 pwsh 任务默认就进沙箱**，所以这类任务都可能中招）。现在 **`kill` 只终止整棵进程树、不再删记录**（并补写非 0 退出码 `1` —— 那是 `taskkill /F` 在内核里记录的真值：**退出码由终止方传入**，我们拿不到"任务自己"的码（任务由 schtasks 起、我们不持有句柄），所以"被终止"只能靠 `exitCodeSource:'killed'` 这个来源标记认，**计划任务列表里的 `Last Result` 分不清"自己报了 1"与"被杀成 1"，不能当证据** ⇒ 等待/通知都按失败口径报，不会被读成"成功完成"），**`delete` 才删记录**且只在没有活进程时执行（有活进程会明确拒绝并提示先 kill）；★ 反过来，**`kill` 遇到"没有活进程"时什么都不做、也什么都不删**（如实回 `mode:'absent'` + 「未发现该任务的活进程」；要清记录是调用方自己再调一次 `delete` —— `kill` **不会**替它转成删除）；**成功就是成功、失败会明确报错**，不再有"假成功"。机制细节（pid 文件 + 树杀 + 核验 + 语义边界）见 [docs/developer.md](docs/developer.md) 的「kill / delete 语义」与「边界与已知限制」。（v0.2.0-alpha 起可用。）
 
 ## 维护与开发
 
 架构设计、机制细节、测试与发布流程见 [docs/developer.md](docs/developer.md)。
 
-## 近期更新（v0.1.62 → v0.2.5）
+## 贡献
 
-- **新增「沙箱选择」（实验，默认关）：后台任务可选用 dsh 沙箱后端**。打开面板「沙箱选择」开关后，`bgjob_submit_pwsh` 可传 `sandbox_backend: 'dsh'` —— 任务不再走内置 ACL runner，而是在**提交期**用当前会话的 dsh 沙箱 provider（`ctx.sandbox.confine`）把命令 argv 连同策略一起包装好、烘进 `run.ps1`：任务照样由计划任务托管、**关掉 DSH 也不影响运行**（实测：300 秒任务跨 DSH 重启跑满、退出码 0），而沙箱档位与路径白名单**与会话完全一致**（例如 MXC 容器内可直接跑 `node`/`python`/MATLAB，而 ACL 档下这些真程序会因命名管道被拒）。开关关闭时该取值一律拒绝且**零副作用**（不建任务目录、不建计划任务）；不传 = 老行为逐字不变。该开关的显隐可在「设置 → 后台任务 → 字段显示 → 界面元素」里单独控制（v0.2.5）。
-- **面板开关改名**：「沙箱后端」→「**沙箱选择**」，并新增独立显隐键（可在「字段显示 → 界面元素」单独显示/隐藏）（v0.2.5）。
+欢迎 issue 与 PR：Bug 报告、面板 / CLI 体验、文档与翻译（中英镜像需同步更新）都可以提。
 
-- **修复同一任务被收尾两次（完成通知偶发收到 2 次）的并发缺陷**：`checkCompletion` 只在**函数入口**判一次 `status !== 'running'`，而 `status='done'` 要等读日志、读 `exitcode.txt`、包装器探针这些 `await` 之后才写 —— 于是**两个调用者**（`fs.watch` 事件 与 5s 兜底 tick；`bgjob_wait` 轮询也走同一个函数）能在那个窗口里**双双通过**守卫，同一任务被收尾两次：同一条完成通知发两遍（偶发，取决于窗口里 fs 的耗时）、`job.json` 重复落盘、兜底 `/Delete` 重复发。现在收尾有**单一所有者闸门**：同一任务在飞时只允许一个处理者，第二个调用者直接**复用**它的 promise（**不是**把守卫改成"再判一次"那种治标做法）。修前有 3 条确定性用例必现失败（2 次通知 / 2 次探针 / 2 次 `/Delete`），修后全绿；`exitcode.txt` 优先、`exitCodeSource:'killed'`、`wrapper-gone` 三态与实际终态落盘行为一律不变（v0.2.4）。
+- 仓库：<https://github.com/bitsmug/dsh-bgjobs>
+- 问题与建议：<https://github.com/bitsmug/dsh-bgjobs/issues>
+- 架构、机制、测试与发布流程：[docs/developer.md](docs/developer.md)
 
-- **修复「死任务显示运行中」**：状态权威原先只看 `<jobDir>\exitcode.txt` —— 包装器（`run.ps1` / MCP server）**死了却没写成它**时，记录就**永久停在 running**：面板显示「运行中」而实际没有任何进程。最典型的触发是**重启/注销**（计划任务默认「仅用户登录时运行」，一重启全灭且都不留退出口）。现在终态判定收拢到**唯一所有者**（`lib/core/wrapper-gone.js`，磁盘查询与后台 tick 两条路径共用）：pid 已不存在 ⇒ 判终态并如实给 `exitCode: null` + `exitCodeSource: 'wrapper-gone'` + `wrapperGoneReason`；pid 被复用给无关进程 ⇒ 同样判终态（不误判存活）；进程真还在跑、或探针跑不起来 ⇒ 保守保持「运行中」。`exitcode.txt` 存在时依旧以它为准；**存量僵尸记录一查即被追认**，不需要迁移脚本、也不需要人工 `kill`（v0.2.3）。
+## 近期更新
 
-- **修复 `node` 安装路径含空格时 MCP 预热被误拦**：`node` 装在 `C:\Program Files\...` 这类带空格的目录时，预热守卫把 `...\node.exe` 按空格截成 `C:\Program` 判为「文件不存在」，于是拒绝建立常驻连接（日志出现 `missing command: C:\Program`）。现在只在能确定是路径时才做存在性断言，含空格的路径照常启动（v0.2.1）。
+v0.1.71 → v0.2.6
 
-- **设置页「完成横幅」两个开关独立成组**：原先混在「字段显示 → 界面元素」列表里的两个显隐项，现在提到独立分组「完成横幅」，用开关直接控制（弹出完成横幅 / 横幅去重）；同时「一键恢复默认」**不再重置**这两个开关（v0.2.1）。
+- **修复沙箱 pwsh 任务日志的中文乱码**：新增 `output_encoding`：逐任务选择任务日志的解码编码**（v0.2.6）
+。
+- **修复沙箱任务误选 MSIX 版 pwsh 导致容器内任务启动失败**： PowerShell 解析**跳过 WindowsApps 别名**、取第一个非 MSIX 命中，并新增 **`BGJOBS_PWSH`** 环境变量显式覆盖解释器（最高优先）（v0.2.6）。
 
-- **修复沙箱 pwsh 任务日志的中文乱码**：runner 统一设置一次控制台输出编码（`Console.OutputEncoding`），以 GBK 输出的中文日志不再被按 UTF-8 记成乱码（v0.2.1）。
+- **新增「沙箱选择」（实验，默认关）：后台任务可选用 dsh 沙箱后端**（v0.2.5）
+
+- **修复同一任务被收尾两次（完成通知偶发收到 2 次）的并发缺陷**（v0.2.4）
+
+- **修复「死任务显示运行中」**（v0.2.3）
+
+- **修复 `node` 安装路径含空格时 MCP 预热被误拦**（v0.2.1）。
+
+- **设置页「完成横幅」两个开关独立成组**（v0.2.1）。
 
 - **新增 bgjob_kill 和 bgjob_delete 工具**（v0.2.0-alpha）。
 
-- **设置按钮的提示更准确了**：如果设置面板其实**已经打开**、只是没能跳到「后台任务」/「MCP 任务」那一页，现在会明确说「设置已打开，但没找到分区」并提示手动查找，而不再笼统地说「未能自动打开设置」（v0.1.93）。
-
-- **修复面板上的齿轮 / 🗄 按钮打不开设置（桌面版）**：此前点击后只会弹「未能自动打开设置」，现在能正常打开设置并停在「后台任务」/「MCP 任务」页（v0.1.93）。
-
 - **沙箱 pwsh 任务的启动更快了**：去掉了一处每次进程启动都要现做的开销（它在日志编码上其实没起作用），启动等待更短，**任务行为、日志与退出码完全不变**（v0.1.92）。
-
-- **只装桌面版 DSH、机器上没有别的 node 时，沙箱 pwsh 任务现在也能跑起来了**：此前找不到 node 会直接报错；现在优先使用与 DSH 同源的那份 node（**桌面版自带的那份也在优先之列**），最后才用 PATH 上的 node。选中的来源与版本会记进 `job.json` 便于排查；都找不到时**提交时明确报错**，不会假成功（v0.1.91）。
 
 - **修复沙箱 pwsh 任务「日志空白 + 假成功」**：桌面版（Electron）DSH 的 `process.execPath` 是 GUI 子系统 exe，stdout 被重定向到文件后会静默秒退——于是任务 `exit 0` 但日志空白。现在沙箱 runner 改用**真 node**（优先 DSH 自带的那份），连 PATH 上都没有 ⇒ **提交时明确报错**（`a real node executable not found`）而非假成功。已完成的任务若呈「秒退 + exit 0 + 日志只含 `[BGJOB]` marker」，会在 `job.json` / 面板带一条 `suspect` 提示（**仅提示**，不改状态/退出码/通知语义）（v0.1.90）。
 
-- **离线 GUI/CLI 的 dsh-home 改为「便携优先」**：优先用便携树里的库，并支持 `BGJOBS_DSH_HOME` 显式指定，状态栏常显当前来源（`| home: <来源>:<路径>`）。修复的痛点：双击 `tools\dsh-bgjobs-gui.bat` 后**任务列表为空**——进程继承到 User 级旧 `DSH_HOME`，与宿主实际落盘的便携库不是同一个 store；显式设置的 `$DSH_HOME` 仍原样生效（v0.1.89）。
-- **完成横幅（toast）去重落盘**：已在任务自己的 `job.json` 记 `toastedAt`/`toastedBy`，设置页新增「完成横幅」「横幅去重」两个开关，启动/刷新后不再对已完成任务重复弹横幅（v0.1.88）。
 - 支持 DSH 0.2.0-rc.2 版本（v0.1.87）
-- **修复完成通知在 DSH 0.1.7 上导致会话报错**：`notify` 通知消息的来源标记改用新版写法（旧写法 `{ kind: 'plugin', … }` 被 DSH 0.1.7 的会话准入拒绝，表现为「本轮运行失败 `format v4 message requires a producer-owned source kind`」，且该事件在写盘前就被拒、会话日志里查不到痕迹）（v0.1.86）。
-- **设置页可配「默认等待超时」**：agent 调用 `bgjob_wait` 未指定 `timeoutSeconds` 时用该值（0/留空 = 不限时）；显式传 `0` 仍可单次强制不限时（v0.1.85）。
-- **面板任务行显示「运行时长」**：运行中显示「已运行」的实时时长（`12s`/`3m05s`/`2h03m`/`1d04h`，随面板每秒刷新增长），完成后为总耗时；纳入设置页「字段显示」（默认显示在列表，可切详情/隐藏）（v0.1.85）。
-- **超时值改为「任意正数秒 / 缺省不限时」**：`bgjob_wait` 的 `timeoutSeconds` 与 `bgjob_submit_mcp` 的 `timeout_seconds` 去掉 600 秒上限，且**不传即不限时**（一直等到结果；期间仍会被新入站消息让路、被用户停止打断）；submit 系列的 `wait` 同样支持任意正数秒（`0`/缺省仍 = 不等待）（v0.1.84）。
+
+- **修复完成通知在 DSH 0.1.7 上导致会话报错**：`notify` 通知消息的来源标记改用新版写法（旧写法 `{ kind: 'plugin', … }` 被 DSH 0.1.7 的会话准入拒绝，表现为「本轮运行失败 `format v4 message requires a producer-owned source 
 - **修复预热通道导致 MCP 工具被执行两次**：预热代理调用原先客户端只等 3 秒，超时即"回退冷启动"，于是耗时 >3 秒的工具会被执行两遍；现在客户端中止预算与调用超时对齐（仅兜底 host 无响应），且代理会标记"调用是否已发出"——已发出的失败/超时**不再重跑**，直接按退出码 `2`/`3` 收尾（v0.1.84）。
 - **`bgjob_wait_all` 合并进 `bgjob_wait`**：新增 `logic` 参数（`any` 缺省 / `all` 合取），原 `bgjob_wait_all` 的全部行为（全部成功才 `allDone`、任一失败即刻返回 `failed` + `failedJobId` + 其余 `pending`）改由 `bgjob_wait({ ..., logic: 'all' })` 提供；工具数 9 → 8（v0.1.83）。
 - **等待被新消息让路后自动交还回合**：`bgjob_wait` / `bgjob_wait_all` 因新入站消息返回（`stoppedBy: 'message'`）时会**声明终结当前回合**（DSH 工具执行契约 `exec.concludeTurn`），DSH 随即把该消息作为正式用户消息投递给 agent——不再出现"agent 继续等待、消息递不进来"（v0.1.82）。
 - **`bgjob_wait_all` 改为合取语义**：`allDone` 只在**全部成功**时为真；任一任务失败（非 0 退出码 / 被清理 / 找不到）即刻返回 `failed:true` + `failedJobId` + 已结束者 `results` + 其余 `pending`，不再空等。并行提交后的默认姿势改为 `bgjob_wait` 的 any 竞速（先拿到先推进）（v0.1.82）。
-- **指引明确禁止系统 sleep 等待**：等结果只用 `bgjob_wait` / `bgjob_wait_all`，不要用 `sleep` / `Start-Sleep` / `timeout`，也不要「循环 `bgjob_status`」；指引改为分节结构并补齐 `bgjob_submit_mcp` / `bgjob_mcp_tools`（v0.1.82）。
-
-- **新增 MCP 后台任务引擎**：`bgjob_submit_mcp` 把一次 MCP 工具调用提交为后台任务——与 bat/pwsh 一样由任务计划程序托管、面板可见、支持等待/通知；默认关闭，在设置页「MCP 任务」开启后可用（v0.1.80）。
-- **独立的「MCP 任务」设置页**：总开关、server 登记（含编辑与「列出工具」）、导出/导入（DSH 兼容 YAML 片段与 bgjobs JSON 原样回读）、从 DSH 现有配置一键导入（不 eval `!!js` 表达式，并提示明文密钥风险）。
-- **每个 MCP server 三态开关**：`预热`（琥珀——常驻连接加速，失败自动回退冷启动）/ `冷启动`（绿——启用但不常驻）/ `禁用`（灰——拒绝 agent 调用并断开常驻连接，「列出工具」仍可用）；改用带文字的按钮，避免被误认成总开关（v0.1.80）。
-- **MCP 任务的展示与回收**：列表标注 MCP 引擎与执行通道（预热/冷启动），任务目录含 `mcp.json`（调用说明）与 `result.json`（结果），`kill` 时按记录的 pid 回收 stdio server 子进程（`delete` 只删记录、不杀进程）。
-- **面板可配置 + 快捷入口**：任务字段可选「列表 / 详情 / 隐藏」，界面元素（设置按钮、MCP 设置入口、仅本会话、全权限、分组表头、通知）可显隐；面板齿轮按钮直达插件设置分区（v0.1.73；数据齿轮直达「MCP 任务」页为后续新增，两个入口各受独立开关控制）。
-- **日志编码修复**：修复 GBK 日志乱码，日志展示与编码处理更可靠。
+`bgjob_mcp_tools`（v0.1.82）。
+- **新增 MCP 后台任务引擎**（v0.1.80）。
 - **等待后台任务可被随时停止**：agent 在等任务时点「停止/打断」会立即释放，不再拖住对话；任务继续后台运行，可再等（v0.1.71）。
-- **agent 间消息自动打断等待**：等待期间其它 agent 发来消息（send_message 等）会自动让路，先处理消息、稍后再回来等结果（v0.1.72）。
-- **离线 GUI 稳定打开**：修复从后台任务设置面板「打开离线 GUI / 打开所在文件夹」没反应的问题；GUI 现由系统任务计划程序托管，**关闭或重启 DSH 也不会把它带走**。
-- **兼容插件商店安装**：pnpm 深目录安装下也能正常打开离线 GUI（v0.1.70）。
-- **DSH 设置页「后台任务」**：一键打开离线 GUI、定位其所在文件夹、开关左栏入口与右下角监控面板，并显示插件版本。
-- **接入 DSH 左侧栏**：左栏底部入口一键隐藏/唤出监控面板（窄栏仅图标）。
-- **任务完成后自动执行动作**：可选关机 / 休眠 / 运行自定义脚本（支持延迟与参数，离线 GUI 内配置）。
-- **离线 GUI 体验优化**：列表自动刷新不再跳顶、列表与日志可拖动分界、修复列表列头与刷新闪烁；新增「创建桌面快捷方式」。
 - 操作失败不再静默：设置页会直接显示失败原因。
 
 ## 许可证

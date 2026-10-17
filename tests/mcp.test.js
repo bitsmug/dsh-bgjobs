@@ -249,6 +249,17 @@ test('mcp: 已登记 server 被设为「禁用」→ 两工具拒绝且不建 jo
   }
 })
 
+// 测试内等待助手（本文件私有）：cond() 为真即返回 true；超时返回最后一次求值结果。
+// 用于等「fire-and-forget 的预连」真正落成记录（lib/core/apply.js 的 warm() 不 await）。
+async function waitFor(cond, ms = 5000) {
+  const deadline = Date.now() + ms
+  while (Date.now() < deadline) {
+    if (cond()) return true
+    await new Promise((r) => setTimeout(r, 10))
+  }
+  return cond()
+}
+
 test('mcp: disabled + prewarm:true 的 server 不进入预热域', async () => {
   await enableMcp()
   await fsp.mkdir(path.dirname(bgjobsFile('mcp-servers.json')), { recursive: true })
@@ -262,10 +273,12 @@ test('mcp: disabled + prewarm:true 的 server 不进入预热域', async () => {
   const { ctx } = makeCtx({ services: {} })
   const dispose = apply(ctx)
   try {
-    const deadline = Date.now() + 5000
-    while (Date.now() < deadline && (captured === null || captured.api.endpoint() === null)) {
-      await new Promise((r) => setTimeout(r, 10))
-    }
+    // ★ 等「预热记录」真正出现，而不只是等代理端口：lib/core/apply.js 的 warm() 是 fire-and-forget（不 await），
+    //   端口起来时 demo server 可能还没握手完成 ⇒ 立刻读 status() 会得到 []（偶发红）。
+    //   保留 endpoint() 检查用于证明预热域确已起；'on' 记录出现才是本用例真正要等的事件。
+    await waitFor(() => captured !== null
+      && captured.api.endpoint() !== null
+      && captured.api.status().some((s) => s.name === 'on'))
     assert.ok(captured !== null, 'apply 应创建预热域（经 seam 捕获）')
     const names = captured.api.status().map((s) => s.name)
     assert.deepEqual(names, ['on'], '被设为「禁用」的 server 即使 prewarm: true 也不进入预热域')

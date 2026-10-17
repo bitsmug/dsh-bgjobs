@@ -356,8 +356,14 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
 
 ### runner 获取与任务 wiring
 
+- **两侧编码陷阱（v0.2.6 定论）**：`run.ps1` 里那次 `[Console]::OutputEncoding = …` 决定**子进程输出被按哪套编码解码**，两个方向**不能同时满足** ⇒ 做成逐任务参数 `output_encoding`：
+  - `utf8`（缺省；v0.1.95）：**UTF-8 程序**（node 等）的输出被按 CP936 解码 ⇒ 必须强制 UTF-8；
+  - `native`（v0.2.6）：**本地码页程序**的输出被按 UTF-8 解码 ⇒ 变成 U+FFFD（`�`）⇒ 改用**进程继承的控制台码页**。
+  - `$nativeEnc` 在 `run.ps1` **最顶部**（任何覆盖之前）取；若继承到的就是 65001（UTF-8 控制台）则兜底到 `[System.Globalization.CultureInfo]::CurrentCulture.TextInfo.ANSICodePage` —— 否则 `native` 与 `utf8` 等价、参数形同虚设。
+  - 缺省 `utf8` 时生成的 `run.ps1` **逐字节不变**（`$nativeEnc` 连一行都不出现）；`meta.outputEncoding` 也**只在 `native` 时落盘**（缺省 `job.json` 与加参数之前一致）。
+  - 两分支共用：`FF FE`（5.1 UTF-16LE）兜底转换、5.1 的编码 preamble、以及 `*>` 之前那一次覆盖 —— `utf8` 分支的那行就是原样保留。
 - `resolveSandboxRunner()`：插件依赖 `@deepseek-ai/dsh-sandbox-windows-acl`（exports `./runner` → `lib/runner.js`）→ 环境变量 `BGJOBS_SANDBOX_RUNNER` 兜底；都不可得且请求沙箱 → fail loud + 清理。
-- **沙箱后端选择（实验，默认关；v0.2.5）**：开关落盘 `$DSH_HOME/bgjobs/sandbox-backends.json`（`{ enabled: false }`；无文件/读失败 ⇒ 关，fail-safe）。面板「沙箱后端」开关写它，路由 `GET|POST /bgjobs/sandboxbackends`，`/bgjobs/state` 回显 `sandboxBackends`。
+- **沙箱后端选择（实验，默认关；v0.2.5）**：开关落盘 `$DSH_HOME/bgjobs/sandbox-backends.json`（`{ enabled: false }`；无文件/读失败 ⇒ 关，fail-safe）。面板「**沙箱选择**」开关写它，路由 `GET|POST /bgjobs/sandboxbackends`，`/bgjobs/state` 回显 `sandboxBackends`。
   - **关（缺省）= 与加本开关之前逐字相同的老路径**：沙箱任务一律走内置 ACL runner（上文那套）。
   - **开** ⇒ `bgjob_submit_pwsh` 可传 `sandbox_backend: 'dsh'`：提交期 `ctx.get('sandbox')`（**惰性可选查找**，照 `jobs.js` 里 `ctx.get('sandboxPolicy')` 的先例；**不动** `lib/index.js` 顶层 `inject`）取会话的 dsh 沙箱 provider，调 `confine(argv, { mode, workspaceRoot })`（**纯 argv 包装、不 spawn**），把返回 argv 记进 `job.json` 的 `confinedArgv`，并**逐元素引用**烘进 `run.ps1`（`lib/scripts.js` 的 `psQuoteArgv`；镜像 `tools/dsh-bgjobs-lib.ps1` 的 `ConvertTo-BgjobsPsQuote`）。该分支**跳过** ACL 档专属的 runner 解析 / 真 node（koffi N-API ABI）/ PE 子系统守卫 / 私有 temp 根。
   - **失败一律 fail loud**：开关关 + `'dsh'` ⇒ `DSH_BACKEND_DISABLED_ERROR`（工具层与提交层**共享同一常量**，同 `MCP_DISABLED_ERROR` 的纪律）且**零副作用**（不建 jobDir、不建计划任务、不写盘）；开关开但本 profile 未合成沙箱 provider ⇒ 明确报错，**绝不回退**成"未沙箱执行"。非法取值（非 `acl|dsh`）在建 jobDir **之前**拒绝。
@@ -376,6 +382,32 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
 - **`suspect` 提示字段（v0.1.90）**：完成检测（`lib/core/watch.js`）时，沙箱任务满足「秒退（<1000ms）+ `exitCode === 0` + 日志 ≤64 B 且只含 runner 自己的 `[BGJOB]` marker（或全空）」⇒ 在 `job.json` 与 `/bgjobs/state` 记 `suspect: 'sandbox-runner-no-output'`（`lib/core/registry.js` 的 `view` / `statusFromDisk` 透出）。**只加提示字段，不改 `status`/`exitCode`/`notify` 语义**；真·秒退且无输出的沙箱任务会被误标，故仅作提示。
 - 沙箱任务对 `jobDir` 授 `Everyone:(OI)(CI)RX`（受限子进程去 Authenticated Users 读不了 job.ps1/解释器）。副作用：job.ps1（用户命令文本）对本地用户可读——README 已言明。
 - run.ps1 沙箱段：`node <runner> --workspace <workdir> --temp <sandboxTemp> --mode <mode> -- <解释器> -File job.ps1`；外层仍管重定向/exitcode/自删；done 清理时删 sandboxTemp。
+
+### 解释器解析与 MSIX 陷阱（v0.2.6）
+
+`resolveShell()`（`lib/runners.js`）在**提交期**解析 pwsh 解释器并烘焙进 `run.ps1` / `run.bat`，解析顺序：
+
+1. ★ **`BGJOBS_PWSH`**（环境变量，指向可执行文件时**最高优先**；设置了但不可访问 ⇒ 不报错，落回默认顺序）；
+2. `%ProgramFiles%\PowerShell\7\pwsh.exe`；
+3. `%ProgramFiles(x86)%\PowerShell\7\pwsh.exe`；
+4. `where.exe pwsh` ⇒ ★ **跳过 MSIX 应用执行别名**（见下），取**第一个非 MSIX** 命中；
+5. `…\WindowsPowerShell\v1.0\powershell.exe`（5.1）；
+6. `where.exe powershell` ⇒ 同样**跳过 MSIX**；
+7. 全不可用 ⇒ **`null`**（fail loud，绝不退化成 MSIX 别名）。
+
+**为什么必须跳过 MSIX**：`%LOCALAPPDATA%\Microsoft\WindowsApps\` 下的 `pwsh.exe` / `powershell.exe` 是 **MSIX 应用执行别名**，而 MXC 沙箱容器**拒绝启动 MSIX 打包应用**，实测报文：
+
+```
+The target executable 'C:\Users\…\AppData\Local\Microsoft\WindowsApps\pwsh.exe' appears to be a
+packaged (MSIX) app. Packaged apps cannot be launched inside a sandboxed container.
+{"error":{"code":"backend_error",…}}
+```
+
+一旦把它烘焙成 dsh 沙箱任务的解释器，容器内任务**连锁失败**（任何真程序都起不来；现象是 `[BGJOB] exit code` 正常但容器侧 `backend_error`）。★ 本机踩坑条件正好齐全：**没装 MSI 版 pwsh7**（`%ProgramFiles%\PowerShell\7\pwsh.exe` 不存在）⇒ 旧逻辑经 `where pwsh` **直接落到该别名** ✗。
+
+**本机修复后的解析结果**：`where pwsh` 的 MSIX 命中被跳过 ⇒ 落 **5.1 `powershell.exe`**（会话内若 `C:\pwsh7.7` 排在 PATH 更前则取便携版 pwsh 7）。bgjobs 对两种解释器都有完整支持（编码 preamble / `FF FE` 转 UTF-8 / `$nativeEnc` 分支；`isPwsh7Interpreter()` 按 basename 判），无需其它改动。
+
+**测试缝**：`setShellProbes(fn)` 可整体替换 `access` / `whereAll`（生产缺省见 `defaultShellProbes`），`isMsixAliasPath()` 与 `firstNonMsix()` 是**导出纯函数**，分支在 `tests/submit.test.js` 里逐条钉住（含"摘掉跳过逻辑 ⇒ 3 条用例 FAIL"的反证）。
 
 ### 边界与已知限制
 
@@ -619,6 +651,29 @@ pnpm dsh plugin --profile <profile> add link:<插件绝对路径>
 ```
 
 `package.json`（版本号等）变更需重新执行 add；`lib/core|lib/*.js` 改动即时生效；`lib/client-src/` 改动需先 `pnpm build:client` 再刷新（必要时重启）。
+
+### 版本 0.2.6 变更面（供发版核对）
+
+> ⚠ 与本版相关的**权威口径以 `README.md` 的「近期更新」为准**；本文件在 M 侧曾被一次"副本同步"覆盖过（详见下一节的说明），若此处与 README 冲突，以 README 为准并修正此处。
+
+- **新增 `output_encoding`**（`'utf8'` | `'native'`，缺省 `utf8`；`bgjob_submit_pwsh` 的可选参数，经 `extra` 透传）：见上文「两侧编码陷阱」——
+  - `utf8`（缺省）= 与加此参数之前**逐字节相同**：`run.ps1` 里连一行 `$nativeEnc` 都不出现，`job.json` 也不落 `outputEncoding`；
+  - `native` = 在 `run.ps1` **最顶部**（任何覆盖之前）取 `[Console]::OutputEncoding`；若继承到的就是 **65001**，兜底到 `[System.Globalization.CultureInfo]::CurrentCulture.TextInfo.ANSICodePage`（否则 `native` 与 `utf8` 等价、参数形同虚设）；
+  - 解码行的**二选一**（`= $utf8` / `= $nativeEnc`）在构建期决定；`FF FE`（5.1 UTF-16LE）兜底与 5.1 preamble **两分支都不动**；
+  - 非法取值 ⇒ **fail loud 且零副作用**（校验在 `mkdir(jobDir)` 之前；`job.json` 与今天一致）；镜像 `tools/dsh-bgjobs-lib.ps1` 用 `__NATIVEENC__`/`__ENCTARGET__` 占位实现同款分支（非 native 时替换为空串，**不留空行**）。
+- **测试**：`tests/unit.test.js`（默认/`native` 两形态的**互为反证**：`native` 必须含 `$nativeEnc = [Console]::OutputEncoding` 且不含 `= $utf8`；默认必须**不含** `$nativeEnc`）、`tests/submit.test.js`（`meta.outputEncoding` 落盘 + 非法值 fail loud 且不建 jobDir）、`tests/sandbox-backend.test.js`（`native` 形态 `run.ps1` 与镜像 **parse-errors=0**）、`tools/smoke-test.ps1`（镜像同款断言）。
+- ★ **反证（摘掉 native 分支 ⇒ 新断言必 FAIL）**：报告里附实测 ✓。
+- **本次发布只到「本地 commit + tag」为止**：`0.2.6` 是**纯数字**版本 ⇒ `git push --tags` 会触发 npm 自动发布（`.github/workflows`），**推送由用户决定**。
+
+### 版本 0.2.5 变更面（供发版核对）
+
+> ⚠ **本节为"重建"**：2026-10-16 由 agent 以 `grep '0.2.5|0.2.1 变更面|固定发布流程'` 发现**本节点位在 M 侧曾被一次"副本同步"覆盖而丢失**（同文件 :627 的「M 运行副本未必同步」约定即其成因）⇒ 与本版相关的**权威口径以 `README.md` 的「近期更新」为准**；若本节点与 README 冲突，**以 README 为准并修正此处**。
+
+- **新增 `sandbox_backend`**（`'acl'` | `'dsh'`，缺省 `acl`；需面板「**沙箱选择**」开关，默认关）：机制、失败语义与跳过项见上文「沙箱后端选择」三条。
+- ★ **教训（已修）**：dsh 分支最初生成的 `run.ps1` **缺调用运算符 `&`** ⇒ 行首是带引号字符串、PowerShell 按**表达式**解析 ⇒ `[Parser]::ParseFile` `parse-errors=10`、任务立刻 `exit 1`（**开箱即坏**）。修法 `'& ' + psQuoteArgv(...)`（镜像 `tools/dsh-bgjobs-lib.ps1` 同步），并补解析器钉子（dsh 形态 `run.ps1` / 生成的 `run.ps1` / 镜像源文件**三处** `parse-errors=0`）。
+- ★ **测试环境坑（已修）**：`psParseErrors()` 原用 **Windows PowerShell 5.1** + `-Command` 读无 BOM 的 UTF-8 源 ⇒ 按 GBK 解码、对镜像恒报 **44 errors**（HEAD 亦然，与本轮改动无关）。改为**以 UTF-8 读入 → 写成带 BOM 的临时副本 → 再解析**：编码无关，且**不动仓库的无 BOM 家规**（`pnpm check:bom` 必须继续通过）。
+- **面板**：开关文案「沙箱后端」→「**沙箱选择**」；新增独立显隐键 `sandboxBackends`（`lib/core/store.js` 的 `ELEMENT_KEYS`/`DEFAULT_ELEMENTS` + `lib/client-src/gui-prefs.js` + `settings-section.js` + i18n `element.sandboxBackends`），可在「字段显示 → 界面元素」单独显隐；`tests/routes.test.js` 的 elements 穷举快照已同步。
+- **本次发布只到「本地 commit + tag」为止**：`0.2.5` 是**纯数字**版本 ⇒ `git push --tags` 会触发 npm 自动发布（`.github/workflows`），**推送由用户决定**。
 
 ### 版本 0.2.1 变更面（供发版核对）
 

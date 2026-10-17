@@ -206,5 +206,29 @@ test('buildPwshRunner: 两种解释器的 run.ps1 都设 [Console]::OutputEncodi
   }
 })
 
+
+test('buildPwshRunner: output_encoding=native 改用继承码页；默认一个 $nativeEnc 都不许有（互证，v0.2.6）', () => {
+  const baseMeta = {
+    workdir: 'C:\\work', jsonPath: 'C:\\work\\job.json', logPath: 'C:\\work\\log.txt',
+    exitcodePath: 'C:\\work\\exit.txt', taskName: 'dsh-bgj-x', interpreter: 'C:\\fake\\pwsh.exe',
+  }
+  const nativeLine = '$nativeEnc = [Console]::OutputEncoding'
+  const fallbackLine = 'if ($nativeEnc.CodePage -eq 65001) { $nativeEnc = [System.Text.Encoding]::GetEncoding([System.Globalization.CultureInfo]::CurrentCulture.TextInfo.ANSICodePage) }'
+  const nativeRunner = buildPwshRunner({ meta: { ...baseMeta, outputEncoding: 'native' } })
+  assert.ok(nativeRunner.includes(nativeLine), 'native：必须含"取继承码页"那行')
+  assert.ok(nativeRunner.includes(fallbackLine), 'native：继承到 65001 时必须兜底到系统 ANSI 码页（否则 native 与 utf8 等价）')
+  assert.ok(nativeRunner.includes('[Console]::OutputEncoding = $nativeEnc'), 'native：解码行改用 $nativeEnc')
+  assert.ok(!nativeRunner.includes('[Console]::OutputEncoding = $utf8'), 'native：不得再按 UTF-8 解码')
+  assert.ok(nativeRunner.indexOf(nativeLine) < nativeRunner.indexOf('$pidPath'), '$nativeEnc 必须在 $pidPath（= 任何覆盖之前）之前取')
+  assert.ok(nativeRunner.indexOf('[Console]::OutputEncoding = $nativeEnc') < nativeRunner.indexOf('*> $logPath'), '编码设置必须在 `*> $logPath` 之前')
+  const utf8Runner = buildPwshRunner({ meta: { ...baseMeta } })
+  assert.ok(!utf8Runner.includes('$nativeEnc'), '默认路径不得出现 $nativeEnc（逐字节不变）')
+  assert.ok(utf8Runner.includes('[Console]::OutputEncoding = $utf8'), '默认路径仍按 UTF-8 解码')
+  for (const t of [nativeRunner, utf8Runner]) {
+    assert.ok(t.includes('0xFF') && t.includes('0xFE'), 'FF FE 检测转换不得丢')
+    assert.ok(!t.includes('Add-Type'), 'run.ps1 不应含 Add-Type')
+  }
+})
+
 // ── 工具注册契约 ──
 
