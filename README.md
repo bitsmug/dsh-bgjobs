@@ -61,8 +61,8 @@
 
 | 插件（可选） | 兼容 |
 |---|---|
-| [dsh-sandbox-mxc](https://github.com/bitsmug/dsh-sandbox-mxc) | `0.1.1` |
-| [dsh-multi-folder](https://github.com/AngelosZou/dsh-multi-folder) | `0.3.3` |
+| [dsh-sandbox-mxc](https://github.com/bitsmug/dsh-sandbox-mxc) | `0.1.2` (最新版)|
+| [dsh-multi-folder](https://github.com/AngelosZou/dsh-multi-folder) | `0.3.3` (DSH `0.2.0-rc.2`)|
 
 
 ## 安装 / 卸载
