@@ -56,19 +56,19 @@
 |---|---|---|
 | Windows | `10`-`11` | `11` (build `>=26300`) |
 | PowerShell 7+ | `>=7.6.5`（沙箱功能需[ zip 解压版 PowerShell](https://learn.microsoft.com/zh-cn/powershell/scripting/install/install-powershell-on-windows?view=powershell-7.6#install-the-zip-package)） | [`>=7.7.0`](https://github.com/PowerShell/PowerShell/releases#release-v7.7.0-preview.5) |
-| DSH |`0.1.2-rc.1` ~ `0.2.1-rc.2`（rc版）  （[官方桌面版](https://www.deepseek.com/harness/)/以`win`+`R` 运行 [npx @deepseek-ai/dsh web](https://github.com/deepseek-ai/deepseek-harness#run-from-npm)） |  `0.2.1-rc.2` |
-| Node.js | `^22.19.0 \|\| >=24.0.0`（或自动使用官方桌面版自带Node） | [`>=24.22.0`](https://nodejs.org/zh-cn/download) |
+| DSH |`0.1.2-rc.1` ~ `0.2.1-rc.3`（rc版）  （[官方桌面版](https://www.deepseek.com/harness/)/以`win`+`R` 运行 [npx @deepseek-ai/dsh web](https://github.com/deepseek-ai/deepseek-harness#run-from-npm)） |  `0.2.1-rc.3` |
+| Node.js | `^22.19.0 \|\| >=24.0.0`（或自动使用官方桌面版自带Node） | [`>=24.22.1`](https://nodejs.org/zh-cn/download) |
 
 | 插件（可选） | 兼容 |
 |---|---|
 | [dsh-sandbox-mxc](https://github.com/bitsmug/dsh-sandbox-mxc) | `0.1.2` (最新版)|
-| [dsh-multi-folder](https://github.com/AngelosZou/dsh-multi-folder) | `0.3.3` (DSH `0.2.0-rc.2`)|
+| [dsh-multi-folder](https://github.com/AngelosZou/dsh-multi-folder) | `0.3.4` |
 
 
 ## 安装 / 卸载
 
 
-**方式 A（最省事，插件管理器（GUI 插件入口）；DSH v0.2.0-rc.2）**
+**方式 A（最省事，插件管理器（GUI 插件入口）；DSH `>=0.2.0-rc.2`）**
 
 1. 打开 DSH 官方桌面客户端或网页，点击左侧导航栏的“插件”入口，转至插件页，点击右上角的“添加插件”；
 2. 在插件安装输入框中输入 `bgjobs` （或 GitHub 最新版：`github:bitsmug/dsh-bgjobs`）并确认安装；首次安装时会提示要求允许 `pnpm approve build`，点击允许后再次安装即可。

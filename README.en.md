@@ -56,17 +56,17 @@ Built for long-running work — large downloads, batch scripts, compilation, dat
 |---|---|---|
 | Windows | `10`-`11` | `11` (build `>=26300`) |
 | PowerShell 7+ | `>=7.6.5` (sandbox features need the [zip build of PowerShell](https://learn.microsoft.com/zh-cn/powershell/scripting/install/install-powershell-on-windows?view=powershell-7.6#install-the-zip-package)) | [`>=7.7.0`](https://github.com/PowerShell/PowerShell/releases#release-v7.7.0-preview.5) |
-| DSH | `0.1.2-rc.1` ~ `0.2.1-rc.2` (rc builds) ([official desktop build](https://www.deepseek.com/harness/) / run [npx @deepseek-ai/dsh web](https://github.com/deepseek-ai/deepseek-harness#run-from-npm) via Win+R) | `0.2.1-rc.2` |
-| Node.js | `^22.19.0 \|\| >=24.0.0` (or automatically use the Node bundled with the official desktop build) | [`>=24.22.0`](https://nodejs.org/zh-cn/download) |
+| DSH | `0.1.2-rc.1` ~ `0.2.1-rc.3` (rc builds) ([official desktop build](https://www.deepseek.com/harness/) / run [npx @deepseek-ai/dsh web](https://github.com/deepseek-ai/deepseek-harness#run-from-npm) via Win+R) | `0.2.1-rc.3` |
+| Node.js | `^22.19.0 \|\| >=24.0.0` (or automatically use the Node bundled with the official desktop build) | [`>=24.22.1`](https://nodejs.org/zh-cn/download) |
 
 | Optional plugin | Compatible |
 |---|---|
 | [dsh-sandbox-mxc](https://github.com/bitsmug/dsh-sandbox-mxc) | `0.1.2` (latest version) |
-| [dsh-multi-folder](https://github.com/AngelosZou/dsh-multi-folder) | `0.3.3` (DSH `0.2.0-rc.2`) |
+| [dsh-multi-folder](https://github.com/AngelosZou/dsh-multi-folder) | `0.3.4` |
 
 ## Install / uninstall
 
-**Method A (easiest: plugin manager (the GUI plugin entry); DSH v0.2.0-rc.2)**
+**Method A (easiest: plugin manager (the GUI plugin entry); DSH >=0.2.0-rc.2)**`
 
 1. Open the official DSH desktop client or the web page, click the "Plugins" entry in the left navigation bar, go to the plugin page and click "Add plugin" in the top-right corner;
 2. Enter `bgjobs` in the plugin install box (or the latest from GitHub: `github:bitsmug/dsh-bgjobs`) and confirm; on the first install it asks you to allow `pnpm approve build` — click allow and install again.
