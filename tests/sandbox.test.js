@@ -243,7 +243,8 @@ test('bgjob_submit: 受限会话 + full access 关 → 直接拒绝（bat 恒全
     const submit = tools.find((t) => t.name === 'bgjob_submit')
     const exec = { agent: { session: { id: 's1' } } }
     await assert.rejects(
-      submit.execute({ name: 't', command: 'echo x', workdir }, exec),
+      // B′：bgjob_submit 缺省 engine=auto ⇒ 本条验证 bat 语义，显式指定 engine:'bat'
+      submit.execute({ name: 't', command: 'echo x', workdir, engine: 'bat' }, exec),
       /full access/,
     )
     assert.equal(approvalAsked, 0, 'bat 恒全权限不再逐次弹审批')
@@ -269,7 +270,8 @@ test('bgjob_submit: 受限会话 + full access 开 → 原模式放行', async (
   try {
     const submit = tools.find((t) => t.name === 'bgjob_submit')
     const exec = { agent: { session: { id: 's1' } } }
-    const res = await submit.execute({ name: 't', command: 'echo x', workdir }, exec)
+    // B′：bgjob_submit 缺省 engine=auto ⇒ 本条验证 bat 语义，显式指定 engine:'bat'
+    const res = await submit.execute({ name: 't', command: 'echo x', workdir, engine: 'bat' }, exec)
     assert.equal(res.ok, true)
     const meta = JSON.parse(await fsp.readFile(path.join(workdir, '.dsh', 'bgjobs', res.jobId, 'job.json'), 'utf8'))
     assert.equal(meta.sandbox, 'off', 'full access 放行的 bat 任务落盘 off')

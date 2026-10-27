@@ -22,17 +22,17 @@ import {
 
 installSuiteHooks()
 
-test('apply: 注册十个工具，output 结构合法', () => {
+test('apply: 注册十一个工具，output 结构合法', () => {
   const { ctx, tools } = makeCtx()
   const dispose = apply(ctx)
-  assert.equal(tools.length, 10)
+  assert.equal(tools.length, 11)
   for (const tool of tools) {
     assert.ok(tool.output, `${tool.name} 必须声明 output`)
     assert.equal(typeof tool.output.render, 'function')
     assert.equal(typeof tool.output.schema, 'object')
     assert.equal(typeof tool.execute, 'function')
   }
-  assert.deepEqual(tools.map((t) => t.name).sort(), ['bgjob_delete', 'bgjob_kill', 'bgjob_list', 'bgjob_mcp_tools', 'bgjob_pending_list', 'bgjob_status', 'bgjob_submit', 'bgjob_submit_mcp', 'bgjob_submit_pwsh', 'bgjob_wait'])
+  assert.deepEqual(tools.map((t) => t.name).sort(), ['bgjob_config', 'bgjob_delete', 'bgjob_kill', 'bgjob_list', 'bgjob_mcp_tools', 'bgjob_pending_list', 'bgjob_status', 'bgjob_submit', 'bgjob_submit_mcp', 'bgjob_submit_pwsh', 'bgjob_wait'])
   dispose()
 })
 
@@ -122,4 +122,49 @@ test('guidance: apply 注册 tool:bgjobs system prompt section', () => {
 })
 
 // ── 提交路径 ──
+
+
+
+test('bgjob_config: help 无 topic ⇒ 返回索引（自包含，列出各主题）', async () => {
+  const { ctx, tools } = makeCtx()
+  const dispose = apply(ctx)
+  try {
+    const t = tools.find((x) => x.name === 'bgjob_config')
+    const r = await t.execute({ action: 'help' }, { agent: undefined })
+    assert.equal(r.ok, true)
+    assert.equal(r.topic, 'index')
+    for (const k of ['submit', 'query', 'control', 'defaults', 'aliases']) assert.ok(r.help.includes(k), '索引应列出主题: ' + k)
+    assert.ok(Array.isArray(r.topics) && r.topics.length >= 8, 'topics 应是主题名数组')
+    assert.ok(!r.help.includes('docs/'), '帮助必须自包含，不得依赖 docs/ 路径')
+  } finally { dispose() }
+})
+
+
+test('bgjob_config: help 指定 topic ⇒ 返回该主题全文（自包含）', async () => {
+  const { ctx, tools } = makeCtx()
+  const dispose = apply(ctx)
+  try {
+    const t = tools.find((x) => x.name === 'bgjob_config')
+    const r = await t.execute({ action: 'help', topic: 'submit' }, { agent: undefined })
+    assert.equal(r.ok, true)
+    assert.equal(r.topic, 'submit')
+    assert.ok(r.help.includes('engine'), 'submit 主题应讲 engine 判定')
+    assert.ok(r.help.includes('示例'), 'submit 主题应给示例')
+    assert.ok(!r.help.includes('docs/'), '主题全文也必须自包含')
+  } finally { dispose() }
+})
+
+
+test('bgjob_config: help 未知 topic ⇒ 返回索引 + warnings', async () => {
+  const { ctx, tools } = makeCtx()
+  const dispose = apply(ctx)
+  try {
+    const t = tools.find((x) => x.name === 'bgjob_config')
+    const r = await t.execute({ action: 'help', topic: 'no-such-topic' }, { agent: undefined })
+    assert.equal(r.ok, true)
+    assert.equal(r.topic, 'index')
+    assert.ok(Array.isArray(r.warnings) && r.warnings.length > 0, '未知主题应给 warnings')
+    assert.ok(r.help.includes('submit'), '未知主题仍应返回索引')
+  } finally { dispose() }
+})
 

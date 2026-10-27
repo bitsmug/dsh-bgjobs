@@ -100,7 +100,7 @@ test('submitJob: 成功路径完整落盘（run.bat+cmd.bat+job.json）+ /Create
   const dispose = apply(ctx)
   try {
     const submit = tools.find((t) => t.name === 'bgjob_submit')
-    const res = await submit.execute({ name: 't', command: 'echo ok', workdir }, { agent: undefined })
+    const res = await submit.execute({ name: 't', command: 'echo ok', workdir, engine: 'bat' }, { agent: undefined })
     assert.equal(res.ok, true)
     const jobDir = workdir + '\\.dsh\\bgjobs\\' + res.jobId
     const meta = JSON.parse(await fsp.readFile(path.join(jobDir, 'job.json'), 'utf8'))
@@ -148,7 +148,7 @@ test('submitJob: /Create 失败时清理目录且不调用 /Run', async () => {
   const dispose = apply(ctx)
   try {
     const submit = tools.find((t) => t.name === 'bgjob_submit')
-    const res = await submit.execute({ name: 't', command: 'echo x', workdir }, { agent: undefined })
+    const res = await submit.execute({ name: 't', command: 'echo x', workdir, engine: 'bat' }, { agent: undefined })
     assert.equal(res.ok, false)
     assert.match(res.error, /schtasks create failed/)
     const jobsRoot = workdir + '\\.dsh\\bgjobs'
@@ -175,7 +175,7 @@ test('submitJob: /Run 失败时删除残留任务计划并清理目录', async (
   const dispose = apply(ctx)
   try {
     const submit = tools.find((t) => t.name === 'bgjob_submit')
-    const res = await submit.execute({ name: 't', command: 'echo x', workdir }, { agent: undefined })
+    const res = await submit.execute({ name: 't', command: 'echo x', workdir, engine: 'bat' }, { agent: undefined })
     assert.equal(res.ok, false)
     assert.match(res.error, /schtasks run failed/)
     const jobsRoot = workdir + '\\.dsh\\bgjobs'
@@ -353,3 +353,30 @@ test('submitJob(pwsh): PowerShell 未找到时返回错误并清理目录', asyn
 // ── tick / 完成检测 ──
 
 /** 构造一个已提交 running 任务的插件实例，返回 tick 与工具。 */
+
+
+test('T5: 项目 .dsh/bgjobs.json 的 submit 默认经工具入口生效（notify 被项目值覆盖）', async () => {
+  const calls = []
+  setSchtasksRunner(makeFakeRunner(calls))
+  const workdir = await makeWorkdir()
+  await fsp.mkdir(path.join(workdir, '.dsh'), { recursive: true })
+  await fsp.writeFile(
+    path.join(workdir, '.dsh', 'bgjobs.json'),
+    JSON.stringify({ submit: { notify: 'on-exit' } }),
+    'utf8'
+  )
+  const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
+  const dispose = apply(ctx)
+  try {
+    const submit = tools.find((t) => t.name === 'bgjob_submit')
+    const exec = { agent: { session: { id: 's-t5', header: { cwd: workdir } } } }
+    // 用 bat 引擎：不依赖 pwsh 解析（本文件其它用例会改 shell 探针）；notify 通过项目默认传入
+    const res = await submit.execute({ name: 't5', engine: 'bat', command: 'echo ok', workdir }, exec)
+    assert.equal(res.ok, true, 'T5: submit 应成功，实际 res=' + JSON.stringify(res))
+    const meta = JSON.parse(await fsp.readFile(path.join(workdir, '.dsh', 'bgjobs', res.jobId, 'job.json'), 'utf8'))
+    assert.equal(meta.notify, 'on-exit', '项目默认 notify 应经工具入口生效；meta=' + JSON.stringify(meta).slice(0, 300))
+  } finally {
+    dispose()
+    await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
+  }
+})

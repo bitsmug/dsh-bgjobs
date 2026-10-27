@@ -381,7 +381,7 @@ test('mcp: 受限会话（read-only）+ full access 关 → 仍可提交；对�
     assert.equal(meta.engine, 'mcp')
     assert.equal(meta.sandbox, 'off')
     await assert.rejects(
-      tools.find((t) => t.name === 'bgjob_submit').execute({ name: 't2', command: 'echo x', workdir }, exec),
+      tools.find((t) => t.name === 'bgjob_submit').execute({ name: 't2', command: 'echo x', workdir, engine: 'bat' }, exec),
       /full access/,
       '对照：bat 引擎在受限会话 + full access 关时仍被拒',
     )

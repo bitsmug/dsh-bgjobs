@@ -681,3 +681,16 @@ pnpm dsh plugin --profile <profile> add link:<插件绝对路径>
 - **本次发布只到「本地 commit + tag」为止**：`git push` / `git push origin v0.2.1` 会触发 npm 自动发布（`.github/workflows`）；v0.2.1 是**纯数字**版本 ⇒ 推 tag 即自动发布，**推送由用户决定**。
 - **M 运行副本未必同步**：M 侧若无完整 git 历史，则约定用**本文件对应版本的 patch** 拉平（M 侧已有的本地改动会被跳过，逐文件报告）。
 - 流程细节见本节「固定发布流程」。
+
+## 工具契约详述（人读摘要）
+
+> **模型侧真源在代码里**：`lib/core/help.js` 的 `HELP_TOPICS`，经
+> `bgjob_config({ action:'help', topic })` 读取（无 `topic` 返回索引；未知主题回索引 + warnings）。
+> 这样做的原因：模型看不到仓库 `docs/`，任何「详见 docs/…」对模型都是死引用。
+>
+> 本文件**不再复述参数表**（避免与代码漂移），只留维护者需要的定位信息：
+>
+> - 改契约 ⇒ 改 `lib/core/help.js`（`npm test` 的 `bgjob_config: help …` 三条用例会守）；
+> - 改行为 ⇒ 改 `lib/core/tools.js` + 同步 `help.js` 对应主题；
+> - 人读的架构/发布说明仍在本文件其余章节。
+
