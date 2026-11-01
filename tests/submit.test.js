@@ -380,3 +380,60 @@ test('T5: 项目 .dsh/bgjobs.json 的 submit 默认经工具入口生效（notif
     await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
   }
 })
+
+test('认知负担: workdir 可省 ⇒ 缺省用当前会话工作目录', async () => {
+  const calls = []
+  setSchtasksRunner(makeFakeRunner(calls))
+  const workdir = await makeWorkdir()
+  const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
+  const dispose = apply(ctx)
+  try {
+    const submit = tools.find((t) => t.name === 'bgjob_submit')
+    const exec = { agent: { session: { id: 's-wd', header: { cwd: workdir } } } }
+    // 只给 name + engine + command，完全不给 workdir
+    const res = await submit.execute({ name: 'wd', engine: 'bat', command: 'echo ok' }, exec)
+    assert.equal(res.ok, true, 'workdir 省略时应成功，res=' + JSON.stringify(res))
+    const meta = JSON.parse(await fsp.readFile(path.join(workdir, '.dsh', 'bgjobs', res.jobId, 'job.json'), 'utf8'))
+    assert.equal(path.resolve(meta.workdir), path.resolve(workdir), 'workdir 应缺省为会话 cwd')
+  } finally {
+    dispose()
+    await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+test('认知负担: name 可省 ⇒ 取 command 首行前 24 字', async () => {
+  const calls = []
+  setSchtasksRunner(makeFakeRunner(calls))
+  const workdir = await makeWorkdir()
+  const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
+  const dispose = apply(ctx)
+  try {
+    const submit = tools.find((t) => t.name === 'bgjob_submit')
+    const exec = { agent: { session: { id: 's-name', header: { cwd: workdir } } } }
+    const res = await submit.execute({ engine: 'bat', command: 'echo first-line\necho second' }, exec)
+    assert.equal(res.ok, true, 'res=' + JSON.stringify(res))
+    const meta = JSON.parse(await fsp.readFile(path.join(workdir, '.dsh', 'bgjobs', res.jobId, 'job.json'), 'utf8'))
+    assert.equal(meta.name, 'echo first-line', 'name 应取 command 首行；实际=' + meta.name)
+  } finally {
+    dispose()
+    await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+test('认知负担: 命令里没有 exit ⇒ 返回 warning（退出码可能假成功）', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  const workdir = await makeWorkdir()
+  const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
+  const dispose = apply(ctx)
+  try {
+    const submit = tools.find((t) => t.name === 'bgjob_submit')
+    const exec = { agent: { session: { id: 's-warn', header: { cwd: workdir } } } }
+    const noExit = await submit.execute({ engine: 'bat', command: 'echo ok' }, exec)
+    assert.ok(Array.isArray(noExit.warnings) && noExit.warnings.some((w) => w.includes('exit')), '缺 exit 应给 warning')
+    const withExit = await submit.execute({ engine: 'bat', command: 'echo ok\nexit 0' }, exec)
+    assert.ok(!Array.isArray(withExit.warnings) || !withExit.warnings.some((w) => w.includes('退出码可能恒为 0')), '有 exit 时不应给该 warning')
+  } finally {
+    dispose()
+    await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
+  }
+})

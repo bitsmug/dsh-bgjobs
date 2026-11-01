@@ -49,7 +49,8 @@ test('tools schema: bgjob_submit/bgjob_submit_pwsh 含 notify/notify_mode 枚举
     assert.equal(props.notify_mode.default, 'wakeup')
     // B′：bgjob_submit 合并后 required 收窄为 ['name','workdir']（command 改由引擎运行时校验）；
     //     旧名 bgjob_submit_pwsh 契约不变，仍要求 command。
-    assert.deepEqual(tool.parameters.required, name === 'bgjob_submit' ? ['name', 'workdir'] : ['name', 'command', 'workdir'])
+    // 认知负担优化：workdir 也可省（缺省=当前会话工作目录）⇒ required 只到 name（旧名额外要求 command）
+    assert.deepEqual(tool.parameters.required, name === 'bgjob_submit' ? [] : ['command'])
   }
   dispose()
 })
