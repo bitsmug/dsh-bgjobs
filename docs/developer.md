@@ -652,6 +652,13 @@ pnpm dsh plugin --profile <profile> add link:<插件绝对路径>
 
 `package.json`（版本号等）变更需重新执行 add；`lib/core|lib/*.js` 改动即时生效；`lib/client-src/` 改动需先 `pnpm build:client` 再刷新（必要时重启）。
 
+### 版本 0.3.1 变更面（供发版核对）
+
+- **门控默认开**：`lib/core/store.js` 的 `readSandboxBackends()` 无文件/读失败 ⇒ **true**（此前 false）；`{enabled:false}` 仍可显式关。
+- **去缓存**：该值不再进程内缓存 ⇒ 面板开关与直接写文件都**立即生效**。
+- **行为变化**：默认 `sandbox_backend` 保持 ACL，但**门开**后 L1 的 `dsh` 生效（r4 的 `cordis.patch.yml` 已有 `submit.sandbox_backend: dsh`）⇒ 新任务走 dsh 档，真程序可跑。
+- **回退**：`{"enabled":false}` 或 `sandbox_backend:"acl"`。
+
 ### 版本 0.3.0 变更面（供发版核对）
 
 - **工具面 10 → 8（破坏性）**：`bgjob_submit_pwsh` 退役（`aliasDefs` 只剩 mcp）；调旧名会报工具不存在。能力等价于 `bgjob_submit` + `engine:pwsh` + `options`。

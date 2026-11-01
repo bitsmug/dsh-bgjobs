@@ -246,7 +246,11 @@ allowBuilds:
 
 ## 近期更新
 
-v0.1.71 → v0.3.0
+v0.1.71 → v0.3.1
+
+- **默认沙箱后端改为 `dsh`**：`sandbox_backends` 门控**默认开**（此前默认关 ⇒ 任务落 ACL 档 ⇒ `.NET`/python/git 等真程序因**命名管道被拒**而跑不起来，典型报错 `Access to the path '\\.\pipe\LOCAL\dotnet_...' is denied`）。
+- **回退路径**：写 `$DSH_HOME/bgjobs/sandbox-backends.json` = `{"enabled":false}`，或显式传 `sandbox_backend: "acl"`。
+- 门控不再做进程内缓存 ⇒ 面板开关/文件改动**立即生效**，无需重启。
 
 - **工具面 10 → 8（破坏性）**：`bgjob_submit_pwsh` 退役 —— 它的能力已被 `bgjob_submit`（`engine` 自动判定）+ `options` 完整覆盖；`bgjob_submit_mcp` **保留**（`bgjob_submit` 拒收 mcp 参数，它是唯一 mcp 入口）。
 - **全局配置唯一化**：新增 `$DSH_HOME/bgjobs/config.json`（`submit`/`query`/`control`/`ui` 四组）作为**唯一全局值文件**；插件 config 降级为「种子」，两者冲突时 **config.json 优先**。

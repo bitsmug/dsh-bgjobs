@@ -117,6 +117,7 @@ test('沙箱后端：开关关 + 不传 backend ⇒ 老路径（ACL runner；不
 // ── ② 开关关 + 'dsh' ⇒ fail loud + 零副作用 ─────────────────────────────────
 
 test('沙箱后端：开关关 + dsh ⇒ fail loud（文案整串相等）且零副作用（不建 jobDir、不调 confine）', async () => {
+  await setSandboxBackendsEnabled(false)   // v0.3.1：门默认开，本用例显式关
   setSchtasksRunner(makeFakeRunner([]))
   setShellResolver(async () => SHELL)
   let confineCalled = false
