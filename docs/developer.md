@@ -652,6 +652,19 @@ pnpm dsh plugin --profile <profile> add link:<插件绝对路径>
 
 `package.json`（版本号等）变更需重新执行 add；`lib/core|lib/*.js` 改动即时生效；`lib/client-src/` 改动需先 `pnpm build:client` 再刷新（必要时重启）。
 
+### 版本 0.3.0 变更面（供发版核对）
+
+- **工具面 10 → 8（破坏性）**：`bgjob_submit_pwsh` 退役（`aliasDefs` 只剩 mcp）；调旧名会报工具不存在。能力等价于 `bgjob_submit` + `engine:pwsh` + `options`。
+- **配置收敛（D1–D5）**：`$DSH_HOME/bgjobs/config.json` 为唯一全局值文件；`apply()` 用 `mergeGlobalConfig(pluginConfig)`（文件优先，坏文件静默退化为种子）；新增 `lib/core/config-file.js` 作唯一读写者（读-改-写 + mtime 检查、`null` 删键）。
+- **面板端点**：`GET/POST /bgjobs/config`；设置页「默认等待超时」改走该端点。
+- **迁移**：`uiprefs.waitTimeoutSeconds` → `config.json.ui.waitTimeout`（进程内一次性；老文件只读）。
+- **清理**：`resolveEngine` 的 mcp 自动判定与死分支已删（不可达）。
+
+**迁移提示**
+
+- 全局默认值请写 `config.json`；插件 `cordis.patch.yml` 的 `config` 只在 config.json 缺该组/键时生效。
+- `bgjob_submit_pwsh` 的调用方改成 `bgjob_submit`（sandbox 等参数仍可平铺或放 `options`）。
+
 ### 版本 0.2.7 变更面（供发版核对）
 
 - **工具面收敛（破坏性）**：三个 submit 合并为一个 `bgjob_submit`，`engine` 自动判定（`auto`/`pwsh`/`bat`），工具数 **10 → 9**；`bgjob_submit` 顶层参数 **16 → 5**（`command`/`name`/`workdir`/`engine`/`options`）；mcp 五字段退役，带 mcp 参数或 `engine:"mcp"` 会返回指路错误。

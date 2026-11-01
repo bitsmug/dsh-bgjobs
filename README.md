@@ -246,7 +246,12 @@ allowBuilds:
 
 ## 近期更新
 
-v0.1.71 → v0.2.7
+v0.1.71 → v0.3.0
+
+- **工具面 10 → 8（破坏性）**：`bgjob_submit_pwsh` 退役 —— 它的能力已被 `bgjob_submit`（`engine` 自动判定）+ `options` 完整覆盖；`bgjob_submit_mcp` **保留**（`bgjob_submit` 拒收 mcp 参数，它是唯一 mcp 入口）。
+- **全局配置唯一化**：新增 `$DSH_HOME/bgjobs/config.json`（`submit`/`query`/`control`/`ui` 四组）作为**唯一全局值文件**；插件 config 降级为「种子」，两者冲突时 **config.json 优先**。
+- **面板可编辑全局配置**：新增 `GET/POST /bgjobs/config` 端点，设置页的「默认等待超时」改读写 config.json；旧的 `uiprefs.waitTimeoutSeconds` 退役，宿主启动时**一次性迁移**（老文件只读不写）。
+- **清理**：删除 `resolveEngine` 中不可达的 mcp 自动判定与死分支（R1 后两处都已被拒收闸拦住）。
 
 - **工具面收敛（破坏性）**：三个 submit 合并为一个（`engine` 自动判定，`auto`/`pwsh`/`bat`），工具数 **10 → 9**；`bgjob_submit` 顶层参数收敛到 **5 个**（`command`/`name`/`workdir`/`engine`/`options`），mcp 五字段退役并指路 `bgjob_submit_mcp`（16 → 5）。
 - **默认参数四层**：插件 config → `<workspace>/.dsh/bgjobs.json` → 会话 `bgjob_config({action:"set"})` → 本次参数；坏配置只告警，不影响提交。
