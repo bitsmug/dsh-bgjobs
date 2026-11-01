@@ -356,12 +356,15 @@ pnpm-workspace.yaml  pnpm ≥10 构建白名单（allowBuilds/onlyBuiltDependenc
 
 ### runner 获取与任务 wiring
 
-- **两侧编码陷阱（v0.2.6 定论）**：`run.ps1` 里那次 `[Console]::OutputEncoding = …` 决定**子进程输出被按哪套编码解码**，两个方向**不能同时满足** ⇒ 做成逐任务参数 `output_encoding`：
-  - `utf8`（缺省；v0.1.95）：**UTF-8 程序**（node 等）的输出被按 CP936 解码 ⇒ 必须强制 UTF-8；
-  - `native`（v0.2.6）：**本地码页程序**的输出被按 UTF-8 解码 ⇒ 变成 U+FFFD（`�`）⇒ 改用**进程继承的控制台码页**。
+- **两侧编码陷阱（v0.2.6 定论，v0.3.2 加 `auto`）**：`run.ps1` 里那次 `[Console]::OutputEncoding = …` 决定**子进程输出被按哪套编码解码**，两个方向**不能同时满足** ⇒ 做成逐任务参数 `output_encoding`（`auto`/`utf8`/`native` 三值）：
+  - `auto`（缺省；v0.3.2）：**无损捕获 + 收尾自动识别** —— `*>` 之前把 `[Console]::OutputEncoding` 设为 **ISO-8859-1（CP 28591）**（字节 ↔ U+00XX 一一映射 ⇒ 任何 native 输出都被无损成像）；任务结束后（写 exitcode **之前**）把每个「字符全 ≤ U+00FF 且含 ≥1 个 ≥ U+0080」的极大段映射回字节，先试**严格 UTF-8**（`throwOnInvalidBytes`），失败 ⇒ 按**系统 ANSI 码页**（`CurrentCulture.TextInfo.ANSICodePage`）解码，再把日志重写为干净 UTF-8。显示侧（`registry` 的 view/statusFromDisk/readJobLogTail、`wait` 的 waitSnapshot、`watch` 收尾前重置 `pos`/`tail`/`decoder`）仅对 `meta.outputEncoding === 'auto'` 的 tail 套同口径的 `decodeAutoText`（`lib/util.js`，与 PS 收尾块同一算法），覆盖「运行中流式显示」与「被 kill 未收尾」两个窗口；幂等（解码产物无成像段）。
+  - `utf8`（v0.3.1 前缺省；现为强制档；v0.1.95）：**UTF-8 程序**（node 等）的输出被按 CP936 解码 ⇒ 必须强制 UTF-8；
+  - `native`（v0.2.6；强制档）：**本地码页程序**的输出被按 UTF-8 解码 ⇒ 变成 U+FFFD（`�`）⇒ 改用**进程继承的控制台码页**。
   - `$nativeEnc` 在 `run.ps1` **最顶部**（任何覆盖之前）取；若继承到的就是 65001（UTF-8 控制台）则兜底到 `[System.Globalization.CultureInfo]::CurrentCulture.TextInfo.ANSICodePage` —— 否则 `native` 与 `utf8` 等价、参数形同虚设。
-  - 缺省 `utf8` 时生成的 `run.ps1` **逐字节不变**（`$nativeEnc` 连一行都不出现）；`meta.outputEncoding` 也**只在 `native` 时落盘**（缺省 `job.json` 与加参数之前一致）。
-  - 两分支共用：`FF FE`（5.1 UTF-16LE）兜底转换、5.1 的编码 preamble、以及 `*>` 之前那一次覆盖 —— `utf8` 分支的那行就是原样保留。
+  - **逐字节承诺（v0.3.2 新边界）**：显式 `utf8`/`native` 时生成的 `run.ps1` 与 v0.3.1 形态**逐字节一致**（`$autoActive`/`28591` 连一行都不出现，测试互为反证）；`auto` 才多「解码行两行 + 收尾检测块」。`meta.outputEncoding` 现对 **pwsh 任务恒落盘**；★ 存量老 `job.json` 无该字段 ⇒ 显示闸门不命中、`run.ps1` 走老 utf8 形态，行为不变。
+  - 三分支共用：`FF FE`（5.1 UTF-16LE）兜底转换、5.1 的编码 preamble、以及 `*>` 之前那一次覆盖 —— `utf8` 分支的那行就是原样保留。auto 收尾块插在 **FF FE 转换块之后、`[BGJOB] exit code:` 追加之前** ⇒ host 读到 `exitcode.txt` 时日志必已重写完毕。
+  - **fail-soft**：28591 赋值失败 ⇒ 回退 `$utf8` 行为且 `$autoActive=$false` ⇒ 收尾块整体跳过（最差退化为老 utf8 形态，绝不阻塞收尾）。
+  - **已知边界**（与 help.js 的 encoding 主题同口径）：① PS 输出里合法的 Latin-1 区字符（é/ñ 等）会被当字节成像段重解码（中文环境极少见）；② 同一段内 UTF-8 与 GBK 混杂时整段按其一解码；③ 离线 CLI/GUI 对「被 kill 的 auto 任务」看到中间态（host 显示闸门不覆盖离线端）。
 - `resolveSandboxRunner()`：插件依赖 `@deepseek-ai/dsh-sandbox-windows-acl`（exports `./runner` → `lib/runner.js`）→ 环境变量 `BGJOBS_SANDBOX_RUNNER` 兜底；都不可得且请求沙箱 → fail loud + 清理。
 - **沙箱后端选择（实验，默认关；v0.2.5）**：开关落盘 `$DSH_HOME/bgjobs/sandbox-backends.json`（`{ enabled: false }`；无文件/读失败 ⇒ 关，fail-safe）。面板「**沙箱选择**」开关写它，路由 `GET|POST /bgjobs/sandboxbackends`，`/bgjobs/state` 回显 `sandboxBackends`。
   - **关（缺省）= 与加本开关之前逐字相同的老路径**：沙箱任务一律走内置 ACL runner（上文那套）。
@@ -651,6 +654,36 @@ pnpm dsh plugin --profile <profile> add link:<插件绝对路径>
 ```
 
 `package.json`（版本号等）变更需重新执行 add；`lib/core|lib/*.js` 改动即时生效；`lib/client-src/` 改动需先 `pnpm build:client` 再刷新（必要时重启）。
+
+### 版本 0.3.2 变更面（供发版核对）
+
+- **`output_encoding` 三值 + 缺省改为 `auto`（破坏性）**：`'utf8' | 'native' | 'auto'`，不传的 pwsh 任务走 `auto`（此前 `utf8`）。机制 = **无损捕获 + 收尾自动识别**（见上文「两侧编码陷阱」auto 段）：run.ps1 在 `*>` 前把 `[Console]::OutputEncoding` 设为 28591 无损成像字节；任务结束、写 exitcode **之前**逐段检测（先严格 UTF-8，失败 ⇒ 系统 ANSI 码页）并把日志重写为干净 UTF-8；`job.json` 对 pwsh 任务恒落 `outputEncoding`（`lib/core/jobs.js` 校验 + `lib/core/tools.js` schema enum）。
+- **逐字节承诺的新边界**：显式 `utf8`/`native` 时生成的 `run.ps1` 与 v0.3.1 形态**逐字节一致**（unit 测试以「不含 `$autoActive`/`28591`」互为反证）；存量无 `outputEncoding` 字段的老 job.json ⇒ 显示闸门不命中、run.ps1 走老 utf8 形态，行为不变。
+- **显示闸门**：仅 `meta.outputEncoding === 'auto'` 时，registry（view/statusFromDisk/readJobLogTail）、wait（waitSnapshot）、watch（收尾重置 `pos`/`tail`/`decoder` 后再读）对 tail 套 `decodeAutoText`（`lib/util.js` 导出，`lib/index.js` 再导出；与 PS 收尾块同一算法）——覆盖「运行中流式显示」与「被 kill 未收尾」两窗口；幂等。
+- **镜像双写**：`tools/dsh-bgjobs-lib.ps1` 的 `New-BgjobsPwshRunner` 同步 auto 形态（`$encAuto` 判定与 JS 同构；收尾块以单引号 here-string 模板经 `__AUTOFINAL__` 占位注入，非 auto 替换为空串不留空行）；`Submit-BgjobsJob` 的 pwsh 分支缺省落 `$meta.outputEncoding = 'auto'`。
+- **测试**：`tests/unit.test.js`（utf8/native/auto 三形态互证 + 顺序断言：28591 在 `*>` 前、收尾块在 FF FE 块后、在 `[BGJOB] exit code:` 前；`decodeAutoText` 的 UTF-8/GBK/混合/幂等纯函数用例）、`tests/submit.test.js`（缺省不传 ⇒ auto 落盘 + run.ps1 auto 形态；显式 utf8 ⇒ 老形态；非法值 fail loud 且零副作用）、`tests/sandbox-backend.test.js`（auto 形态 run.ps1 与镜像 **parse-errors=0**）、`tests/kill-tree.test.js`（auto 形态 JS↔镜像**真 pwsh 逐字节对比**）、`tests/defaults.test.js`（auto 经 L4 透传零告警）、`tools/smoke-test.ps1`（auto 8 条断言）。全量 322 过 + 冒烟 SMOKE PASSED + `check:bom` 无多余 BOM。
+- ★ **反证（把 jobs.js 缺省解析临时改回 `'utf8'` ⇒ 新用例「缺省（不传）应落盘 auto」立即红，恢复后绿）** ✓。
+- **本次发布只到「本地 commit + tag」为止**：`0.3.2` 是**纯数字**版本 ⇒ `git push --tags` 会触发 npm 自动发布（`.github/workflows`），**推送由用户决定**。
+
+### 版本 0.3.1 变更面（供发版核对）
+
+- **门控默认开**：`lib/core/store.js` 的 `readSandboxBackends()` 无文件/读失败 ⇒ **true**（此前 false）；`{enabled:false}` 仍可显式关。
+- **去缓存**：该值不再进程内缓存 ⇒ 面板开关与直接写文件都**立即生效**。
+- **行为变化**：默认 `sandbox_backend` 保持 ACL，但**门开**后 L1 的 `dsh` 生效（r4 的 `cordis.patch.yml` 已有 `submit.sandbox_backend: dsh`）⇒ 新任务走 dsh 档，真程序可跑。
+- **回退**：`{"enabled":false}` 或 `sandbox_backend:"acl"`。
+
+### 版本 0.3.0 变更面（供发版核对）
+
+- **工具面 10 → 8（破坏性）**：`bgjob_submit_pwsh` 退役（`aliasDefs` 只剩 mcp）；调旧名会报工具不存在。能力等价于 `bgjob_submit` + `engine:pwsh` + `options`。
+- **配置收敛（D1–D5）**：`$DSH_HOME/bgjobs/config.json` 为唯一全局值文件；`apply()` 用 `mergeGlobalConfig(pluginConfig)`（文件优先，坏文件静默退化为种子）；新增 `lib/core/config-file.js` 作唯一读写者（读-改-写 + mtime 检查、`null` 删键）。
+- **面板端点**：`GET/POST /bgjobs/config`；设置页「默认等待超时」改走该端点。
+- **迁移**：`uiprefs.waitTimeoutSeconds` → `config.json.ui.waitTimeout`（进程内一次性；老文件只读）。
+- **清理**：`resolveEngine` 的 mcp 自动判定与死分支已删（不可达）。
+
+**迁移提示**
+
+- 全局默认值请写 `config.json`；插件 `cordis.patch.yml` 的 `config` 只在 config.json 缺该组/键时生效。
+- `bgjob_submit_pwsh` 的调用方改成 `bgjob_submit`（sandbox 等参数仍可平铺或放 `options`）。
 
 ### 版本 0.2.7 变更面（供发版核对）
 

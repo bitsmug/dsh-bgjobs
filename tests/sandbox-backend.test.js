@@ -37,7 +37,7 @@ function servicesFor(workdir, extra) {
 }
 
 function findSubmit(tools) {
-  return tools.find((t) => t.name === 'bgjob_submit_pwsh')
+  return tools.find((t) => t.name === 'bgjob_submit')
 }
 
 function jobDirOf(workdir, jobId) {
@@ -117,6 +117,7 @@ test('沙箱后端：开关关 + 不传 backend ⇒ 老路径（ACL runner；不
 // ── ② 开关关 + 'dsh' ⇒ fail loud + 零副作用 ─────────────────────────────────
 
 test('沙箱后端：开关关 + dsh ⇒ fail loud（文案整串相等）且零副作用（不建 jobDir、不调 confine）', async () => {
+  await setSandboxBackendsEnabled(false)   // v0.3.1：门默认开，本用例显式关
   setSchtasksRunner(makeFakeRunner([]))
   setShellResolver(async () => SHELL)
   let confineCalled = false
@@ -383,5 +384,34 @@ test('解析器验收：output_encoding=native 的 run.ps1 与镜像同款分支
     mirror.includes("$encNative = ($Job.meta.outputEncoding -eq 'native')"),
     '镜像应从 meta.outputEncoding 判定 native',
   )
+  assert.equal(psParseErrors(MIRROR_PS1), 0, '镜像必须 parse-errors=0')
+})
+
+test('解析器验收：output_encoding=auto 的 run.ps1 与镜像同款分支都可解析（v0.3.2）', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  setShellResolver(async () => SHELL)
+  setSandboxRunnerResolver(async () => ACL_RUNNER)
+  const workdir = await makeWorkdir()
+  const { ctx, tools } = makeCtx({ services: servicesFor(workdir) })
+  apply(ctx)
+  const res = await findSubmit(tools).execute(
+    { name: 't', command: 'echo ok', workdir, sandbox: 'workspace-write', output_encoding: 'auto' },
+    { agent: undefined },
+  )
+  assert.equal(res.ok, true)
+  const runnerPath = path.join(jobDirOf(workdir, res.jobId), 'run.ps1')
+  const text = await fsp.readFile(runnerPath, 'utf8')
+  assert.ok(text.includes('$autoActive = $false'), 'auto：run.ps1 声明 $autoActive')
+  assert.ok(text.includes('[Console]::OutputEncoding = [System.Text.Encoding]::GetEncoding(28591)'), 'auto：28591 无损成像')
+  assert.ok(text.includes('if ($autoActive) {'), 'auto：收尾检测块')
+  assert.ok(!text.includes('$nativeEnc'), 'auto：不得含 $nativeEnc')
+  assert.equal(psParseErrors(runnerPath), 0, 'auto 形态 run.ps1 必须 parse-errors=0')
+  // 镜像：判据与占位都在，且自身可解析（两处逐字一致的纪律）。
+  const mirror = await fsp.readFile(MIRROR_PS1, 'utf8')
+  assert.ok(
+    mirror.includes("$encAuto = ($Job.meta.outputEncoding -eq 'auto')"),
+    '镜像应从 meta.outputEncoding 判定 auto',
+  )
+  assert.ok(mirror.includes('__AUTOFINAL__'), '镜像模板应用 __AUTOFINAL__ 占位（收尾块独立成行注入）')
   assert.equal(psParseErrors(MIRROR_PS1), 0, '镜像必须 parse-errors=0')
 })

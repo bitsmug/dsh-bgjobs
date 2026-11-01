@@ -9,6 +9,7 @@ import path from 'node:path'
 
 import {
   apply, strip, buildBat, buildCmdBat, buildPwshRunner, buildPs1, buildLaunchVbs, parseExitCode,
+  decodeAutoText,
   jobSandboxDecision, shouldNotifyForExit,
   setSchtasksRunner, setShellResolver, setSandboxRunnerResolver,
   resolveBgjobsHome, bgjobsIndexPath, readBgjobsIndex, writeBgjobsIndex,
@@ -223,11 +224,56 @@ test('buildPwshRunner: output_encoding=native 改用继承码页；默认一个 
   assert.ok(nativeRunner.indexOf('[Console]::OutputEncoding = $nativeEnc') < nativeRunner.indexOf('*> $logPath'), '编码设置必须在 `*> $logPath` 之前')
   const utf8Runner = buildPwshRunner({ meta: { ...baseMeta } })
   assert.ok(!utf8Runner.includes('$nativeEnc'), '默认路径不得出现 $nativeEnc（逐字节不变）')
+  assert.ok(!utf8Runner.includes('$autoActive') && !utf8Runner.includes('28591'), '无字段（存量任务）不得出现 auto 形态（逐字节不变）')
   assert.ok(utf8Runner.includes('[Console]::OutputEncoding = $utf8'), '默认路径仍按 UTF-8 解码')
   for (const t of [nativeRunner, utf8Runner]) {
     assert.ok(t.includes('0xFF') && t.includes('0xFE'), 'FF FE 检测转换不得丢')
     assert.ok(!t.includes('Add-Type'), 'run.ps1 不应含 Add-Type')
   }
+})
+
+test('buildPwshRunner: output_encoding=auto 无损捕获（28591）+ 收尾检测块；显式 utf8 保持老形态（v0.3.2）', () => {
+  const baseMeta = {
+    workdir: 'C:\\work', jsonPath: 'C:\\work\\job.json', logPath: 'C:\\work\\log.txt',
+    exitcodePath: 'C:\\work\\exit.txt', taskName: 'dsh-bgj-x', interpreter: 'C:\\fake\\pwsh.exe',
+  }
+  const autoRunner = buildPwshRunner({ meta: { ...baseMeta, outputEncoding: 'auto' } })
+  assert.ok(autoRunner.includes('$autoActive = $false'), 'auto：须先声明 $autoActive')
+  assert.ok(autoRunner.includes('[Console]::OutputEncoding = [System.Text.Encoding]::GetEncoding(28591)'), 'auto：28591 无损成像')
+  assert.ok(autoRunner.includes('if ($autoActive) {'), 'auto：须含收尾检测块')
+  assert.ok(autoRunner.includes('System.Text.UTF8Encoding($false, $true)'), 'auto：严格 UTF-8（throwOnInvalidBytes）试错')
+  assert.ok(autoRunner.includes('ANSICodePage'), 'auto：ANSI 码页兜底')
+  assert.ok(autoRunner.includes('[System.Text.RegularExpressions.Regex]::Replace'), 'auto：逐段替换')
+  assert.ok(!autoRunner.includes('$nativeEnc'), 'auto：不得含 $nativeEnc')
+  // 顺序：28591 赋值在 `*>` 之前；收尾块在 FF FE 块之后、exit marker 之前（host 读到 exitcode 时日志已重写）
+  assert.ok(autoRunner.indexOf('GetEncoding(28591)') < autoRunner.indexOf('*> $logPath'), '28591 赋值必须在 `*> $logPath` 之前')
+  assert.ok(autoRunner.indexOf('if ($autoActive) {') > autoRunner.indexOf('0xFE'), '收尾块必须在 FF FE 块之后')
+  assert.ok(autoRunner.indexOf('if ($autoActive) {') < autoRunner.indexOf('[BGJOB] exit code:'), '收尾块必须在 exit marker 之前')
+  assert.ok(autoRunner.includes('0xFF') && autoRunner.includes('0xFE'), 'FF FE 检测转换不得丢')
+  // 显式 utf8 = 老形态（强制档，逐字节不变）
+  const utf8Runner = buildPwshRunner({ meta: { ...baseMeta, outputEncoding: 'utf8' } })
+  assert.ok(!utf8Runner.includes('$autoActive') && !utf8Runner.includes('28591'), '显式 utf8 不得出现 auto 形态')
+  assert.ok(!utf8Runner.includes('$nativeEnc'), '显式 utf8 不得出现 $nativeEnc')
+  assert.ok(utf8Runner.includes('[Console]::OutputEncoding = $utf8'), '显式 utf8 仍按 UTF-8 解码')
+})
+
+test('decodeAutoText: UTF-8/GBK 字节成像还原、纯 ASCII 与正常中文原样、幂等（v0.3.2）', () => {
+  const image = (bytes) => Array.from(bytes).map((b) => String.fromCharCode(b)).join('')
+  // UTF-8 成像（node 类程序的输出）：'中文' 的 UTF-8 字节
+  const utf8Imaged = image(new TextEncoder().encode('中文'))
+  assert.equal(decodeAutoText(utf8Imaged), '中文', 'UTF-8 成像段应还原为中文')
+  // GBK 成像（MATLAB 类本地码页程序）：'中文' 的 GBK 字节 D6 D0 CE C4
+  const gbkImaged = image([0xd6, 0xd0, 0xce, 0xc4])
+  assert.equal(decodeAutoText(gbkImaged), '中文', 'GBK 成像段应还原为中文')
+  // 混合：ASCII 前缀 + 成像段 + ASCII 后缀
+  assert.equal(decodeAutoText('ok: ' + utf8Imaged + ' done'), 'ok: 中文 done', '成像段外的 ASCII 原样')
+  // 纯 ASCII / 正常中文（无成像段）原样
+  assert.equal(decodeAutoText('plain ascii 123'), 'plain ascii 123')
+  assert.equal(decodeAutoText('正常中文'), '正常中文')
+  assert.equal(decodeAutoText(''), '')
+  // 幂等：收尾重写后再套一遍是 no-op
+  assert.equal(decodeAutoText(decodeAutoText(utf8Imaged)), '中文')
+  assert.equal(decodeAutoText(decodeAutoText(gbkImaged)), '中文')
 })
 
 // ── 工具注册契约 ──

@@ -22,17 +22,17 @@ import {
 
 installSuiteHooks()
 
-test('apply: 注册十一个工具，output 结构合法', () => {
+test('apply: 注册十个工具，output 结构合法', () => {
   const { ctx, tools } = makeCtx()
   const dispose = apply(ctx)
-  assert.equal(tools.length, 11)
+  assert.equal(tools.length, 10)
   for (const tool of tools) {
     assert.ok(tool.output, `${tool.name} 必须声明 output`)
     assert.equal(typeof tool.output.render, 'function')
     assert.equal(typeof tool.output.schema, 'object')
     assert.equal(typeof tool.execute, 'function')
   }
-  assert.deepEqual(tools.map((t) => t.name).sort(), ['bgjob_config', 'bgjob_delete', 'bgjob_kill', 'bgjob_list', 'bgjob_mcp_tools', 'bgjob_pending_list', 'bgjob_status', 'bgjob_submit', 'bgjob_submit_mcp', 'bgjob_submit_pwsh', 'bgjob_wait'])
+  assert.deepEqual(tools.map((t) => t.name).sort(), ['bgjob_config', 'bgjob_delete', 'bgjob_kill', 'bgjob_list', 'bgjob_mcp_tools', 'bgjob_pending_list', 'bgjob_status', 'bgjob_submit', 'bgjob_submit_mcp', 'bgjob_wait'])
   dispose()
 })
 
@@ -51,7 +51,6 @@ test('apply: presentCall 返回 generic 卡片', () => {
 test('guidance: buildBgjobsGuidance 提及各工具与关键注意事项', () => {
   const text = buildBgjobsGuidance()
   assert.ok(text.includes('bgjob_submit'))
-  assert.ok(text.includes('bgjob_submit_pwsh'))
   assert.ok(text.includes('bgjob_status'))
   assert.ok(text.includes('bgjob_wait'))
   assert.ok(text.includes('logic'), 'guidance 应说明 bgjob_wait 的 logic 模式（any/all）')
@@ -102,7 +101,7 @@ test('tools: 超时参数缺省不限时、可传任意正数（v0.1.84 去掉 6
   assert.equal(mcpSubmit.parameters.properties.timeout_seconds.default, undefined, '缺省不再是 60（缺省 = 不限时）')
   assert.ok(!/1–600/.test(mcpSubmit.parameters.properties.timeout_seconds.description), 'timeout_seconds 不应再写 1–600')
   assert.ok(mcpSubmit.parameters.properties.timeout_seconds.description.includes('不限时'), 'timeout_seconds 描述应写明缺省不限时')
-  for (const name of ['bgjob_submit', 'bgjob_submit_pwsh', 'bgjob_submit_mcp']) {
+  for (const name of ['bgjob_submit', 'bgjob_submit_mcp']) {
     const t = tools.find((x) => x.name === name)
     // R3：bgjob_submit 的 wait 已搬进 options 袋
     const waitProp = name === 'bgjob_submit'
@@ -122,7 +121,6 @@ test('guidance: apply 注册 tool:bgjobs system prompt section', () => {
   assert.ok(sec, 'apply 应注册 tool:bgjobs section')
   assert.equal(sec.order, 150)
   assert.ok(sec.text.includes('bgjob_submit'))
-  assert.ok(sec.text.includes('bgjob_submit_pwsh'))
   dispose()
 })
 

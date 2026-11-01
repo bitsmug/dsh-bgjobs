@@ -155,7 +155,7 @@ async function seedJob(options = {}) {
   const workdir = await makeWorkdir()
   const { ctx, tools, intervals, injectCallbacks } = makeCtx({ services: {} })
   const dispose = apply(ctx)
-  const submit = tools.find((t) => t.name === 'bgjob_submit_pwsh')
+  const submit = tools.find((t) => t.name === 'bgjob_submit')
   const res = await submit.execute({ name: 't', command: 'Start-Sleep -Seconds 30', workdir }, { agent: undefined })
   assert.equal(res.ok, true, '提交应成功')
   const jobDir = path.join(workdir, '.dsh', 'bgjobs', res.jobId)
@@ -1204,6 +1204,37 @@ test('scripts: run.ps1 编码兜底行 —— 同一个 synthetic job 的 JS 产
     console.log(`[mirror] js=${jsBytes.length} bytes / ps=${mirrorBytes.length} bytes / byte-equal=${jsBytes.equals(mirrorBytes)}`)
     assert.ok(mirrorBytes.equals(jsBytes),
       `两处产物必须逐字节一致：js=${jsBytes.length} 字节、ps=${mirrorBytes.length} 字节`)
+  } finally {
+    await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+test('scripts: auto 形态 run.ps1 —— 同一个 synthetic job 的 JS 产物与 PS 镜像产物逐字节一致（v0.3.2）', async (t) => {
+  const meta = {
+    workdir: 'C:\\work', logPath: 'C:\\work\\.dsh\\bgjobs\\bg-x\\stdout.log',
+    exitcodePath: 'C:\\work\\.dsh\\bgjobs\\bg-x\\exitcode.txt', jsonPath: 'C:\\work\\.dsh\\bgjobs\\bg-x\\job.json',
+    taskName: 'dsh-bgj-bg-x', interpreter: 'C:\\fake\\pwsh.exe', outputEncoding: 'auto',
+  }
+  const jsText = buildPwshRunner({ meta })
+  assert.ok(jsText.includes('GetEncoding(28591)'), 'JS 侧 auto 形态必须含 28591 无损成像')
+  assert.ok(jsText.includes('if ($autoActive) {'), 'JS 侧 auto 形态必须含收尾检测块')
+  const shell = findPowerShell()
+  if (shell === null) { t.skip('未找到 pwsh / Windows PowerShell，跳过实机镜像比对'); return }
+  const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'bgjobs-mirror-auto-'))
+  try {
+    const metaPath = path.join(tmpDir, 'meta.json')
+    const buildPath = path.join(tmpDir, 'build-mirror.ps1')
+    const mirrorPath = path.join(tmpDir, 'mirror-run.ps1')
+    await fsp.writeFile(metaPath, JSON.stringify(meta), 'utf8')
+    await fsp.writeFile(buildPath, MIRROR_BUILD_PS1, 'utf8')
+    const res = spawnSync(shell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', buildPath,
+      '-LibPath', PS_LIB, '-MetaPath', metaPath, '-OutPath', mirrorPath], { encoding: 'utf8' })
+    assert.equal(res.status, 0, 'PS 镜像生成器必须跑通：' + (res.stderr || res.stdout))
+    const mirrorBytes = await fsp.readFile(mirrorPath)
+    const jsBytes = Buffer.from(jsText, 'utf8')
+    console.log(`[mirror-auto] js=${jsBytes.length} bytes / ps=${mirrorBytes.length} bytes / byte-equal=${jsBytes.equals(mirrorBytes)}`)
+    assert.ok(mirrorBytes.equals(jsBytes),
+      `auto 形态两处产物必须逐字节一致：js=${jsBytes.length} 字节、ps=${mirrorBytes.length} 字节`)
   } finally {
     await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {})
   }

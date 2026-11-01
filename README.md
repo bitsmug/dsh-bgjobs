@@ -140,7 +140,7 @@ allowBuilds:
 | 工具 | 一句话 |
 |---|---|
 | `bgjob_submit` | 提交后台任务（`command` 为 **bat** 语法） |
-| `bgjob_submit_pwsh` | 提交后台任务（**PowerShell** 语法；UTF-8 日志、`exit <code>` 语义安全；可选 `sandbox` / `sandbox_backend` / `output_encoding`） |
+| `bgjob_submit_pwsh` | 提交后台任务（**PowerShell** 语法；UTF-8 日志、`exit <code>` 语义安全；可选 `sandbox` / `sandbox_backend` / `output_encoding`（缺省 `auto` = 无损捕获 + 收尾自动识别）） |
 | `bgjob_submit_mcp` | 把一次 **MCP 工具调用**提交为后台任务（默认关闭，需「MCP 任务」开关；退出码 0/1/2/3） |
 | `bgjob_mcp_tools` | 列出某 MCP server 的工具名 / 描述 / 必填字段（有缓存，`refresh: true` 强制刷新） |
 | `bgjob_status` | 查询状态 / 退出码 / 日志尾部（**别拿它轮询**；终态权威与 `wrapper-gone` 三态见 developer.md） |
@@ -246,7 +246,19 @@ allowBuilds:
 
 ## 近期更新
 
-v0.1.71 → v0.2.7
+v0.1.71 → v0.3.2
+
+- **pwsh 任务日志编码缺省改为 `auto`（破坏性）**：不传 `output_encoding` 时由此前强制 `utf8` 改为**无损捕获 + 收尾自动识别**——运行中把 native 子进程输出按字节无损成像（ISO-8859-1），任务结束后逐段自动检测（严格 UTF-8 通过 ⇒ 按 UTF-8 解码，否则 ⇒ 按系统 ANSI 码页解码），把日志重写为干净 UTF-8；UTF-8 程序与本地码页（GBK 等）程序的输出都对。
+- **回退姿势**：显式传 `output_encoding: 'utf8'`（或 `'native'`）即与旧行为逐字节不变；也可经四层默认全局预设（如把 `submit.output_encoding` 写进 `$DSH_HOME/bgjobs/config.json`）。
+
+- **默认沙箱后端改为 `dsh`**：`sandbox_backends` 门控**默认开**（此前默认关 ⇒ 任务落 ACL 档 ⇒ `.NET`/python/git 等真程序因**命名管道被拒**而跑不起来，典型报错 `Access to the path '\\.\pipe\LOCAL\dotnet_...' is denied`）。
+- **回退路径**：写 `$DSH_HOME/bgjobs/sandbox-backends.json` = `{"enabled":false}`，或显式传 `sandbox_backend: "acl"`。
+- 门控不再做进程内缓存 ⇒ 面板开关/文件改动**立即生效**，无需重启。
+
+- **工具面 10 → 8（破坏性）**：`bgjob_submit_pwsh` 退役 —— 它的能力已被 `bgjob_submit`（`engine` 自动判定）+ `options` 完整覆盖；`bgjob_submit_mcp` **保留**（`bgjob_submit` 拒收 mcp 参数，它是唯一 mcp 入口）。
+- **全局配置唯一化**：新增 `$DSH_HOME/bgjobs/config.json`（`submit`/`query`/`control`/`ui` 四组）作为**唯一全局值文件**；插件 config 降级为「种子」，两者冲突时 **config.json 优先**。
+- **面板可编辑全局配置**：新增 `GET/POST /bgjobs/config` 端点，设置页的「默认等待超时」改读写 config.json；旧的 `uiprefs.waitTimeoutSeconds` 退役，宿主启动时**一次性迁移**（老文件只读不写）。
+- **清理**：删除 `resolveEngine` 中不可达的 mcp 自动判定与死分支（R1 后两处都已被拒收闸拦住）。
 
 - **工具面收敛（破坏性）**：三个 submit 合并为一个（`engine` 自动判定，`auto`/`pwsh`/`bat`），工具数 **10 → 9**；`bgjob_submit` 顶层参数收敛到 **5 个**（`command`/`name`/`workdir`/`engine`/`options`），mcp 五字段退役并指路 `bgjob_submit_mcp`（16 → 5）。
 - **默认参数四层**：插件 config → `<workspace>/.dsh/bgjobs.json` → 会话 `bgjob_config({action:"set"})` → 本次参数；坏配置只告警，不影响提交。

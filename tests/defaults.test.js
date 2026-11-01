@@ -65,6 +65,13 @@ test('L3 会话层覆盖 L2，L4 调用参数覆盖 L3', () => {
   assert.equal(r.values.output_encoding, 'native') // L4 > L2
 })
 
+test('output_encoding: 新缺省值 auto 同样经 L4 透传（白名单已含键；v0.3.2）', () => {
+  __resetCachesForTest()
+  const r = resolveDefaults({ group: 'submit', call: { output_encoding: 'auto' } })
+  assert.equal(r.values.output_encoding, 'auto')
+  assert.deepEqual(r.warnings, [])
+})
+
 test('null 表示显式删除该键', () => {
   __resetCachesForTest()
   const sid = 'sess-null'

@@ -138,7 +138,7 @@ Restart DSH afterwards (that means **fully quit and relaunch** — both the desk
 | Tool | In one line |
 |---|---|
 | `bgjob_submit` | Submit a background job (`command` is **bat** syntax) |
-| `bgjob_submit_pwsh` | Submit a background job (**PowerShell** syntax; UTF-8 logs, safe `exit <code>` semantics; optional `sandbox` / `sandbox_backend` / `output_encoding`) |
+| `bgjob_submit_pwsh` | Submit a background job (**PowerShell** syntax; UTF-8 logs, safe `exit <code>` semantics; optional `sandbox` / `sandbox_backend` / `output_encoding` (default `auto` = lossless capture + final auto-detection)) |
 | `bgjob_submit_mcp` | Submit one **MCP tool call** as a background job (off by default, needs the "MCP jobs" switch; exit codes 0/1/2/3) |
 | `bgjob_mcp_tools` | List a MCP server's tool names / descriptions / required fields (cached; `refresh: true` forces a re-read) |
 | `bgjob_status` | Query status / exit code / log tail (**don't poll it**; terminal-state authority and the `wrapper-gone` three states are in developer.md) |
@@ -244,7 +244,24 @@ Issues and PRs are welcome: bug reports, panel / CLI experience, docs and transl
 
 ## Recent updates
 
-v0.1.71 → v0.2.6
+v0.1.71 → v0.3.2
+
+- **pwsh job log encoding now defaults to `auto` (breaking)**: without an explicit `output_encoding`, jobs no longer force `utf8` — they use **lossless capture + final auto-detection**: while running, native child-process output is captured losslessly as a byte image (ISO-8859-1); after the job finishes, each imaged segment is auto-detected (strict UTF-8 passes ⇒ decoded as UTF-8, otherwise ⇒ decoded with the system ANSI code page) and the log is rewritten as clean UTF-8. Output from both UTF-8 programs and local-codepage (GBK etc.) programs now comes out right.
+- **Fallback**: pass `output_encoding: 'utf8'` (or `'native'`) explicitly to keep the old byte-for-byte behavior; it can also be preset globally through the four-layer defaults (e.g. write `submit.output_encoding` into `$DSH_HOME/bgjobs/config.json`).
+
+- **Default sandbox backend changed to `dsh`**: the `sandbox_backends` gate is now **on by default** (it used to be off ⇒ jobs fell to the ACL tier ⇒ real programs like `.NET`/python/git failed because **named pipes were denied** — typical error `Access to the path '\\.\pipe\LOCAL\dotnet_...' is denied`).
+- **Fallback**: write `$DSH_HOME/bgjobs/sandbox-backends.json` = `{"enabled":false}`, or pass `sandbox_backend: "acl"` explicitly.
+- The gate is no longer cached in-process ⇒ the panel toggle / file edits take effect **immediately**, no restart needed.
+
+- **Tool surface 10 → 8 (breaking)**: `bgjob_submit_pwsh` retired — its capabilities are fully covered by `bgjob_submit` (`engine` auto-detection) + `options`; `bgjob_submit_mcp` **stays** (`bgjob_submit` rejects mcp parameters; it is the only mcp entry).
+- **Global config unified**: new `$DSH_HOME/bgjobs/config.json` (four groups: `submit`/`query`/`control`/`ui`) is now the **sole global-value file**; the plugin config is demoted to a "seed" — when the two conflict, **config.json wins**.
+- **Panel can edit the global config**: new `GET/POST /bgjobs/config` endpoints; the settings page's "Default wait timeout" now reads/writes config.json; the old `uiprefs.waitTimeoutSeconds` is retired, with the host doing a **one-time migration** at startup (old file read-only, never written).
+- **Cleanup**: removed the unreachable mcp auto-detection and dead branches in `resolveEngine` (both were already blocked by the rejection gate after R1).
+
+- **Tool surface convergence (breaking)**: the three submit tools merged into one (`engine` auto-detection: `auto`/`pwsh`/`bat`), tool count **10 → 9**; `bgjob_submit` top-level parameters narrowed to **5** (`command`/`name`/`workdir`/`engine`/`options`); the five mcp fields are retired and point to `bgjob_submit_mcp` (16 → 5).
+- **Four-layer defaults**: plugin config → `<workspace>/.dsh/bgjobs.json` → session `bgjob_config({action:"set"})` → call parameters; bad config only warns and never blocks submission.
+- **Less to remember**: `workdir`/`name` are now optional (defaults = session workdir / first line of `command`); new `submit.env` for per-job environment injection; if no line of the command ends with `exit`, an "exit code may be false success" hint is returned (the command is not auto-modified).
+- **Fix**: `bgjob_kill` now writes the `killed` terminal state per contract (`exitCode=1` + `exitCodeSource:killed`); `bgjob_config({action:"help"})` is now self-contained man-style help (10 topics, zero docs dependency).
 
 - **Fixed mojibake in sandboxed pwsh job logs**: added `output_encoding` — choose a job log's decoding per task (v0.2.6).
 - **Fixed sandbox jobs picking the MSIX build of pwsh, which broke container jobs**: PowerShell resolution now **skips the WindowsApps alias** and takes the first non-MSIX hit, plus a new **`BGJOBS_PWSH`** environment variable to override the interpreter explicitly (highest priority) (v0.2.6).
