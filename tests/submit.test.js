@@ -485,7 +485,7 @@ test('R3: bgjob_submit 顶层字段 = 5，options 袋 = 7', () => {
   try {
     const t = tools.find((x) => x.name === 'bgjob_submit')
     assert.deepEqual(Object.keys(t.parameters.properties).sort(), ['command', 'engine', 'name', 'options', 'workdir'])
-    assert.deepEqual(t.parameters.required, [], 'required 应为空（name/workdir/command 都有缺省或运行时校验）')
+    assert.deepEqual(t.parameters.required, ['command'], 'required 只有 command（name/workdir 有缺省）')
     const bag = t.parameters.properties.options
     assert.equal(bag.type, 'object')
     assert.equal(bag.additionalProperties, true, 'A 方案：袋用 true，未知键由插件告警')

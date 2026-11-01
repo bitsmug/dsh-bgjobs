@@ -652,6 +652,18 @@ pnpm dsh plugin --profile <profile> add link:<插件绝对路径>
 
 `package.json`（版本号等）变更需重新执行 add；`lib/core|lib/*.js` 改动即时生效；`lib/client-src/` 改动需先 `pnpm build:client` 再刷新（必要时重启）。
 
+### 版本 0.2.7 变更面（供发版核对）
+
+- **工具面收敛（破坏性）**：三个 submit 合并为一个 `bgjob_submit`，`engine` 自动判定（`auto`/`pwsh`/`bat`），工具数 **10 → 9**；`bgjob_submit` 顶层参数 **16 → 5**（`command`/`name`/`workdir`/`engine`/`options`）；mcp 五字段退役，带 mcp 参数或 `engine:"mcp"` 会返回指路错误。
+- **四层默认**：插件 config → `<workspace>/.dsh/bgjobs.json` → 会话 `bgjob_config.set` → 调用参数；浅合并、`null` 删键、白名单、坏配置只告警。
+- **认知负担**：`workdir`/`name` 可省；新增 `submit.env`；命令缺 `exit` 结尾时返回假成功 warning（不改命令）。
+- **修复**：`bgjob_kill` 补写 `killed` 终态；去掉 `schtasks /Delete` 良性噪音；`bgjob_config({action:"help"})` 自包含 man（10 主题），并修正 help 各主题原本返回数组导致断言假通过的缺陷。
+
+**迁移提示**
+
+- 旧平铺参数（`sandbox`/`notify`/`wait` 等直接写在顶层）仍接受，且**平铺优先**；**0.3 移除**。
+- `bgjob_submit({tool, server})` 现已拒绝 ⇒ 改用 `bgjob_submit_mcp`（参数与行为不变）。
+
 ### 版本 0.2.6 变更面（供发版核对）
 
 > ⚠ 与本版相关的**权威口径以 `README.md` 的「近期更新」为准**；本文件在 M 侧曾被一次"副本同步"覆盖过（详见下一节的说明），若此处与 README 冲突，以 README 为准并修正此处。

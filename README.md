@@ -56,7 +56,7 @@
 |---|---|---|
 | Windows | `10`-`11` | `11` (build `>=26300`) |
 | PowerShell 7+ | `>=7.6.5`（沙箱功能需[ zip 解压版 PowerShell](https://learn.microsoft.com/zh-cn/powershell/scripting/install/install-powershell-on-windows?view=powershell-7.6#install-the-zip-package)） | [`>=7.7.0`](https://github.com/PowerShell/PowerShell/releases#release-v7.7.0-preview.5) |
-| DSH |`0.1.2-rc.1` ~ `0.2.1-rc.3`（rc版）  （[官方桌面版](https://www.deepseek.com/harness/)/以`win`+`R` 运行 [npx @deepseek-ai/dsh web](https://github.com/deepseek-ai/deepseek-harness#run-from-npm)） |  `0.2.1-rc.3` |
+| DSH |`0.1.2-rc.1` ~ `0.2.1-rc.5`（rc版）  （[官方桌面版](https://www.deepseek.com/harness/)/以`win`+`R` 运行 [npx @deepseek-ai/dsh web](https://github.com/deepseek-ai/deepseek-harness#run-from-npm)） |  `>=0.2.1-rc.5` |
 | Node.js | `^22.19.0 \|\| >=24.0.0`（或自动使用官方桌面版自带Node） | [`>=24.22.1`](https://nodejs.org/zh-cn/download) |
 
 | 插件（可选） | 兼容 |
@@ -246,7 +246,12 @@ allowBuilds:
 
 ## 近期更新
 
-v0.1.71 → v0.2.6
+v0.1.71 → v0.2.7
+
+- **工具面收敛（破坏性）**：三个 submit 合并为一个（`engine` 自动判定，`auto`/`pwsh`/`bat`），工具数 **10 → 9**；`bgjob_submit` 顶层参数收敛到 **5 个**（`command`/`name`/`workdir`/`engine`/`options`），mcp 五字段退役并指路 `bgjob_submit_mcp`（16 → 5）。
+- **默认参数四层**：插件 config → `<workspace>/.dsh/bgjobs.json` → 会话 `bgjob_config({action:"set"})` → 本次参数；坏配置只告警，不影响提交。
+- **认知负担**：`workdir`/`name` 均可省（缺省=会话工作目录 / `command` 首行）；新增 `submit.env` 任务级环境变量注入；命令里没有以 `exit` 结尾的行时，返回"退出码可能假成功"提示（不自动改命令）。
+- **修复**：`bgjob_kill` 按契约补写 `killed` 终态（`exitCode=1` + `exitCodeSource:killed`）；`bgjob_config({action:"help"})` 改为自包含 man 帮助（10 个主题，零 docs 依赖）。
 
 - **修复沙箱 pwsh 任务日志的中文乱码**：新增 `output_encoding`：逐任务选择任务日志的解码编码**（v0.2.6）
 。
