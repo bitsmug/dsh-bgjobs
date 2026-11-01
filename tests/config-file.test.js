@@ -65,6 +65,7 @@ test.after(async () => {
 
 test('config-file: D1 合并 —— config.json 覆盖插件种子（文件优先）', async () => {
   const { mergeGlobalConfig } = await import('../lib/core/config-file.js')
+  await fsp.rm(globalConfigPath(), { force: true })   // 隔离：前序用例可能留下坏文件
   await writeGlobalConfig({ submit: { notify: 'on-exit', wait: 60 } })
   const merged = mergeGlobalConfig({ submit: { notify: 'on-fail', sandbox: 'read-only' }, control: { x: 1 } })
   assert.equal(merged.submit.notify, 'on-exit', '文件值应覆盖种子')
