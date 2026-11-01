@@ -62,3 +62,20 @@ test.after(async () => {
   else process.env.DSH_HOME = prevHome
   await fsp.rm(tmpHome, { recursive: true, force: true }).catch(() => {})
 })
+
+test('config-file: D1 合并 —— config.json 覆盖插件种子（文件优先）', async () => {
+  const { mergeGlobalConfig } = await import('../lib/core/config-file.js')
+  await writeGlobalConfig({ submit: { notify: 'on-exit', wait: 60 } })
+  const merged = mergeGlobalConfig({ submit: { notify: 'on-fail', sandbox: 'read-only' }, control: { x: 1 } })
+  assert.equal(merged.submit.notify, 'on-exit', '文件值应覆盖种子')
+  assert.equal(merged.submit.wait, 60, '文件独有键应保留')
+  assert.equal(merged.submit.sandbox, 'read-only', '种子独有键应保留')
+  assert.equal(merged.control.x, 1, '其它组不受影响')
+})
+
+test('config-file: 坏 config.json ⇒ mergeGlobalConfig 退化为种子（不抛错）', async () => {
+  const { mergeGlobalConfig } = await import('../lib/core/config-file.js')
+  await fsp.writeFile(globalConfigPath(), '{ broken', 'utf8')
+  const merged = mergeGlobalConfig({ submit: { notify: 'on-fail' } })
+  assert.equal(merged.submit.notify, 'on-fail', '坏文件应静默退化')
+})
