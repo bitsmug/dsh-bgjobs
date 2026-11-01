@@ -437,3 +437,27 @@ test('认知负担: 命令里没有 exit ⇒ 返回 warning（退出码可能假
     await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
   }
 })
+
+test('④ submit.env: 注入的环境变量写进 cmd.bat（pwsh 与 bat 两个引擎共用该文件）', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  const workdir = await makeWorkdir()
+  const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
+  const dispose = apply(ctx)
+  try {
+    const submit = tools.find((t) => t.name === 'bgjob_submit')
+    const exec = { agent: { session: { id: 's-env', header: { cwd: workdir } } } }
+    const res = await submit.execute({
+      engine: 'bat',
+      command: 'echo ok',
+      env: { MATLAB_PREFDIR: 'C:\\A\\.dsh\\matlab-prefs', TEMP: 'C:\\A\\.dsh\\tmp' },
+    }, exec)
+    assert.equal(res.ok, true, 'res=' + JSON.stringify(res))
+    const cmd = await fsp.readFile(path.join(workdir, '.dsh', 'bgjobs', res.jobId, 'cmd.bat'), 'utf8')
+    assert.ok(cmd.includes('set MATLAB_PREFDIR=C:\\A\\.dsh\\matlab-prefs'), 'cmd.bat 应含 env 的 set 行；实际头部=' + cmd.slice(0, 200))
+    assert.ok(cmd.includes('set TEMP='), 'cmd.bat 应含 TEMP')
+    assert.ok(cmd.trim().endsWith('echo ok'), '命令本体应在 env 行之后；实际=' + cmd.slice(-80))
+  } finally {
+    dispose()
+    await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
+  }
+})
