@@ -124,7 +124,7 @@ async function seedJob(options = {}) {
   const workdir = await makeWorkdir()
   const { ctx, tools, injectCallbacks } = makeCtx({ services: {} })
   const dispose = apply(ctx)
-  const submit = tools.find((t) => t.name === 'bgjob_submit_pwsh')
+  const submit = tools.find((t) => t.name === 'bgjob_submit')
   const res = await submit.execute({ name: 't', command: 'Start-Sleep -Seconds 30', workdir }, { agent: undefined })
   assert.equal(res.ok, true, '提交应成功')
   const jobDir = path.join(workdir, '.dsh', 'bgjobs', res.jobId)
@@ -151,10 +151,10 @@ test('tools: 注册面 8 → 10 —— bgjob_kill / bgjob_delete 在列且形状
   const { ctx, tools } = makeCtx()
   const dispose = apply(ctx)
   try {
-    const expectedCount = 11
+    const expectedCount = 10
     console.log('  期望工具数 =', expectedCount)
     assert.equal(tools.length, expectedCount, 'B′ 合并 submit 并新增 bgjob_config ⇒ 注册面 11（期望 ' + expectedCount + '，实际 ' + tools.length + '）')
-    const expectedNames = ['bgjob_config', 'bgjob_delete', 'bgjob_kill', 'bgjob_list', 'bgjob_mcp_tools', 'bgjob_pending_list', 'bgjob_status', 'bgjob_submit', 'bgjob_submit_mcp', 'bgjob_submit_pwsh', 'bgjob_wait']
+    const expectedNames = ['bgjob_config', 'bgjob_delete', 'bgjob_kill', 'bgjob_list', 'bgjob_mcp_tools', 'bgjob_pending_list', 'bgjob_status', 'bgjob_submit', 'bgjob_submit_mcp', 'bgjob_wait']
     console.log('  期望工具名集合 =', JSON.stringify(expectedNames))
     assert.deepEqual(tools.map((t) => t.name).sort(), expectedNames)
     for (const name of ['bgjob_kill', 'bgjob_delete']) {

@@ -155,7 +155,7 @@ async function seedJob(options = {}) {
   const workdir = await makeWorkdir()
   const { ctx, tools, intervals, injectCallbacks } = makeCtx({ services: {} })
   const dispose = apply(ctx)
-  const submit = tools.find((t) => t.name === 'bgjob_submit_pwsh')
+  const submit = tools.find((t) => t.name === 'bgjob_submit')
   const res = await submit.execute({ name: 't', command: 'Start-Sleep -Seconds 30', workdir }, { agent: undefined })
   assert.equal(res.ok, true, '提交应成功')
   const jobDir = path.join(workdir, '.dsh', 'bgjobs', res.jobId)

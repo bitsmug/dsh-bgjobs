@@ -37,7 +37,7 @@ function servicesFor(workdir, extra) {
 }
 
 function findSubmit(tools) {
-  return tools.find((t) => t.name === 'bgjob_submit_pwsh')
+  return tools.find((t) => t.name === 'bgjob_submit')
 }
 
 function jobDirOf(workdir, jobId) {

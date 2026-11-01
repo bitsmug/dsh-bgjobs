@@ -183,7 +183,7 @@ test('bgjob_submit_pwsh wait=1：提交后自动等待 done', async () => {
   const workdir = await makeWorkdir()
   const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
   const dispose = apply(ctx)
-  const submit = tools.find((t) => t.name === 'bgjob_submit_pwsh')
+  const submit = tools.find((t) => t.name === 'bgjob_submit')
   const writer = scheduleExitWrite(workdir + '\\.dsh\\bgjobs', 0, 150)
   try {
     const r = await submit.execute({ name: 't', command: 'Write-Output ok', workdir, wait: 1 }, { agent: undefined })

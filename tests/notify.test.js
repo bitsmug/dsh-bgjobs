@@ -40,7 +40,7 @@ test('shouldNotifyForExit: off/on-completion/on-fail/on-exit 矩阵', () => {
 test('tools schema: bgjob_submit/bgjob_submit_pwsh 含 notify/notify_mode 枚举，缺省 off/wakeup', () => {
   const { ctx, tools } = makeCtx({ services: {} })
   const dispose = apply(ctx)
-  for (const name of ['bgjob_submit', 'bgjob_submit_pwsh']) {
+  for (const name of ['bgjob_submit']) {
     const tool = tools.find((t) => t.name === name)
     // R3：bgjob_submit 的低频参数已搬进 options 袋（notify/notify_mode/wait/…）
   const props = name === 'bgjob_submit'
@@ -118,7 +118,7 @@ test('notify=on-exit + wakeup + 忙碌 → inject 排入收件箱（不唤醒）
   const { ctx, tools, intervals } = makeCtx({ services: { agents: { get: () => handle } } })
   const dispose = apply(ctx)
   try {
-    const submit = tools.find((t) => t.name === 'bgjob_submit_pwsh')
+    const submit = tools.find((t) => t.name === 'bgjob_submit')
     setShellResolver(async () => ({ exe: 'C:\\pwsh\\pwsh.exe', engine: 'pwsh' }))
     const exec = { agent: { session: { id: 's1' } } }
     const tick = intervals.find((i) => i.ms === 1000).fn

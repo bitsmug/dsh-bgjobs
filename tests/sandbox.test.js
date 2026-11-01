@@ -60,7 +60,7 @@ test('jobSandboxDecision: 受限会话缺省继承；更宽请求才 escalate（
 
 test('jobSandboxDecision: 非法参数 fail loud', () => {
   assert.throws(() => jobSandboxDecision('read-only', 'danger-full-access', 'pwsh', false), /invalid sandbox/)
-  assert.throws(() => jobSandboxDecision('read-only', 'off', 'bat', false), /only supported on bgjob_submit_pwsh/)
+  assert.throws(() => jobSandboxDecision('read-only', 'off', 'bat', false), /only supported on the pwsh engine/)
   assert.throws(() => jobSandboxDecision('nonsense', undefined, 'pwsh', true), /unexpected session state/)
   assert.throws(() => jobSandboxDecision('full', undefined, 'cmd', true), /unexpected engine/)
 })
@@ -144,7 +144,7 @@ test('bgjob_submit_pwsh: 受限会话请求 off + full access 关 → approval �
   })
   const dispose = apply(ctx)
   try {
-    const submit = tools.find((t) => t.name === 'bgjob_submit_pwsh')
+    const submit = tools.find((t) => t.name === 'bgjob_submit')
     const exec = { agent: { session: { id: 's1' } }, callId: 'call-1' }
     const res = await submit.execute({ name: 't', command: 'Write-Output ok', workdir, sandbox: 'off', justification: '需要全权限' }, exec)
     assert.equal(res.ok, true)
@@ -173,7 +173,7 @@ test('bgjob_submit_pwsh: 受限会话宽请求被拒 → 抛错且不创建任�
   })
   const dispose = apply(ctx)
   try {
-    const submit = tools.find((t) => t.name === 'bgjob_submit_pwsh')
+    const submit = tools.find((t) => t.name === 'bgjob_submit')
     const exec = { agent: { session: { id: 's1' } }, callId: 'call-1' }
     await assert.rejects(
       submit.execute({ name: 't', command: 'echo x', workdir, sandbox: 'off' }, exec),
@@ -193,7 +193,7 @@ test('bgjob_submit_pwsh: 受限会话宽请求但无 approval 服务 → fail cl
   const { ctx, tools } = makeCtx({ services: restrictedPolicy(workdir) }) // 无 approval
   const dispose = apply(ctx)
   try {
-    const submit = tools.find((t) => t.name === 'bgjob_submit_pwsh')
+    const submit = tools.find((t) => t.name === 'bgjob_submit')
     const exec = { agent: { session: { id: 's1' } } }
     await assert.rejects(
       submit.execute({ name: 't', command: 'echo x', workdir, sandbox: 'off' }, exec),
@@ -296,7 +296,7 @@ test('bgjob_submit_pwsh: 受限会话缺省继承 → 自动沙箱化（不弹�
   })
   const dispose = apply(ctx)
   try {
-    const submit = tools.find((t) => t.name === 'bgjob_submit_pwsh')
+    const submit = tools.find((t) => t.name === 'bgjob_submit')
     const exec = { agent: { session: { id: 's1' } } }
     const res = await submit.execute({ name: 't', command: 'Write-Output ok', workdir }, exec) // 无 sandbox 参数
     assert.equal(res.ok, true)
@@ -332,7 +332,7 @@ test('bgjob_submit_pwsh: 会话全权限（danger-full-access）+ 显式 sandbox
   const { ctx, tools, injectCallbacks } = makeCtx({ services: fullPolicy(workdir) })
   const dispose = apply(ctx)
   try {
-    const submit = tools.find((t) => t.name === 'bgjob_submit_pwsh')
+    const submit = tools.find((t) => t.name === 'bgjob_submit')
     const exec = { agent: { session: { id: 's1' } } }
     const res = await submit.execute({ name: 't', command: 'Write-Output ok', workdir, sandbox: 'workspace-write' }, exec)
     assert.equal(res.ok, true)
@@ -358,7 +358,7 @@ test('bgjob_submit_pwsh: 请求沙箱但 runner 不可得 → fail loud + 清理
   const { ctx, tools } = makeCtx({ services: fullPolicy(workdir) })
   const dispose = apply(ctx)
   try {
-    const submit = tools.find((t) => t.name === 'bgjob_submit_pwsh')
+    const submit = tools.find((t) => t.name === 'bgjob_submit')
     const exec = { agent: { session: { id: 's1' } } }
     const res = await submit.execute({ name: 't', command: 'Write-Output ok', workdir, sandbox: 'workspace-write' }, exec)
     assert.equal(res.ok, false)
@@ -403,7 +403,7 @@ test('沙箱 runner 的 node：GUI 子系统 exe（Subsystem=2）被守卫拒绝
   const { ctx, tools } = makeCtx({ services: fullPolicy(workdir) })
   const dispose = apply(ctx)
   try {
-    const submit = tools.find((t) => t.name === 'bgjob_submit_pwsh')
+    const submit = tools.find((t) => t.name === 'bgjob_submit')
     const exec = { agent: { session: { id: 's1' } } }
     const args = { name: 't', command: 'Write-Output ok', workdir, sandbox: 'workspace-write' }
     // ① GUI 子系统 ⇒ 响亮拒绝（带路径）+ 清理
@@ -446,7 +446,7 @@ test('setNodeExeResolver 注入缝：替换沙箱 node 解析；解析不出真 
   const { ctx, tools } = makeCtx({ services: fullPolicy(workdir) })
   const dispose = apply(ctx)
   try {
-    const submit = tools.find((t) => t.name === 'bgjob_submit_pwsh')
+    const submit = tools.find((t) => t.name === 'bgjob_submit')
     const exec = { agent: { session: { id: 's1' } } }
     const args = { name: 't', command: 'Write-Output ok', workdir, sandbox: 'workspace-write' }
     setNodeExeResolver(async () => 'C:\\fake\\node.exe')
@@ -479,7 +479,7 @@ test('suspect 标记：沙箱任务秒退 + 日志只含 [BGJOB] marker ⇒ 记�
   const { ctx, tools, intervals, injectCallbacks } = makeCtx({ services: fullPolicy(workdir) })
   const dispose = apply(ctx)
   try {
-    const submit = tools.find((t) => t.name === 'bgjob_submit_pwsh')
+    const submit = tools.find((t) => t.name === 'bgjob_submit')
     const tick = intervals.find((i) => i.ms === 1000).fn
     const exec = { agent: { session: { id: 's1' } } }
     const base = { name: 't', command: 'Write-Output ok', workdir }

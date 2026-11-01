@@ -197,7 +197,7 @@ test('submitJob(pwsh): 写 job.ps1 + run.ps1（UTF-8 BOM，无 run.bat），/TR 
   const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
   const dispose = apply(ctx)
   try {
-    const submit = tools.find((t) => t.name === 'bgjob_submit_pwsh')
+    const submit = tools.find((t) => t.name === 'bgjob_submit')
     const res = await submit.execute({ name: 'pwsh-job', command: "Write-Output '中文'\nexit 2", workdir }, { agent: undefined })
     assert.equal(res.ok, true)
     const jobDir = workdir + '\\.dsh\\bgjobs\\' + res.jobId
@@ -253,7 +253,7 @@ test('submitJob(pwsh): 解释器是 powershell.exe（5.1）时写编码 preamble
   const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
   const dispose = apply(ctx)
   try {
-    const submit = tools.find((t) => t.name === 'bgjob_submit_pwsh')
+    const submit = tools.find((t) => t.name === 'bgjob_submit')
     const res = await submit.execute({ name: 'pwsh51-job', command: "Write-Output '中文'", workdir }, { agent: undefined })
     assert.equal(res.ok, true)
     const jobDir = workdir + '\\.dsh\\bgjobs\\' + res.jobId
@@ -283,7 +283,7 @@ test('submitJob(pwsh): output_encoding=native 落 meta 且 run.ps1 用 $nativeEn
   const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
   const dispose = apply(ctx)
   try {
-    const submit = tools.find((t) => t.name === 'bgjob_submit_pwsh')
+    const submit = tools.find((t) => t.name === 'bgjob_submit')
     const res = await submit.execute({ name: 'native-job', command: "Write-Output '中文'", workdir, output_encoding: 'native' }, { agent: undefined })
     assert.equal(res.ok, true)
     const jobDir = workdir + '\\.dsh\\bgjobs\\' + res.jobId
@@ -307,7 +307,7 @@ test('submitJob(pwsh): 缺省不写 meta.outputEncoding；非法 output_encoding
   const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
   const dispose = apply(ctx)
   try {
-    const submit = tools.find((t) => t.name === 'bgjob_submit_pwsh')
+    const submit = tools.find((t) => t.name === 'bgjob_submit')
     // 缺省：meta 不含该键（job.json 与加参数之前一致）
     const def = await submit.execute({ name: 'default-enc', command: 'echo ok', workdir }, { agent: undefined })
     assert.equal(def.ok, true)
@@ -337,7 +337,7 @@ test('submitJob(pwsh): PowerShell 未找到时返回错误并清理目录', asyn
   const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
   const dispose = apply(ctx)
   try {
-    const submit = tools.find((t) => t.name === 'bgjob_submit_pwsh')
+    const submit = tools.find((t) => t.name === 'bgjob_submit')
     const res = await submit.execute({ name: 't', command: 'echo x', workdir }, { agent: undefined })
     assert.equal(res.ok, false)
     assert.match(res.error, /PowerShell not found/)
