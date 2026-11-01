@@ -300,7 +300,7 @@ test('submitJob(pwsh): output_encoding=native 落 meta 且 run.ps1 用 $nativeEn
 })
 
 
-test('submitJob(pwsh): 缺省不写 meta.outputEncoding；非法 output_encoding ⇒ fail loud 且零副作用（v0.2.6）', async () => {
+test('submitJob(pwsh): 缺省（不传）⇒ auto 落盘且 run.ps1 为 auto 形态；显式 utf8 ⇒ 老形态（v0.3.2）', async () => {
   setSchtasksRunner(makeFakeRunner([]))
   setShellResolver(async () => ({ exe: 'C:\\fake\\pwsh.exe', engine: 'pwsh' }))
   const workdir = await makeWorkdir()
@@ -308,13 +308,39 @@ test('submitJob(pwsh): 缺省不写 meta.outputEncoding；非法 output_encoding
   const dispose = apply(ctx)
   try {
     const submit = tools.find((t) => t.name === 'bgjob_submit')
-    // 缺省：meta 不含该键（job.json 与加参数之前一致）
+    // 缺省（不传）：auto（v0.3.2 破坏性变更：原缺省 utf8）
     const def = await submit.execute({ name: 'default-enc', command: 'echo ok', workdir }, { agent: undefined })
     assert.equal(def.ok, true)
     const defMeta = JSON.parse(await fsp.readFile(path.join(workdir, '.dsh', 'bgjobs', def.jobId, 'job.json'), 'utf8'))
-    assert.equal(Object.prototype.hasOwnProperty.call(defMeta, 'outputEncoding'), false, '缺省不得写 outputEncoding')
+    assert.equal(defMeta.outputEncoding, 'auto', '缺省（不传）应落盘 auto')
     const defRunner = (await fsp.readFile(path.join(workdir, '.dsh', 'bgjobs', def.jobId, 'run.ps1'))).toString('utf8')
     assert.ok(!defRunner.includes('$nativeEnc'), '缺省 run.ps1 不得含 $nativeEnc')
+    assert.ok(defRunner.includes('$autoActive = $false'), '缺省 run.ps1 应为 auto 形态')
+    assert.ok(defRunner.includes('GetEncoding(28591)'), '缺省 run.ps1 应含 28591 无损成像')
+    assert.ok(defRunner.includes('if ($autoActive) {'), '缺省 run.ps1 应含收尾检测块')
+    // 显式 utf8：老形态（0.3.1 逐字节承诺仅对显式取值保留）
+    const utf8Res = await submit.execute({ name: 'utf8-enc', command: 'echo ok', workdir, output_encoding: 'utf8' }, { agent: undefined })
+    assert.equal(utf8Res.ok, true)
+    const utf8Meta = JSON.parse(await fsp.readFile(path.join(workdir, '.dsh', 'bgjobs', utf8Res.jobId, 'job.json'), 'utf8'))
+    assert.equal(utf8Meta.outputEncoding, 'utf8', "显式 utf8 应落盘 'utf8'")
+    const utf8Runner = (await fsp.readFile(path.join(workdir, '.dsh', 'bgjobs', utf8Res.jobId, 'run.ps1'))).toString('utf8')
+    assert.ok(!utf8Runner.includes('$autoActive') && !utf8Runner.includes('28591'), '显式 utf8 不得出现 auto 形态')
+    assert.ok(!utf8Runner.includes('$nativeEnc'), '显式 utf8 不得含 $nativeEnc')
+    assert.ok(utf8Runner.includes('[Console]::OutputEncoding = $utf8'), '显式 utf8 仍按 UTF-8 解码')
+  } finally {
+    dispose()
+    await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+test('submitJob(pwsh): 非法 output_encoding ⇒ fail loud 且零副作用（v0.2.6）', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  setShellResolver(async () => ({ exe: 'C:\\fake\\pwsh.exe', engine: 'pwsh' }))
+  const workdir = await makeWorkdir()
+  const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
+  const dispose = apply(ctx)
+  try {
+    const submit = tools.find((t) => t.name === 'bgjob_submit')
     // 非法值：fail loud + 不建 jobDir / 不建计划任务
     for (const bad of ['utf-16', 'NATIVE', 'gbk']) {
       const r = await submit.execute({ name: 'bad-enc', command: 'echo ok', workdir, output_encoding: bad }, { agent: undefined })
@@ -322,7 +348,7 @@ test('submitJob(pwsh): 缺省不写 meta.outputEncoding；非法 output_encoding
       assert.ok(String(r.error).includes('invalid output_encoding'), '错误应指明 invalid output_encoding，实际: ' + r.error)
     }
     const entries = await fsp.readdir(path.join(workdir, '.dsh', 'bgjobs')).catch(() => [])
-    assert.deepEqual(entries.filter((n) => n.startsWith('bg-') && n !== def.jobId), [], '被拒的提交不得留下 jobDir（零副作用）')
+    assert.deepEqual(entries.filter((n) => n.startsWith('bg-')), [], '被拒的提交不得留下 jobDir（零副作用）')
   } finally {
     dispose()
     await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})

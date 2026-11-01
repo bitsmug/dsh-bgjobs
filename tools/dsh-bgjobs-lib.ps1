@@ -330,10 +330,14 @@ function ConvertTo-BgjobsPsQuote([string]$Value) {
 function New-BgjobsPwshRunner([object]$Job) {
     $scriptPath = if ($Job.meta.scriptPath) { $Job.meta.scriptPath } else { Join-Path (Split-Path $Job.meta.jsonPath -Parent) 'job.ps1' }
     $jobDir = Split-Path $Job.meta.jsonPath -Parent
-    # ★ 逐任务编码选择（output_encoding，v0.2.6；镜像 lib/scripts.js 的 buildPwshRunner）：默认 utf8
-    #   （老行为**逐字节不变**）；native = 按**进程继承的控制台码页**解码（本地码页程序，如 MATLAB -batch）。
+    # ★ 逐任务编码选择（output_encoding，v0.2.6 引入；v0.3.2 新增 auto 并为新缺省；
+    #   镜像 lib/scripts.js 的 buildPwshRunner）：utf8/无字段（存量任务）老行为**逐字节不变**；
+    #   native = 按**进程继承的控制台码页**解码（本地码页程序，如 MATLAB -batch）；
+    #   auto = 无损捕获（28591 成像）+ 收尾检测（严格 UTF-8 通过⇒UTF-8，否则⇒系统 ANSI 码页），
+    #   重写日志为干净 UTF-8；28591 赋值失败 ⇒ 回退 $utf8 行为且收尾块跳过（fail-soft）。
     #   ★ $nativeEnc 必须在**任何覆盖之前**取 —— 5.1 的 preamble 会把 [Console]::OutputEncoding 设成 UTF-8。
     $encNative = ($Job.meta.outputEncoding -eq 'native')
+    $encAuto = ($Job.meta.outputEncoding -eq 'auto')
     # 镜像 lib/scripts.js 的 buildPwshRunner：dsh 后端（实验）直接执行提交期由
     # ctx.sandbox.confine() 包装好的 argv；其余（ACL 后端 / 无沙箱）逐字保持老形态。
     # ★★ dsh 行必须以调用运算符 & 开头：带引号的字符串在语句开头会被当【表达式】解析 ⇒ 解析失败。
@@ -366,12 +370,37 @@ if (Test-Path -LiteralPath $logPath) {
         [System.IO.File]::WriteAllText($logPath, [System.IO.File]::ReadAllText($logPath, [System.Text.Encoding]::Unicode), $utf8)
     }
 }
-[System.IO.File]::AppendAllText($logPath, '[BGJOB] exit code: ' + $code + [Environment]::NewLine, $utf8)
+__AUTOFINAL__[System.IO.File]::AppendAllText($logPath, '[BGJOB] exit code: ' + $code + [Environment]::NewLine, $utf8)
 [System.IO.File]::WriteAllText('__EXITCODEPATH__', [string]$code, $utf8)
 & schtasks /Delete /TN '__TASKNAME__' /F *> $null
 '@
     # 编码 preamble 占位符：5.1 注入一行（含换行），pwsh 7 注入空串（整段跳过）。
     $encPreamble = if (Test-BgjobsPwsh7Interpreter $Job.meta.interpreter) { '' } else { 'try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch { }' + "`r`n" }
+    # auto 收尾检测块（v0.3.2）模板：与 lib/scripts.js 的 buildPwshRunner auto 分支**逐字一致**。
+    # 单引号 here-string：$ 与 ' 全为字面量。
+    $autoFinalTpl = @'
+if ($autoActive) {
+    try {
+        $autoTxt = [System.IO.File]::ReadAllText($logPath, $utf8)
+        if ($autoTxt -match '[\x80-\xFF]') {
+            $autoStrict = New-Object System.Text.UTF8Encoding($false, $true)
+            $autoAnsi = [System.Text.Encoding]::GetEncoding([System.Globalization.CultureInfo]::CurrentCulture.TextInfo.ANSICodePage)
+            $autoEval = [System.Text.RegularExpressions.MatchEvaluator]{
+                param($m)
+                $s = $m.Value
+                if ($s -notmatch '[\x80-\xFF]') { return $s }
+                $b = [byte[]]::new($s.Length)
+                for ($i = 0; $i -lt $s.Length; $i++) { $b[$i] = [byte][int][char]$s[$i] }
+                try { return $autoStrict.GetString($b) } catch { return $autoAnsi.GetString($b) }
+            }
+            $autoOut = [System.Text.RegularExpressions.Regex]::Replace($autoTxt, '[\x00-\xFF]+', $autoEval)
+            if ($autoOut -ne $autoTxt) { [System.IO.File]::WriteAllText($logPath, $autoOut, $utf8) }
+        }
+    } catch { }
+}
+'@
+    # auto 才注入收尾块（含换行）；非 auto ⇒ 空串（占位符在行首，删掉即不留空行，同 __ENCPREAMBLE__ 纪律）
+    $autoFinal = if ($encAuto) { (($autoFinalTpl -replace "`r?`n", "`r`n") + "`r`n") } else { '' }
     # ★ 先归一换行（here-string 的 EOL 取决于文件本身），再替换占位符 —— 这样「默认路径」才与
     #   lib/scripts.js 的产物**逐字节一致**（模板里那两行字面量绝不能被动过 ✗）。
     $tpl = $tpl -replace "`r?`n", "`r`n"
@@ -381,11 +410,15 @@ if (Test-Path -LiteralPath $logPath) {
         'if ($nativeEnc.CodePage -eq 65001) { $nativeEnc = [System.Text.Encoding]::GetEncoding([System.Globalization.CultureInfo]::CurrentCulture.TextInfo.ANSICodePage) }' + "`r`n"
     } else { '' }
     $out = $tpl.Replace("__NATIVEENC__`r`n", $nativeLines)
-    # native 才换掉兜底行的目标；默认保留模板里的字面行（逐字 ✗ 不许动）
+    # native / auto 才换掉兜底行的目标；默认（utf8/无字段）保留模板里的字面行（逐字 ✗ 不许动）
     if ($encNative) {
         $out = $out.Replace('    try { [Console]::OutputEncoding = $utf8 } catch { }', '    try { [Console]::OutputEncoding = $nativeEnc } catch { }')
+    } elseif ($encAuto) {
+        $out = $out.Replace('    try { [Console]::OutputEncoding = $utf8 } catch { }',
+            '    $autoActive = $false' + "`r`n" +
+            '    try { [Console]::OutputEncoding = [System.Text.Encoding]::GetEncoding(28591); $autoActive = $true } catch { try { [Console]::OutputEncoding = $utf8 } catch { } }')
     }
-    $out = $out.Replace('__ENCPREAMBLE__', $encPreamble).Replace('__JOBDIR__', $jobDir).Replace('__WORKDIR__', $Job.meta.workdir).Replace('__LOGPATH__', $Job.meta.logPath).Replace('__RUNLINE__', $runLine).Replace('__SCRIPTPATH__', $scriptPath).Replace('__EXITCODEPATH__', $Job.meta.exitcodePath).Replace('__TASKNAME__', $Job.meta.taskName)
+    $out = $out.Replace('__ENCPREAMBLE__', $encPreamble).Replace('__AUTOFINAL__', $autoFinal).Replace('__JOBDIR__', $jobDir).Replace('__WORKDIR__', $Job.meta.workdir).Replace('__LOGPATH__', $Job.meta.logPath).Replace('__RUNLINE__', $runLine).Replace('__SCRIPTPATH__', $scriptPath).Replace('__EXITCODEPATH__', $Job.meta.exitcodePath).Replace('__TASKNAME__', $Job.meta.taskName)
     return (($out -replace "`r?`n", "`r`n") + "`r`n")
 }
 
@@ -516,6 +549,8 @@ function Submit-BgjobsJob([string]$Name, [string]$Command, [string]$WorkdirRaw, 
         $meta.engine = 'pwsh'
         $meta.scriptPath = $scriptPath
         $meta.interpreter = $shell.exe
+        # v0.3.2：离线提交与 host 缺省语义对齐（不传 output_encoding ⇒ auto）。
+        $meta.outputEncoding = 'auto'
     } else {
         $meta.cmdPath = Join-Path $jobDir 'cmd.bat'
     }

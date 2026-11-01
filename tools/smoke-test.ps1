@@ -198,6 +198,26 @@ Assert-True ($nativeRunner.Contains('[Console]::OutputEncoding = $nativeEnc')) '
 Assert-True (-not $nativeRunner.Contains('[Console]::OutputEncoding = $utf8')) 'native run.ps1 must not decode as UTF-8'
 Assert-True ($nativeRunner.IndexOf('$nativeEnc') -lt $nativeRunner.IndexOf('$pidPath')) 'the capture must precede $pidPath (i.e. any override)'
 Assert-True (-not $pwshRunner.Contains('$nativeEnc')) 'the default run.ps1 must not mention $nativeEnc (byte-identical)'
+# v0.3.2: auto (the NEW default for fresh submissions) = lossless capture via ISO-8859-1 (CP 28591)
+# plus a final detection pass that rewrites the log as clean UTF-8. The runner for a job WITHOUT the
+# field (legacy job.json) must stay the old utf8 form byte-for-byte (mutual proof below).
+$autoJob = [pscustomobject]@{
+    meta = [pscustomobject]@{
+        workdir = $workdir; jsonPath = (Join-Path $jobDir 'job.json')
+        interpreter = 'C:\fake\pwsh.exe'; scriptPath = (Join-Path $jobDir 'job.ps1')
+        logPath = (Join-Path $jobDir 'stdout.log'); exitcodePath = (Join-Path $jobDir 'exitcode.txt')
+        taskName = 'dsh-bgj-smoke-auto'; outputEncoding = 'auto'
+    }
+}
+$autoRunner = New-BgjobsPwshRunner $autoJob
+Assert-True ($autoRunner.Contains('$autoActive = $false')) 'auto run.ps1 declares $autoActive'
+Assert-True ($autoRunner.Contains('[Console]::OutputEncoding = [System.Text.Encoding]::GetEncoding(28591)')) 'auto run.ps1 captures losslessly via 28591'
+Assert-True ($autoRunner.Contains('if ($autoActive) {')) 'auto run.ps1 has the final detection block'
+Assert-True ($autoRunner.IndexOf('GetEncoding(28591)') -lt $autoRunner.IndexOf('*>')) 'the 28591 capture comes before the *> redirect'
+Assert-True ($autoRunner.IndexOf('if ($autoActive) {') -gt $autoRunner.IndexOf('0xFE')) 'the final block follows the FF FE conversion'
+Assert-True ($autoRunner.IndexOf('if ($autoActive) {') -lt $autoRunner.IndexOf('[BGJOB] exit code:')) 'the final block precedes the exit marker'
+Assert-True (-not $autoRunner.Contains('$nativeEnc')) 'auto run.ps1 must not mention $nativeEnc'
+Assert-True (-not $pwshRunner.Contains('$autoActive') -and -not $pwshRunner.Contains('28591')) 'the field-absent (legacy) run.ps1 must stay the old form (byte-identical)'
 $ps1 = New-BgjobsPs1 $pwshJob
 Assert-True (-not $ps1.StartsWith('# bgjobs:')) 'pwsh7 job.ps1 skips the UTF-8 preamble (v0.1.92)'
 Assert-True (-not $ps1.Contains('OutputEncoding')) 'pwsh7 job.ps1 writes no encoding setting'
