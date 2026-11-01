@@ -683,6 +683,8 @@ pnpm dsh plugin --profile <profile> add link:<插件绝对路径>
 - 流程细节见本节「固定发布流程」。
 
 ## 工具契约详述（人读摘要）
+**参数面 16 → 5**（2026-11-01，R1+R3）：`bgjob_submit` 顶层只剩 `command`/`name`/`workdir`/`engine`/`options`；mcp 5 字段已退役，只走 `bgjob_submit_mcp`；`sandbox`/`sandbox_backend`/`output_encoding`/`justification`/`notify`/`notify_mode`/`wait` 收进可选 `options` 袋（平铺仍接受、平铺优先；袋内未知键只告警）。
+
 
 > **模型侧真源在代码里**：`lib/core/help.js` 的 `HELP_TOPICS`，经
 > `bgjob_config({ action:'help', topic })` 读取（无 `topic` 返回索引；未知主题回索引 + warnings）。

@@ -104,7 +104,12 @@ test('tools: 超时参数缺省不限时、可传任意正数（v0.1.84 去掉 6
   assert.ok(mcpSubmit.parameters.properties.timeout_seconds.description.includes('不限时'), 'timeout_seconds 描述应写明缺省不限时')
   for (const name of ['bgjob_submit', 'bgjob_submit_pwsh', 'bgjob_submit_mcp']) {
     const t = tools.find((x) => x.name === name)
-    assert.ok(!/1–600/.test(t.parameters.properties.wait.description), name + ' 的 wait 不应再有 600 秒上限')
+    // R3：bgjob_submit 的 wait 已搬进 options 袋
+    const waitProp = name === 'bgjob_submit'
+      ? (t.parameters.properties.options && t.parameters.properties.options.properties || {}).wait
+      : t.parameters.properties.wait
+    assert.ok(waitProp, name + ' 应有 wait 参数')
+    assert.ok(!/1–600/.test(waitProp.description), name + ' 的 wait 不应再有 600 秒上限')
   }
   dispose()
 })

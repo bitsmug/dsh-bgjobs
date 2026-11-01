@@ -42,7 +42,10 @@ test('tools schema: bgjob_submit/bgjob_submit_pwsh 含 notify/notify_mode 枚举
   const dispose = apply(ctx)
   for (const name of ['bgjob_submit', 'bgjob_submit_pwsh']) {
     const tool = tools.find((t) => t.name === name)
-    const props = tool.parameters.properties
+    // R3：bgjob_submit 的低频参数已搬进 options 袋（notify/notify_mode/wait/…）
+  const props = name === 'bgjob_submit'
+    ? (tool.parameters.properties.options && tool.parameters.properties.options.properties) || {}
+    : tool.parameters.properties
     assert.deepEqual(props.notify.enum, ['off', 'on-completion', 'on-fail', 'on-exit'])
     assert.equal(props.notify.default, 'off')
     assert.deepEqual(props.notify_mode.enum, ['wakeup', 'quiet', 'always'])

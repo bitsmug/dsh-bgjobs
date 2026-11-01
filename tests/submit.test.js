@@ -461,3 +461,81 @@ test('④ submit.env: 注入的环境变量写进 cmd.bat（pwsh 与 bat 两个�
     await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
   }
 })
+
+// ── R1 + R3 守新契约 ───────────────────────────────────────────────
+
+test('R1: bgjob_submit 不再接受 mcp 参数（指路 bgjob_submit_mcp）', async () => {
+  const { ctx, tools } = makeCtx({ services: {} })
+  const dispose = apply(ctx)
+  try {
+    const submit = tools.find((t) => t.name === 'bgjob_submit')
+    const exec = { agent: { session: { id: 's-r1', header: { cwd: process.cwd() } } } }
+    const a = await submit.execute({ name: 'x', command: 'echo ok', tool: 'echo', server: 'demo' }, exec)
+    assert.equal(a.ok, false, 'raw=' + JSON.stringify(a))
+    assert.ok(a.error.includes('bgjob_submit_mcp'), 'error 应指路 bgjob_submit_mcp：' + a.error)
+    const b = await submit.execute({ name: 'x', engine: 'mcp', command: 'echo ok' }, exec)
+    assert.equal(b.ok, false, 'raw=' + JSON.stringify(b))
+    assert.ok(b.error.includes('bgjob_submit_mcp'), 'error 应指路：' + b.error)
+  } finally { dispose() }
+})
+
+test('R3: bgjob_submit 顶层字段 = 5，options 袋 = 7', () => {
+  const { ctx, tools } = makeCtx({ services: {} })
+  const dispose = apply(ctx)
+  try {
+    const t = tools.find((x) => x.name === 'bgjob_submit')
+    assert.deepEqual(Object.keys(t.parameters.properties).sort(), ['command', 'engine', 'name', 'options', 'workdir'])
+    assert.deepEqual(t.parameters.required, [], 'required 应为空（name/workdir/command 都有缺省或运行时校验）')
+    const bag = t.parameters.properties.options
+    assert.equal(bag.type, 'object')
+    assert.equal(bag.additionalProperties, true, 'A 方案：袋用 true，未知键由插件告警')
+    assert.deepEqual(Object.keys(bag.properties).sort(), ['justification', 'notify', 'notify_mode', 'output_encoding', 'sandbox', 'sandbox_backend', 'wait'])
+  } finally { dispose() }
+})
+
+test('R3: options 袋内的 notify 生效（落到 job.json）', async () => {
+  const calls = []
+  setSchtasksRunner(makeFakeRunner(calls))
+  const workdir = await makeWorkdir()
+  const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
+  const dispose = apply(ctx)
+  try {
+    const submit = tools.find((t) => t.name === 'bgjob_submit')
+    const exec = { agent: { session: { id: 's-bag', header: { cwd: workdir } } } }
+    const res = await submit.execute({ engine: 'bat', command: 'echo ok', options: { notify: 'on-exit' } }, exec)
+    assert.equal(res.ok, true, 'res=' + JSON.stringify(res))
+    const meta = JSON.parse(await fsp.readFile(path.join(workdir, '.dsh', 'bgjobs', res.jobId, 'job.json'), 'utf8'))
+    assert.equal(meta.notify, 'on-exit', '袋内 notify 应生效；meta.notify=' + meta.notify)
+  } finally { dispose(); await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {}) }
+})
+
+test('R3: 平铺优先于 options 袋（混用时平铺赢）', async () => {
+  const calls = []
+  setSchtasksRunner(makeFakeRunner(calls))
+  const workdir = await makeWorkdir()
+  const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
+  const dispose = apply(ctx)
+  try {
+    const submit = tools.find((t) => t.name === 'bgjob_submit')
+    const exec = { agent: { session: { id: 's-flat', header: { cwd: workdir } } } }
+    const res = await submit.execute({ engine: 'bat', command: 'echo ok', notify: 'on-fail', options: { notify: 'on-exit' } }, exec)
+    assert.equal(res.ok, true, 'res=' + JSON.stringify(res))
+    const meta = JSON.parse(await fsp.readFile(path.join(workdir, '.dsh', 'bgjobs', res.jobId, 'job.json'), 'utf8'))
+    assert.equal(meta.notify, 'on-fail', '平铺应覆盖袋；meta.notify=' + meta.notify)
+  } finally { dispose(); await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {}) }
+})
+
+test('R3: options 袋里未知键只告警、提交仍成功', async () => {
+  const calls = []
+  setSchtasksRunner(makeFakeRunner(calls))
+  const workdir = await makeWorkdir()
+  const { ctx, tools } = makeCtx({ services: { workspaceRegistry: { list: () => [] } } })
+  const dispose = apply(ctx)
+  try {
+    const submit = tools.find((t) => t.name === 'bgjob_submit')
+    const exec = { agent: { session: { id: 's-unknown', header: { cwd: workdir } } } }
+    const res = await submit.execute({ engine: 'bat', command: 'echo ok', options: { nosuchkey: 1 } }, exec)
+    assert.equal(res.ok, true, '未知袋键不应导致失败；res=' + JSON.stringify(res))
+    assert.ok(Array.isArray(res.warnings) && res.warnings.some((w) => w.includes('nosuchkey')), 'warnings 应点名未知键：' + JSON.stringify(res.warnings))
+  } finally { dispose(); await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {}) }
+})
