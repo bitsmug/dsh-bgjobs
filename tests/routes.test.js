@@ -45,10 +45,37 @@ test('webServer: /bgjobs/state 返回 jobs 列表，其他路径 404', async () 
     // 字段显示用：command 与 createdAt 必须在快照里（面板可选显示命令/开始时间）。
     assert.equal(parsed.jobs[0].command, 'echo x', '快照含 command')
     assert.equal(typeof parsed.jobs[0].createdAt, 'number', '快照含 createdAt（数值）')
+    // 「仅当前会话」过滤的唯一依据：创建者会话 id 必须在快照里（无 agent 时为空串）。
+    assert.equal(parsed.jobs[0].createdBySession, '', '快照含 createdBySession（无 agent 时空串）')
     // 其他路径 404
     let status404 = 0
     await getJobs().handler({ url: '/other' }, { writeHead: (code) => { status404 = code }, end: () => {} })
     assert.equal(status404, 404)
+  } finally {
+    dispose()
+    await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+
+test('webServer: /bgjobs/state 的 createdBySession 记为提交者会话（面板按会话过滤的依据）', async () => {
+  setSchtasksRunner(makeFakeRunner([]))
+  const workdir = await makeWorkdir()
+  const { ctx, tools, injectCallbacks } = makeCtx({
+    services: { workspaceRegistry: { list: () => [] } },
+  })
+  const dispose = apply(ctx)
+  try {
+    const getJobs = attachWebServer(ctx, injectCallbacks)
+    const submit = tools.find((t) => t.name === 'bgjob_submit')
+    const res = await submit.execute(
+      { name: 't', command: 'echo x', workdir },
+      { agent: { session: { id: 'session-under-test' } } },
+    )
+    let body = ''
+    await getJobs().handler({ url: '/bgjobs/state' }, { writeHead: () => {}, end: (b) => { body = b } })
+    const job = JSON.parse(body).jobs.find((j) => j.id === res.jobId)
+    assert.equal(job.createdBySession, 'session-under-test', '快照应带上创建者会话 id')
   } finally {
     dispose()
     await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
