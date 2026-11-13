@@ -786,21 +786,31 @@ test('webServer: /bgjobs/gui POST open —— schtasks 一次性任务拉起（�
       const create = calls.find((a) => a[1] === '/Create')
       assert.ok(create, '应有 schtasks /Create')
       assert.equal(create[3], 'dsh-bgj-gui', '固定任务名 dsh-bgj-gui（/F 覆盖，不堆积）')
-      // /TR 只带 cmd.exe /c <短路径批处理>（schtasks /TR 有长度上限，深路径安装必须经批处理承载长命令）
+      // /TR 只带 wscript.exe + %TEMP% 短路径 VBS（schtasks /TR 有长度上限，深路径安装必须经文件承载长命令）
       const tr = create[create.indexOf('/TR') + 1]
-      assert.ok(tr.includes('cmd.exe') && tr.includes('/c'), '/TR 应经 cmd.exe /c 跑批处理')
-      const batch = path.join(os.tmpdir(), 'bgjobs-gui-launch.cmd')
-      assert.ok(tr.includes(batch), '/TR 指向 %TEMP% 短路径批处理')
-      const batchText = readFileSync(batch, 'utf8')
-      assert.ok(batchText.includes('start ""'), '批处理用 start 起 GUI（独立控制台）')
-      assert.ok(batchText.includes('"C:\\Fake\\pwsh.exe"'), '批处理目标为解析到的 pwsh')
-      assert.ok(batchText.includes('-NoProfile') && batchText.includes('-File'))
-      assert.ok(batchText.includes('-WindowStyle Hidden'), '控制台创建即隐藏')
-      assert.ok(batchText.includes(guiScriptPath()), '批处理目标文件为 GUI 脚本')
+      const vbsPath = path.join(os.tmpdir(), 'bgjobs-gui-launch.vbs')
+      const commandPath = path.join(os.tmpdir(), 'bgjobs-gui-launch.txt')
+      assert.ok(tr.includes('wscript.exe'), '/TR 应经 wscript.exe（GUI 子系统，无控制台）')
+      assert.ok(tr.includes(vbsPath), '/TR 指向 %TEMP% 短路径 VBS')
+      assert.ok(!tr.includes('cmd.exe'), '/TR 不再经 cmd.exe：其控制台会被默认终端接管而可见')
+      // VBS：纯 ASCII，从同目录的 UTF-16LE 文本读命令行并以 SW_HIDE(0) 启动
+      const vbsText = readFileSync(vbsPath, 'utf8')
+      assert.match(vbsText, /^[\x00-\x7F]*$/, 'launch.vbs 应为纯 ASCII')
+      assert.ok(vbsText.includes('bgjobs-gui-launch.txt'), 'VBS 应从同目录文本读命令行')
+      assert.ok(vbsText.includes(', 0, False'), 'VBS 应以 SW_HIDE(0) 启动且不等待')
+      // 命令行文本：UTF-16LE + BOM，指向解析到的 pwsh 与 GUI 脚本
+      const cmdBuf = readFileSync(commandPath)
+      assert.deepEqual([cmdBuf[0], cmdBuf[1]], [0xff, 0xfe], '命令行文本应为 UTF-16LE 带 BOM')
+      const commandLine = cmdBuf.toString('utf16le').slice(1)
+      assert.ok(commandLine.includes('"C:\\Fake\\pwsh.exe"'), '目标为解析到的 pwsh')
+      assert.ok(commandLine.includes('-NoProfile') && commandLine.includes('-File'))
+      assert.ok(commandLine.includes('-WindowStyle Hidden'), 'GUI 控制台创建即隐藏（WinForms 窗口不受影响）')
+      assert.ok(commandLine.includes(guiScriptPath()), '目标文件为 GUI 脚本')
       assert.ok(create.includes('/SC') && create.includes('ONCE') && create.includes('/F'))
       assert.ok(calls.some((a) => a[1] === '/Run' && a[3] === 'dsh-bgj-gui'), '应有 /Run 立即触发')
       assert.ok(calls.some((a) => a[1] === '/Change' && a.includes('/DISABLE')), '触发后立即 /DISABLE 防整分双跑')
-      await fsp.rm(batch, { force: true }).catch(() => {})
+      await fsp.rm(vbsPath, { force: true }).catch(() => {})
+      await fsp.rm(commandPath, { force: true }).catch(() => {})
     } finally {
       dispose()
     }
