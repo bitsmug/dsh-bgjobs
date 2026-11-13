@@ -189,7 +189,7 @@ test('submitJob: /Run 失败时删除残留任务计划并清理目录', async (
 })
 
 
-test('submitJob(pwsh): 写 job.ps1 + run.ps1（UTF-8 BOM，无 run.bat），/TR 直接调 interpreter -File run.ps1', async () => {
+test('submitJob(pwsh): 写 job.ps1 + run.ps1（UTF-8 BOM，无 run.bat），/TR 经 wscript 执行 launch.vbs', async () => {
   const calls = []
   setSchtasksRunner(makeFakeRunner(calls))
   setShellResolver(async () => ({ exe: 'C:\\fake\\pwsh.exe', engine: 'pwsh' }))
@@ -226,14 +226,25 @@ test('submitJob(pwsh): 写 job.ps1 + run.ps1（UTF-8 BOM，无 run.bat），/TR 
     assert.equal(meta.engine, 'pwsh')
     assert.equal(meta.interpreter, 'C:\\fake\\pwsh.exe')
     assert.equal(meta.status, 'running')
-    // schtasks：/Create 的 /TR 直接调 interpreter -File run.ps1（-WindowStyle Hidden 隐藏窗口，普通引号形式，Node 自会转义）；/Run 后 /DISABLE
+    // schtasks：/Create 的 /TR 经 wscript.exe 执行 launch.vbs（GUI 宿主，无控制台窗口）；/Run 后 /DISABLE
     const createCall = calls.find((argv) => argv.includes('/Create'))
     const trIdx = createCall.indexOf('/TR')
+    const wscriptExe = (process.env.SystemRoot || 'C:\\Windows') + '\\System32\\wscript.exe'
     assert.equal(
       createCall[trIdx + 1],
-      '"C:\\fake\\pwsh.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + jobDir + '\\run.ps1"',
-      '/TR 应直接指向 pwsh -File run.ps1（带 -WindowStyle Hidden）'
+      '"' + wscriptExe + '" "' + jobDir + '\\launch.vbs"',
+      '/TR 应经 wscript.exe 执行 launch.vbs（pwsh -WindowStyle Hidden 在 Windows Terminal 默认终端下仍会露窗口）'
     )
+    // launch.vbs：纯 ASCII，以 SW_HIDE(0) 启动同目录 run.ps1
+    const vbs = await fsp.readFile(path.join(jobDir, 'launch.vbs'), 'utf8')
+    assert.match(vbs, /^[\x00-\x7F]*$/, 'launch.vbs 应为纯 ASCII（解释器路径走 interpreter.txt）')
+    assert.ok(vbs.includes('\\run.ps1'), 'launch.vbs 应启动 run.ps1')
+    assert.ok(vbs.includes(', 0, True'), 'launch.vbs 应以 SW_HIDE(0) 启动并等待')
+    assert.ok(vbs.includes('interpreter.txt'), 'launch.vbs 应从 interpreter.txt 读解释器路径')
+    // interpreter.txt：UTF-16LE + BOM，内容为解释器绝对路径
+    const interpBuf = await fsp.readFile(path.join(jobDir, 'interpreter.txt'))
+    assert.deepEqual([interpBuf[0], interpBuf[1]], [0xff, 0xfe], 'interpreter.txt 应为 UTF-16LE 带 BOM')
+    assert.equal(interpBuf.toString('utf16le').slice(1).trim(), 'C:\\fake\\pwsh.exe')
     assert.ok(calls.some((argv) => argv.includes('/Run')))
     const runIdx = calls.findIndex((argv) => argv.includes('/Run'))
     const disableIdx = calls.findIndex((argv) => argv.includes('/DISABLE'))

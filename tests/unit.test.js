@@ -8,7 +8,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 import {
-  apply, strip, buildBat, buildCmdBat, buildPwshRunner, buildPs1, buildLaunchVbs, parseExitCode,
+  apply, strip, buildBat, buildCmdBat, buildPwshRunner, buildPs1, buildLaunchVbs, buildLaunchVbsPwsh, parseExitCode,
   decodeAutoText,
   jobSandboxDecision, shouldNotifyForExit,
   setSchtasksRunner, setShellResolver, setSandboxRunnerResolver,
@@ -139,6 +139,19 @@ test('buildLaunchVbs: 纯 ASCII 模板，FSO 自推导目录启动同目录 run.
   assert.ok(vbs.includes('GetParentFolderName(WScript.ScriptFullName)'))
   assert.ok(vbs.includes('sh.Run """" & dir & "\\run.bat""", 0, True'), '应以 SW_HIDE(0) 隐藏启动并等待(True)')
   assert.ok(!vbs.includes('powershell'), 'bat 引擎启动器不得依赖 PowerShell')
+})
+
+
+test('buildLaunchVbsPwsh: 纯 ASCII 模板，经 interpreter.txt（Unicode）启动同目录 run.ps1（SW_HIDE=0，等待）', () => {
+  const vbs = buildLaunchVbsPwsh()
+  // 纯 ASCII：解释器路径可能含中文，故走 interpreter.txt 而不是内嵌（.vbs 无 BOM 按 ANSI 读）
+  assert.match(vbs, /^[\x00-\x7F]*\r\n$/, 'launch.vbs 应为纯 ASCII')
+  assert.ok(vbs.includes('CreateObject("Scripting.FileSystemObject")'))
+  assert.ok(vbs.includes('GetParentFolderName(WScript.ScriptFullName)'))
+  assert.ok(vbs.includes('OpenTextFile(dir & "\\interpreter.txt", 1, False, -1)'), '应以 Unicode(-1) 模式读解释器路径')
+  assert.ok(vbs.includes('\\run.ps1'), '应启动同目录 run.ps1')
+  assert.ok(vbs.includes(', 0, True'), '应以 SW_HIDE(0) 隐藏启动并等待(True)')
+  assert.ok(!vbs.includes('-WindowStyle'), '不得再依赖 -WindowStyle（默认终端为 Windows Terminal 时无效）')
 })
 
 

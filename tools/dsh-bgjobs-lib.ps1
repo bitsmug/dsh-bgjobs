@@ -301,6 +301,26 @@ function New-BgjobsLaunchVbs {
     ) -join "`r`n") + "`r`n"
 }
 
+# ── pwsh engine hidden launcher (MUST mirror buildLaunchVbsPwsh() in lib/scripts.js) ──
+# 纯 ASCII 模板：/TR 经 wscript.exe 执行本脚本，SW_HIDE（0）隐藏启动同目录 run.ps1 并等待。
+# 为什么 pwsh 也经 wscript：`-WindowStyle Hidden` 只对 conhost 托管的控制台生效；默认终端委派给
+# Windows Terminal 时，计划任务拉起的控制台由 OpenConsole/WindowsTerminal -Embedding 承载，
+# SW_HIDE 不生效 ⇒ 每个任务弹一个可见窗口。wscript 是 GUI 子系统（无控制台），由它启动才无窗口。
+# 解释器绝对路径烘焙在同目录 interpreter.txt（UTF-16LE + BOM），运行时以 Unicode(-1) 读回，
+# 避免把可能含中文的路径内嵌进 .vbs（.vbs 无 BOM 按 ANSI 读会乱）。
+function New-BgjobsPwshLaunchVbs {
+    return ((
+        'Set fso = CreateObject("Scripting.FileSystemObject")',
+        'Set sh = CreateObject("WScript.Shell")',
+        'dir = fso.GetParentFolderName(WScript.ScriptFullName)',
+        'Set ts = fso.OpenTextFile(dir & "\interpreter.txt", 1, False, -1)',
+        'exe = ts.ReadLine',
+        'ts.Close',
+        'q = Chr(34)',
+        'sh.Run q & exe & q & " -NoProfile -NonInteractive -ExecutionPolicy Bypass -File " & q & dir & "\run.ps1" & q, 0, True'
+    ) -join "`r`n") + "`r`n"
+}
+
 # ── pwsh engine: run.ps1 (MUST mirror buildPwshRunner() in lib/scripts.js) ─────
 # schtasks /TR 直接调解释器执行本包装脚本：& job.ps1 *> 重定向、写 exitcode.txt、
 # 自删任务计划——pwsh 路径不再经过 cmd。退出码取 $LASTEXITCODE；try/catch 兜底保证
@@ -561,6 +581,10 @@ function Submit-BgjobsJob([string]$Name, [string]$Command, [string]$WorkdirRaw, 
             # job.ps1 / run.ps1 必须 UTF-8 with BOM：Windows PowerShell 5.1 解析无 BOM 文件按 ANSI/GBK 读，中文会乱。
             [System.IO.File]::WriteAllText($meta.scriptPath, (New-BgjobsPs1 $job), (New-Object System.Text.UTF8Encoding($true)))
             [System.IO.File]::WriteAllText($runnerPath, (New-BgjobsPwshRunner $job), (New-Object System.Text.UTF8Encoding($true)))
+            # 隐藏窗口启动器：wscript 以 SW_HIDE 运行 run.ps1；解释器绝对路径走 UTF-16LE + BOM，
+            # 让 launch.vbs 保持纯 ASCII（路径可能含中文，.vbs 无 BOM 按 ANSI 读会乱）。
+            [System.IO.File]::WriteAllText((Join-Path $jobDir 'interpreter.txt'), [string]$shell.exe, (New-Object System.Text.UnicodeEncoding($false, $true)))
+            [System.IO.File]::WriteAllText($launchVbsPath, (New-BgjobsPwshLaunchVbs), (New-Object System.Text.UTF8Encoding($false)))
         } else {
             [System.IO.File]::WriteAllText($meta.cmdPath, (New-BgjobsCmdBat $job), (New-Object System.Text.UTF8Encoding($false)))
             [System.IO.File]::WriteAllText($batPath, (New-BgjobsBat $job), (New-Object System.Text.UTF8Encoding($false)))
@@ -574,11 +598,12 @@ function Submit-BgjobsJob([string]$Name, [string]$Command, [string]$WorkdirRaw, 
         return @{ ok = $false; error = 'write job files failed: ' + $_.Exception.Message }
     }
     $st = (Get-Date).AddMinutes(1).ToString('HH:mm')
-    # /TR 目标：pwsh 引擎直接调解释器执行 run.ps1（-WindowStyle Hidden 隐藏控制台窗口）；
-    # bat 引擎经 wscript.exe 执行 launch.vbs（SW_HIDE 隐藏启动 run.bat，零 PowerShell 依赖）。
-    # schtasks /TR 多 token 值需整体加引号并转义内部引号（"\"prog\" -arg ..."），否则
+    # /TR 目标：两种引擎都经 wscript.exe 执行 launch.vbs（GUI 宿主、无控制台），由 VBS 以 SW_HIDE
+    # 拉起 run.ps1 / run.bat。pwsh 不再直调解释器：`-WindowStyle Hidden` 在默认终端委派给 Windows
+    # Terminal 时无效（控制台由 OpenConsole/WindowsTerminal -Embedding 承载，SW_HIDE 不生效）。
+    # schtasks /TR 多 token 值需整体加引号并转义内部引号（"\"prog\" \"path\""），否则
     # schtasks 会把 -NoProfile 等误判为自身选项。
-    $trValue = if ($isPwsh) { ('"\"' + $shell.exe + '\" -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File \"' + $runnerPath + '\""') } else { ('"\"' + $WSCRIPT + '\" \"' + $launchVbsPath + '\""') }
+    $trValue = ('"\"' + $WSCRIPT + '\" \"' + $launchVbsPath + '\""')
     $create = Invoke-BgjobsSchtasks @('/Create', '/TN', $taskName, '/TR', $trValue, '/SC', 'ONCE', '/ST', $st, '/F') $workdir
     if ($create.exitCode -ne 0) {
         [void](Remove-Item -LiteralPath $jobDir -Recurse -Force -ErrorAction SilentlyContinue)
