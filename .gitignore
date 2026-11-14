@@ -1,0 +1,17 @@
+*
+!.gitattributes
+!.gitignore
+!.github/
+!.github/**
+!lib/
+!lib/**
+!tests/
+!tests/**
+!tools/
+!tools/**
+!cordis.patch.yml
+!LICENSE
+!package.json
+!pnpm-workspace.yaml
+!README*.md
+*.bak*

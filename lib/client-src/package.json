@@ -1,0 +1,5 @@
+{
+  "type": "commonjs",
+  "private": true,
+  "description": "bgjobs client bundle source — built by scripts/build-client.mjs into ../client.js"
+}

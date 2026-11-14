@@ -1,0 +1,249 @@
+# dsh-bgjobs smoke test - exercises the offline CLI against a temporary area
+# WITHOUT touching real schtasks (schtasks is skipped by only testing the
+# read/index paths; submit/kill need a live Task Scheduler and are listed as
+# manual checks). Run: powershell -ExecutionPolicy Bypass -File smoke-test.ps1
+$ErrorActionPreference = 'Stop'
+
+$tmp = Join-Path ([System.IO.Path]::GetTempPath()) ('bgjobs-smoke-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+$origDshHome = $env:DSH_HOME
+$env:DSH_HOME = Join-Path $tmp 'home'
+New-Item -ItemType Directory -Force -Path $env:DSH_HOME | Out-Null
+# The lib resolves the dsh-home portable-first: inside a portable tree
+# (<root>\data\dsh-home) an external DSH_HOME no longer isolates this test, so
+# pin the top-priority override at the temp home — otherwise the synthetic index
+# would be written into the REAL index of the portable store.
+$env:BGJOBS_DSH_HOME = $env:DSH_HOME
+$workdir = Join-Path $tmp 'work'
+New-Item -ItemType Directory -Force -Path $workdir | Out-Null
+$jobsRoot = Join-Path $workdir '.dsh\bgjobs'
+
+# Safety guard: everything must live under a fresh temp dir. Never let the
+# test touch (or intersect) the real user job store under ~/.dsh/bgjobs.
+$realDshHome = if ($origDshHome) { $origDshHome } else { Join-Path $env:USERPROFILE '.dsh' }
+$realJobsRoot = Join-Path $realDshHome 'bgjobs'
+if ($jobsRoot -eq $realJobsRoot -or $env:DSH_HOME -eq $realDshHome -or -not $tmp.StartsWith([System.IO.Path]::GetTempPath(), [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "refusing to run: smoke jobs root would intersect the real DSH home ($realDshHome)"
+}
+$script = Join-Path $PSScriptRoot 'dsh-bgjobs-lib.ps1'
+. $script
+
+# Fail closed: refuse to run (before anything is written) unless the override
+# above really took effect. Without this, a silent fallback would let the test
+# rewrite the user's real bgjobs/index.json.
+if ($script:BgjobsHomeInfo.Source -ne 'override' -or ([string]$script:BgjobsHome).TrimEnd('\') -ne ([string]$env:DSH_HOME).TrimEnd('\')) {
+    throw "refusing to run: bgjobs home resolved to '$($script:BgjobsHome)' (source=$($script:BgjobsHomeInfo.Source)); expected the temp home '$($env:DSH_HOME)' via BGJOBS_DSH_HOME"
+}
+
+$failed = 0
+function Assert-True([bool]$Cond, [string]$Msg) {
+    if (-not $Cond) { Write-Host "FAIL: $Msg"; $script:failed++ }
+    else { Write-Host "ok: $Msg" }
+}
+
+# ── index rebuild ─────────────────────────────────────────────────────────
+$id = 'bg-smoke-1'
+$jobDir = Join-Path $jobsRoot $id
+New-Item -ItemType Directory -Force -Path $jobDir | Out-Null
+$meta = @{
+    id = $id; name = 'smoke'; workdir = $workdir; taskName = 'dsh-bgj-' + $id; jobDir = $jobDir
+    logPath = (Join-Path $jobDir 'stdout.log'); exitcodePath = (Join-Path $jobDir 'exitcode.txt')
+    jsonPath = (Join-Path $jobDir 'job.json'); command = 'echo smoke'; status = 'done'
+    exitCode = 0; createdAt = (Get-BgjobsNowMs); finishedAt = (Get-BgjobsNowMs)
+}
+[System.IO.File]::WriteAllText((Join-Path $jobDir 'job.json'), ($meta | ConvertTo-Json -Depth 5), (New-Object System.Text.UTF8Encoding($false)))
+[System.IO.File]::WriteAllText((Join-Path $jobDir 'stdout.log'), "line1`r`nline2`r`n", (New-Object System.Text.UTF8Encoding($false)))
+
+$payload = Write-BgjobsIndexRebuild @($workdir)
+Assert-True (@($payload.jobs).Count -eq 1) 'index rebuild finds 1 job'
+
+# ── list / status / log ───────────────────────────────────────────────────
+$jobs = Get-BgjobsJobs
+Assert-True (@($jobs).Count -eq 1) 'list finds 1 job'
+Assert-True ($jobs[0].status -eq 'done' -and $jobs[0].exitCode -eq 0) 'job parsed from job.json (status/exit)'
+$single = Get-BgjobsJob $id
+Assert-True ($null -ne $single -and $single.jobDir -eq $jobDir) 'get job by id'
+
+$tail = Get-Content -LiteralPath $single.logPath -Tail 100
+Assert-True (@($tail).Count -eq 2) 'log tail reads lines'
+
+# ── cleanup ───────────────────────────────────────────────────────────────
+# finishedAt = now -> NOT older than 24h -> kept
+$removed = Clear-BgjobsDone 24
+Assert-True (@($removed).Count -eq 0) 'fresh done job kept by cleanup'
+# now mark it old
+$meta.finishedAt = (Get-BgjobsNowMs) - 25 * 3600 * 1000
+[System.IO.File]::WriteAllText((Join-Path $jobDir 'job.json'), ($meta | ConvertTo-Json -Depth 5), (New-Object System.Text.UTF8Encoding($false)))
+$removed = Clear-BgjobsDone 24
+Assert-True (@($removed).Count -eq 1) 'old done job removed by cleanup'
+Assert-True (-not (Test-Path -LiteralPath $jobDir)) 'job dir deleted after cleanup'
+
+# case A: done job WITHOUT finishedAt but WITH an OLD exitcode.txt (finished while DSH
+# was offline) -> 24h cleanup uses exitcode.txt mtime as finish time -> removed
+$id2 = 'bg-smoke-2'
+$jobDir2 = Join-Path $jobsRoot $id2
+New-Item -ItemType Directory -Force -Path $jobDir2 | Out-Null
+$exit2 = Join-Path $jobDir2 'exitcode.txt'
+[System.IO.File]::WriteAllText($exit2, '0', (New-Object System.Text.UTF8Encoding($false)))
+[System.IO.File]::SetLastWriteTimeUtc($exit2, (Get-Date).ToUniversalTime().AddHours(-25))
+$meta2 = @{
+    id = $id2; name = 'smoke-null-finished'; workdir = $workdir; taskName = 'dsh-bgj-' + $id2; jobDir = $jobDir2
+    logPath = (Join-Path $jobDir2 'stdout.log'); exitcodePath = $exit2
+    jsonPath = (Join-Path $jobDir2 'job.json'); command = 'echo smoke2'; status = 'done'
+    exitCode = 0; createdAt = (Get-BgjobsNowMs)   # finishedAt intentionally absent
+}
+[System.IO.File]::WriteAllText((Join-Path $jobDir2 'job.json'), ($meta2 | ConvertTo-Json -Depth 5), (New-Object System.Text.UTF8Encoding($false)))
+
+# case B: done job WITHOUT finishedAt AND WITHOUT exitcode.txt -> no way to age it -> kept by 24h
+$id3 = 'bg-smoke-3'
+$jobDir3 = Join-Path $jobsRoot $id3
+New-Item -ItemType Directory -Force -Path $jobDir3 | Out-Null
+$meta3 = @{
+    id = $id3; name = 'smoke-no-exitcode'; workdir = $workdir; taskName = 'dsh-bgj-' + $id3; jobDir = $jobDir3
+    logPath = (Join-Path $jobDir3 'stdout.log'); exitcodePath = (Join-Path $jobDir3 'exitcode.txt')
+    jsonPath = (Join-Path $jobDir3 'job.json'); command = 'echo smoke3'; status = 'done'
+    exitCode = 0; createdAt = (Get-BgjobsNowMs)   # finishedAt intentionally absent
+}
+[System.IO.File]::WriteAllText((Join-Path $jobDir3 'job.json'), ($meta3 | ConvertTo-Json -Depth 5), (New-Object System.Text.UTF8Encoding($false)))
+
+$null = Write-BgjobsIndexRebuild @($workdir)
+$removed = Clear-BgjobsDone 24
+Assert-True (@($removed).Count -eq 1 -and $removed -contains $id2) 'old exitcode.txt fallback: NULL-finishedAt done job removed by 24h cleanup'
+Assert-True (-not (Test-Path -LiteralPath $jobDir2)) 'job dir (old exitcode fallback) deleted after 24h cleanup'
+Assert-True (Test-Path -LiteralPath $jobDir3) 'done job with neither finishedAt nor exitcode.txt kept by 24h cleanup'
+$removed = Clear-BgjobsDone 0
+Assert-True (@($removed).Count -eq 1 -and $removed -contains $id3) 'NULL-finishedAt/no-exitcode job removed by full cleanup (0)'
+Assert-True (-not (Test-Path -LiteralPath $jobDir3)) 'job dir (no exitcode) deleted after full cleanup'
+
+# case D: boundary -> finished 24h-minus-1s ago is KEPT by cleanup 24 (strictly older only)
+$id5 = 'bg-smoke-5'
+$jobDir5 = Join-Path $jobsRoot $id5
+New-Item -ItemType Directory -Force -Path $jobDir5 | Out-Null
+$meta5 = @{
+    id = $id5; name = 'smoke-24h-minus1s'; workdir = $workdir; taskName = 'dsh-bgj-' + $id5; jobDir = $jobDir5
+    logPath = (Join-Path $jobDir5 'stdout.log'); exitcodePath = (Join-Path $jobDir5 'exitcode.txt')
+    jsonPath = (Join-Path $jobDir5 'job.json'); command = 'echo smoke5'; status = 'done'
+    exitCode = 0; createdAt = (Get-BgjobsNowMs); finishedAt = (Get-BgjobsNowMs) - 24 * 3600 * 1000 + 1000
+}
+[System.IO.File]::WriteAllText((Join-Path $jobDir5 'job.json'), ($meta5 | ConvertTo-Json -Depth 5), (New-Object System.Text.UTF8Encoding($false)))
+$null = Write-BgjobsIndexRebuild @($workdir)
+$removed = Clear-BgjobsDone 24
+Assert-True (@($removed).Count -eq 0) 'job finished just under 24h ago kept by 24h cleanup (strictly older required)'
+Assert-True (Test-Path -LiteralPath $jobDir5) 'near-24h boundary job dir still exists'
+$removed = Clear-BgjobsDone 0
+Assert-True (@($removed).Count -eq 1 -and $removed -contains $id5) 'near-24h boundary job removed by full cleanup (0)'
+Assert-True (-not (Test-Path -LiteralPath $jobDir5)) 'near-24h boundary job dir deleted after full cleanup'
+
+# case C: custom hours -> a job finished 2h ago is removed by cleanup 1
+$id4 = 'bg-smoke-4'
+$jobDir4 = Join-Path $jobsRoot $id4
+New-Item -ItemType Directory -Force -Path $jobDir4 | Out-Null
+$meta4 = @{
+    id = $id4; name = 'smoke-2h-old'; workdir = $workdir; taskName = 'dsh-bgj-' + $id4; jobDir = $jobDir4
+    logPath = (Join-Path $jobDir4 'stdout.log'); exitcodePath = (Join-Path $jobDir4 'exitcode.txt')
+    jsonPath = (Join-Path $jobDir4 'job.json'); command = 'echo smoke4'; status = 'done'
+    exitCode = 0; createdAt = (Get-BgjobsNowMs); finishedAt = (Get-BgjobsNowMs) - 2 * 3600 * 1000
+}
+[System.IO.File]::WriteAllText((Join-Path $jobDir4 'job.json'), ($meta4 | ConvertTo-Json -Depth 5), (New-Object System.Text.UTF8Encoding($false)))
+$null = Write-BgjobsIndexRebuild @($workdir)
+$removed = Clear-BgjobsDone 1
+Assert-True (@($removed).Count -eq 1 -and $removed -contains $id4) 'custom hours (1h) removes a 2h-old done job'
+Assert-True (-not (Test-Path -LiteralPath $jobDir4)) 'job dir (2h old) deleted by 1h cleanup'
+# index consistency: nothing left to list
+Assert-True (@(Get-BgjobsJobs).Count -eq 0) 'index empty after all cleanup'
+
+# ── exit-code parse (mirror check) ────────────────────────────────────────
+Assert-True ((ConvertFrom-BgjobsExitCode '0') -eq 0) 'parse exit 0'
+Assert-True ((ConvertFrom-BgjobsExitCode '-1') -eq -1) 'parse exit -1'
+Assert-True ($null -eq (ConvertFrom-BgjobsExitCode 'abc')) 'parse non-numeric -> null'
+
+# ── pwsh engine: run.ps1 / job.ps1 generation (mirror check; no real schtasks) ──
+$pwshJob = [pscustomobject]@{
+    meta = [pscustomobject]@{
+        workdir = $workdir; jsonPath = (Join-Path $jobDir 'job.json')
+        interpreter = 'C:\fake\pwsh.exe'; scriptPath = (Join-Path $jobDir 'job.ps1')
+        logPath = (Join-Path $jobDir 'stdout.log'); exitcodePath = (Join-Path $jobDir 'exitcode.txt')
+        taskName = 'dsh-bgj-smoke-pwsh'; command = "Write-Output 'hello pwsh'`r`n1..3 | ForEach-Object { `"step `$_`" }"
+    }
+}
+$pwshRunner = New-BgjobsPwshRunner $pwshJob
+Assert-True ($pwshRunner.Contains("& 'C:") -and $pwshRunner.Contains(" *> `$logPath")) 'pwsh run.ps1 redirects job output via & ... *>'
+Assert-True ($pwshRunner.IndexOf('[BGJOB] exit code') -gt $pwshRunner.IndexOf('*>')) 'pwsh run.ps1 writes exitcode after redirect'
+Assert-True ($pwshRunner.IndexOf("schtasks /Delete /TN 'dsh-bgj-smoke-pwsh' /F") -gt $pwshRunner.IndexOf('WriteAllText')) 'pwsh run.ps1 self-deletes after exitcode write'
+Assert-True ($pwshRunner.Contains('0xFF') -and $pwshRunner.Contains('0xFE')) 'pwsh run.ps1 converts UTF-16LE log on PS 5.1'
+Assert-True (-not $pwshRunner.Contains('Add-Type')) 'run.ps1 no longer compiles C# via Add-Type (v0.1.92)'
+# v0.1.92: the encoding *preamble* is conditional on the interpreter basename. $pwshJob's
+# interpreter is C:\fake\pwsh.exe (pwsh 7) => the preamble line is skipped entirely. v0.1.95
+# adds one unconditional runner-side line: [Console]::OutputEncoding = $utf8, set BEFORE the
+# `*>` redirect (`&` is the call operator => same process as job.ps1 and the native children
+# it spawns). Why: pwsh 7 only forces UTF-8 when stdout is redirected; when the process owns a
+# console (schtasks / -WindowStyle Hidden) it keeps the inherited code page (measured CP 936),
+# so native node UTF-8 output was decoded as CP 936 and came out mojibake. The 5.1 twin below
+# still asserts that the preamble IS written, so the branching is by interpreter, not dropped.
+Assert-True ($pwshRunner.Contains("[Console]::OutputEncoding = `$utf8")) 'pwsh run.ps1 sets Console.OutputEncoding before *> (v0.1.95)'
+Assert-True ($pwshRunner.IndexOf('[Console]::OutputEncoding') -lt $pwshRunner.IndexOf('*>')) 'the encoding line comes before the *> redirect'
+# v0.2.6: per-job encoding selection. meta.outputEncoding = 'native' => decode with the INHERITED code
+# page (local-code-page programs such as MATLAB -batch, measured CP 936); default (field absent) must
+# stay byte-identical => the default runner must not mention $nativeEnc at all (mutual proof).
+$nativeJob = [pscustomobject]@{
+    meta = [pscustomobject]@{
+        workdir = $workdir; jsonPath = (Join-Path $jobDir 'job.json')
+        interpreter = 'C:\fake\pwsh.exe'; scriptPath = (Join-Path $jobDir 'job.ps1')
+        logPath = (Join-Path $jobDir 'stdout.log'); exitcodePath = (Join-Path $jobDir 'exitcode.txt')
+        taskName = 'dsh-bgj-smoke-native'; outputEncoding = 'native'
+    }
+}
+$nativeRunner = New-BgjobsPwshRunner $nativeJob
+Assert-True ($nativeRunner.Contains('$nativeEnc = [Console]::OutputEncoding')) 'native run.ps1 captures the inherited code page first'
+Assert-True ($nativeRunner.Contains('[Console]::OutputEncoding = $nativeEnc')) 'native run.ps1 decodes with $nativeEnc'
+Assert-True (-not $nativeRunner.Contains('[Console]::OutputEncoding = $utf8')) 'native run.ps1 must not decode as UTF-8'
+Assert-True ($nativeRunner.IndexOf('$nativeEnc') -lt $nativeRunner.IndexOf('$pidPath')) 'the capture must precede $pidPath (i.e. any override)'
+Assert-True (-not $pwshRunner.Contains('$nativeEnc')) 'the default run.ps1 must not mention $nativeEnc (byte-identical)'
+# v0.3.2: auto (the NEW default for fresh submissions) = lossless capture via ISO-8859-1 (CP 28591)
+# plus a final detection pass that rewrites the log as clean UTF-8. The runner for a job WITHOUT the
+# field (legacy job.json) must stay the old utf8 form byte-for-byte (mutual proof below).
+$autoJob = [pscustomobject]@{
+    meta = [pscustomobject]@{
+        workdir = $workdir; jsonPath = (Join-Path $jobDir 'job.json')
+        interpreter = 'C:\fake\pwsh.exe'; scriptPath = (Join-Path $jobDir 'job.ps1')
+        logPath = (Join-Path $jobDir 'stdout.log'); exitcodePath = (Join-Path $jobDir 'exitcode.txt')
+        taskName = 'dsh-bgj-smoke-auto'; outputEncoding = 'auto'
+    }
+}
+$autoRunner = New-BgjobsPwshRunner $autoJob
+Assert-True ($autoRunner.Contains('$autoActive = $false')) 'auto run.ps1 declares $autoActive'
+Assert-True ($autoRunner.Contains('[Console]::OutputEncoding = [System.Text.Encoding]::GetEncoding(28591)')) 'auto run.ps1 captures losslessly via 28591'
+Assert-True ($autoRunner.Contains('if ($autoActive) {')) 'auto run.ps1 has the final detection block'
+Assert-True ($autoRunner.IndexOf('GetEncoding(28591)') -lt $autoRunner.IndexOf('*>')) 'the 28591 capture comes before the *> redirect'
+Assert-True ($autoRunner.IndexOf('if ($autoActive) {') -gt $autoRunner.IndexOf('0xFE')) 'the final block follows the FF FE conversion'
+Assert-True ($autoRunner.IndexOf('if ($autoActive) {') -lt $autoRunner.IndexOf('[BGJOB] exit code:')) 'the final block precedes the exit marker'
+Assert-True (-not $autoRunner.Contains('$nativeEnc')) 'auto run.ps1 must not mention $nativeEnc'
+Assert-True (-not $pwshRunner.Contains('$autoActive') -and -not $pwshRunner.Contains('28591')) 'the field-absent (legacy) run.ps1 must stay the old form (byte-identical)'
+$ps1 = New-BgjobsPs1 $pwshJob
+Assert-True (-not $ps1.StartsWith('# bgjobs:')) 'pwsh7 job.ps1 skips the UTF-8 preamble (v0.1.92)'
+Assert-True (-not $ps1.Contains('OutputEncoding')) 'pwsh7 job.ps1 writes no encoding setting'
+Assert-True (-not $ps1.Contains('Add-Type')) 'job.ps1 no longer contains Add-Type (v0.1.92)'
+Assert-True ($ps1.StartsWith("Write-Output 'hello pwsh'")) 'pwsh7 job.ps1 starts with the user command'
+Assert-True ($ps1.Contains("Write-Output 'hello pwsh'")) 'job.ps1 keeps user command as-is'
+# 5.1 twin: same generators + interpreter = Windows PowerShell 5.1 => preamble must be there.
+$ps51Job = [pscustomobject]@{
+    meta = [pscustomobject]@{
+        workdir = $workdir; jsonPath = (Join-Path $jobDir 'job.json')
+        interpreter = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'; scriptPath = (Join-Path $jobDir 'job.ps1')
+        logPath = (Join-Path $jobDir 'stdout.log'); exitcodePath = (Join-Path $jobDir 'exitcode.txt')
+        taskName = 'dsh-bgj-smoke-ps51'; command = "Write-Output 'hello ps51'"
+    }
+}
+$ps51Runner = New-BgjobsPwshRunner $ps51Job
+Assert-True ($ps51Runner.Contains('[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)')) 'ps51 run.ps1 sets Console.OutputEncoding to UTF-8'
+Assert-True ($ps51Runner.Contains('0xFF') -and $ps51Runner.Contains('0xFE')) 'ps51 run.ps1 keeps the UTF-16LE log conversion'
+Assert-True (-not $ps51Runner.Contains('Add-Type')) 'ps51 run.ps1 has no Add-Type either (v0.1.92)'
+$ps51 = New-BgjobsPs1 $ps51Job
+Assert-True ($ps51.StartsWith('# bgjobs:')) 'ps51 job.ps1 has UTF-8 preamble (first line)'
+Assert-True ($ps51.Contains('[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)')) 'ps51 job.ps1 sets Console.OutputEncoding to UTF-8'
+Assert-True ($ps51.Contains('$OutputEncoding = [System.Text.UTF8Encoding]::new($false)')) 'ps51 job.ps1 sets $OutputEncoding'
+Assert-True ($ps51.Contains("Write-Output 'hello ps51'")) 'ps51 job.ps1 keeps user command as-is'
+
+Write-Host ''
+if ($failed -gt 0) { Write-Host "SMOKE FAILED: $failed failure(s)"; exit 1 }
+Write-Host 'SMOKE PASSED'
+Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
