@@ -15,7 +15,7 @@ Built for long-running work — large downloads, batch scripts, compilation, dat
 
 ---
 
-⚠️ **Upgrade notice:** MCP tasks are now provided by the `bgjob-mcp` plugin. Upgrading this plugin without installing `bgjob-mcp` will disable MCP tasks. History of MCP tasks will remain, but they will fail on restart.
+⚠️ **Upgrade notice:** MCP tasks are now provided by the [`bgjob-mcp`](https://github.com/bitsmug/bgjob-mcp) plugin. Upgrading this plugin without installing [`bgjob-mcp`](https://github.com/bitsmug/bgjob-mcp) will disable MCP tasks. History of MCP tasks will remain, but they will fail on restart.
 
 ---
 
@@ -67,8 +67,8 @@ Built for long-running work — large downloads, batch scripts, compilation, dat
 | Optional plugin | Compatible |
 |---|---|
 | [dsh-sandbox-mxc](https://github.com/bitsmug/dsh-sandbox-mxc) | `0.1.2` (latest version) |
+| [bgjob-mcp](https://github.com/bitsmug/bgjob-mcp) | `0.2.2` (latest version) (requires bgjobs `>=0.4.1-beta <0.5.0`) |
 | [dsh-multi-folder](https://github.com/AngelosZou/dsh-multi-folder) | `0.3.4` |
-| bgjob-mcp | `0.1.0` (requires bgjobs `>=0.4.1-beta <0.5.0`) |
 
 ## Install / uninstall
 
@@ -210,7 +210,7 @@ Issues and PRs are welcome: bug reports, panel / CLI experience, docs and transl
 
 **v0.4.2**
 
-- **⚠️Upgrade notice:** MCP tasks are now provided by the `bgjob-mcp` plugin. Upgrading this plugin without installing `bgjob-mcp` will disable MCP tasks. History of MCP tasks will remain, but they will fail on restart.
+- **⚠️Upgrade notice:** MCP tasks are now provided by the [`bgjob-mcp`](https://github.com/bitsmug/bgjob-mcp) plugin. Upgrading this plugin without installing `bgjob-mcp` will disable MCP tasks. History of MCP tasks will remain, but they will fail on restart.
 
 **v0.4.1-beta**
 

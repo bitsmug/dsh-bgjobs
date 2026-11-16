@@ -15,7 +15,7 @@
 
 ---
 
-⚠️ **升级提示⚠️:** MCP 任务能力由可选插件 `bgjob-mcp` 提供（只升级本包不装它 ⇒ MCP 能力消失，新提交被拒绝）。**更名/解耦后旧版本创建的 MCP 任务已不再支持**：历史任务仍可查看/清理，但重新启动会立即以退出码 `2` 失败并提示重新提交。
+⚠️ **升级提示⚠️:** MCP 任务能力由可选插件 [`bgjob-mcp`](https://github.com/bitsmug/bgjob-mcp) 提供（只升级本包不装它 ⇒ MCP 能力消失，新提交被拒绝）。**更名/解耦后旧版本创建的 MCP 任务已不再支持**：历史任务仍可查看/清理，但重新启动会立即以退出码 `2` 失败并提示重新提交。
 
 ---
 
@@ -69,7 +69,7 @@
 | 插件（可选） | 兼容 |
 |---|---|
 | [dsh-sandbox-mxc](https://github.com/bitsmug/dsh-sandbox-mxc) | `0.1.2` (最新版)|
-| bgjob-mcp | `0.2.2` (最新版)（要求 bgjobs `>=0.4.1-beta <0.5.0`） |
+| [bgjob-mcp](https://github.com/bitsmug/bgjob-mcp) | `0.2.2` (最新版)（要求 bgjobs `>=0.4.1-beta <0.5.0`） |
 | [dsh-multi-folder](https://github.com/AngelosZou/dsh-multi-folder) | `0.3.4` |
 
 
@@ -252,7 +252,7 @@ allowBuilds:
 
 **v0.4.2**
 
-- **⚠️升级提示⚠️**：MCP 任务能力由可选插件 `bgjob-mcp` 提供（只升级本包不装它 ⇒ MCP 能力消失，新提交被拒绝）。**更名/解耦后旧版本创建的 MCP 任务已不再支持**：历史任务仍可查看/清理，但重新启动会立即以退出码 `2` 失败并提示重新提交。
+- **⚠️升级提示⚠️**：MCP 任务能力由可选插件 [`bgjob-mcp`](https://github.com/bitsmug/bgjob-mcp) 提供（只升级本包不装它 ⇒ MCP 能力消失，新提交被拒绝）。**更名/解耦后旧版本创建的 MCP 任务已不再支持**：历史任务仍可查看/清理，但重新启动会立即以退出码 `2` 失败并提示重新提交。
 
 **v0.4.1-beta**
 
