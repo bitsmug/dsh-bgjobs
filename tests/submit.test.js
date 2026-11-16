@@ -628,18 +628,19 @@ test('④ submit.env: 注入的环境变量写进 cmd.bat（pwsh 与 bat 两个�
 
 // ── R1 + R3 守新契约 ───────────────────────────────────────────────
 
-test('R1: bgjob_submit 不再接受 mcp 参数（指路 bgjob_submit_mcp）', async () => {
+test('R1: bgjob_submit 的 schema 不暴露引擎私有参数；未注册引擎 fail loud', async () => {
   const { ctx, tools } = makeCtx({ services: {} })
   const dispose = apply(ctx)
   try {
     const submit = tools.find((t) => t.name === 'bgjob_submit')
+    assert.equal(submit.parameters.additionalProperties, false, 'schema 关闭额外字段')
+    for (const k of ['tool', 'server', 'server_config', 'arguments', 'timeout_seconds']) {
+      assert.equal(submit.parameters.properties[k], undefined, 'schema 不应暴露 ' + k)
+    }
     const exec = { agent: { session: { id: 's-r1', header: { cwd: process.cwd() } } } }
-    const a = await submit.execute({ name: 'x', command: 'echo ok', tool: 'echo', server: 'demo' }, exec)
-    assert.equal(a.ok, false, 'raw=' + JSON.stringify(a))
-    assert.ok(a.error.includes('bgjob_submit_mcp'), 'error 应指路 bgjob_submit_mcp：' + a.error)
-    const b = await submit.execute({ name: 'x', engine: 'mcp', command: 'echo ok' }, exec)
-    assert.equal(b.ok, false, 'raw=' + JSON.stringify(b))
-    assert.ok(b.error.includes('bgjob_submit_mcp'), 'error 应指路：' + b.error)
+    const res = await submit.execute({ name: 'x', engine: 'nowhere', command: 'echo ok' }, exec)
+    assert.equal(res.ok, false)
+    assert.match(res.error, /cannot be submitted via bgjob_submit/)
   } finally { dispose() }
 })
 

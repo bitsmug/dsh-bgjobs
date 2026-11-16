@@ -24,6 +24,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 import { apply, setSchtasksRunner, setShellResolver, buildPwshRunner, buildProbeScript, buildProcessQueryScript, orderKillSet } from '../lib/index.js'
+import { detectJobProcesses, killJobProcessTree } from '../lib/kill-tree.js'
 import { makeWorkdir, makeCtx, attachWebServer, installSuiteHooks, waitFor } from './helpers/common.js'
 
 installSuiteHooks()
@@ -1052,8 +1053,43 @@ test('kill-tree: ㉓ 面板路径：无 force 被拦（error + warnings 都在�
   }
 })
 
-// ── ㉔㉕ 新边界（kill 与 delete 各自纯粹）的回归钉子：删除不许杀进程、kill 不许删记录 ──────
+// ── ㉖ 引擎契约：owned:false 的 pid 文件只看存活，不做归属门禁 ────────────────────
+test('kill-tree: owned:false 的 pid 文件不做归属门禁（命令行不含 jobDir 也判 live 并真的 taskkill）', async () => {
+  const workdir = await makeWorkdir()
+  const jobDir = path.join(workdir, 'job')
+  await fsp.mkdir(jobDir, { recursive: true })
+  await fsp.writeFile(path.join(jobDir, 'svc.pid'), '4242', 'utf8')
+  const job = {
+    id: 'bg-owned-false',
+    status: 'running',
+    meta: {
+      jobDir, workdir, taskName: 'dsh-bgj-bg-owned-false',
+      pidFiles: [{ name: 'svc.pid', owned: false }],
+    },
+  }
+  try {
+    // 第一段：detect —— 探针说"活着但命令行不含 jobDir"，owned:false ⇒ 仍 live（不判 pid-reused）
+    setSchtasksRunner(makeKillRunner({ probe: PROBE_ALIVE_FOREIGN }))
+    const detected = await detectJobProcesses(job)
+    assert.equal(detected.state, 'live', JSON.stringify(detected))
 
+    // 第二段：kill —— 杀前 alive/foreign、杀后 gone ⇒ 必须真的下发 taskkill
+    const runner = makeKillRunner({ probeQueue: [PROBE_ALIVE_FOREIGN, PROBE_GONE], killExit: 0 })
+    setSchtasksRunner(runner)
+    const killed = await killJobProcessTree(job)
+    assert.equal(killed.ok, true, JSON.stringify(killed))
+    assert.ok(
+      runner.calls.some((argv) => isTaskkill(argv) && String(argv[2]) === '4242'),
+      'owned:false 不得被归属门禁拦下，必须真的下发 taskkill',
+    )
+  } finally {
+    setSchtasksRunner(null)
+    await fsp.rm(workdir, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+
+// ── ㉔㉕ 新边界（kill 与 delete 各自纯粹）的回归钉子：删除不许杀进程、kill 不许删记录 ──────
 test('kill-tree: ㉔ 回归钉子：delete 只删记录 —— live ⇒ 拒绝且记录全在（无 taskkill）；进程消失后才删净', async () => {
   // 两次 delete 之间用 probeQueue 让同一个 pid 从 alive 变 gone（同 pid 不同时刻），一条用例钉住两端：
   //   ① live ⇒ 拒绝（delete **不越界杀进程**、也不删任何记录）；② gone ⇒ 才删净（目录/索引/注册表）。

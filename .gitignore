@@ -6,6 +6,8 @@
 !lib/
 !lib/**
 !tests/
+!scripts/
+!scripts/**
 !tests/**
 !tools/
 !tools/**

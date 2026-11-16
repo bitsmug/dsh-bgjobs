@@ -26,11 +26,11 @@ installSuiteHooks()
 test('jobSandboxDecision: 未挂载沙箱服务（none）——full access 关拒绝、开才放行', () => {
   // 关 → 拒绝（fail closed，不能默认放行），bat/pwsh 同
   assert.throws(() => jobSandboxDecision('none', undefined, 'pwsh', false), /no dsh sandbox policy service/)
-  assert.throws(() => jobSandboxDecision('none', undefined, 'bat', false), /no dsh sandbox policy service/)
+  assert.throws(() => jobSandboxDecision('none', undefined, 'bat', false, 'off-strict'), /no dsh sandbox policy service/)
   assert.throws(() => jobSandboxDecision('none', 'read-only', 'pwsh', false), /no dsh sandbox policy service/)
   // 开 → 原模式放行
   assert.deepEqual(jobSandboxDecision('none', undefined, 'pwsh', true), { mode: 'off', escalate: false })
-  assert.deepEqual(jobSandboxDecision('none', undefined, 'bat', true), { mode: 'off', escalate: false })
+  assert.deepEqual(jobSandboxDecision('none', undefined, 'bat', true, 'off-strict'), { mode: 'off', escalate: false })
 })
 
 
@@ -38,7 +38,7 @@ test('jobSandboxDecision: full（服务在但会话全权限）放行任意请�
   assert.deepEqual(jobSandboxDecision('full', undefined, 'pwsh', false), { mode: 'off', escalate: false })
   assert.deepEqual(jobSandboxDecision('full', 'workspace-write', 'pwsh', false), { mode: 'workspace-write', escalate: false })
   assert.deepEqual(jobSandboxDecision('full', 'read-only', 'pwsh', false), { mode: 'read-only', escalate: false })
-  assert.deepEqual(jobSandboxDecision('full', undefined, 'bat', false), { mode: 'off', escalate: false })
+  assert.deepEqual(jobSandboxDecision('full', undefined, 'bat', false, 'off-strict'), { mode: 'off', escalate: false })
 })
 
 
@@ -51,33 +51,39 @@ test('jobSandboxDecision: 受限会话缺省继承；更宽请求才 escalate（
   assert.deepEqual(jobSandboxDecision('workspace-write', 'off', 'pwsh', false), { mode: 'off', escalate: true })
   assert.deepEqual(jobSandboxDecision('workspace-write', 'off', 'pwsh', true), { mode: 'off', escalate: false })
   assert.deepEqual(jobSandboxDecision('read-only', 'workspace-write', 'pwsh', false), { mode: 'workspace-write', escalate: true })
-  // bat 引擎恒全权限、无法沙箱化 → 受限会话仅 full access 模式支持（关则拒绝，不走逐次审批）
-  assert.throws(() => jobSandboxDecision('workspace-write', undefined, 'bat', false), /full access/)
-  assert.throws(() => jobSandboxDecision('read-only', undefined, 'bat', false), /full access/)
-  assert.deepEqual(jobSandboxDecision('workspace-write', undefined, 'bat', true), { mode: 'off', escalate: false })
+  // off-strict 引擎恒全权限、无法沙箱化 → 受限会话仅 full access 模式支持（关则拒绝，不走逐次审批）
+  assert.throws(() => jobSandboxDecision('workspace-write', undefined, 'bat', false, 'off-strict'), /full access/)
+  assert.throws(() => jobSandboxDecision('read-only', undefined, 'bat', false, 'off-strict'), /full access/)
+  assert.deepEqual(jobSandboxDecision('workspace-write', undefined, 'bat', true, 'off-strict'), { mode: 'off', escalate: false })
 })
 
 
 test('jobSandboxDecision: 非法参数 fail loud', () => {
   assert.throws(() => jobSandboxDecision('read-only', 'danger-full-access', 'pwsh', false), /invalid sandbox/)
-  assert.throws(() => jobSandboxDecision('read-only', 'off', 'bat', false), /only supported on the pwsh engine/)
+  assert.throws(() => jobSandboxDecision('read-only', 'off', 'bat', false, 'off-strict'), /not supported by engine "bat"/)
   assert.throws(() => jobSandboxDecision('nonsense', undefined, 'pwsh', true), /unexpected session state/)
-  assert.throws(() => jobSandboxDecision('full', undefined, 'cmd', true), /unexpected engine/)
+  assert.throws(() => jobSandboxDecision('full', undefined, 'x', true, 'nonsense'), /unexpected sandbox policy/)
 })
 
 
-test('jobSandboxDecision: mcp 引擎恒 off 且不受会话模式/full access 影响（与 DSH 对 MCP 的现状一致）', () => {
-  // DSH 的 sandbox policy 只作用于 shell 沙箱执行器 / fs-sandbox / terminal-bash；MCP server
-  // 由 SDK 自持 spawn，不经 ctx.subprocess / ctx.sandbox → 受限会话不限制 MCP。故 mcp 引擎在
-  // 任意会话态与 full access 开关下都直接 off、不抛错（含 state='none' 未挂载策略服务）。
+test('jobSandboxDecision: off-unrestricted 策略恒 off 且不受会话模式/full access 影响', () => {
+  // 这类引擎不经宿主沙箱通道执行（DSH 的策略只作用于 shell 沙箱执行器 / fs-sandbox /
+  // terminal-bash）⇒ 任意会话态与 full access 开关下都直接 off、不抛错（含 state='none'）。
   for (const state of ['none', 'full', 'read-only', 'workspace-write']) {
     for (const fullAccess of [true, false]) {
-      assert.deepEqual(jobSandboxDecision(state, undefined, 'mcp', fullAccess), { mode: 'off', escalate: false })
-      // requested 对 MCP 任务无意义：显式传入同样被忽略（不抛错，仍 off）
-      assert.deepEqual(jobSandboxDecision(state, 'read-only', 'mcp', fullAccess), { mode: 'off', escalate: false })
-      assert.deepEqual(jobSandboxDecision(state, 'off', 'mcp', fullAccess), { mode: 'off', escalate: false })
+      assert.deepEqual(jobSandboxDecision(state, undefined, 'ext', fullAccess, 'off-unrestricted'), { mode: 'off', escalate: false })
+      // requested 对该策略无意义：显式传入同样被忽略（不抛错，仍 off）
+      assert.deepEqual(jobSandboxDecision(state, 'read-only', 'ext', fullAccess, 'off-unrestricted'), { mode: 'off', escalate: false })
+      assert.deepEqual(jobSandboxDecision(state, 'off', 'ext', fullAccess, 'off-unrestricted'), { mode: 'off', escalate: false })
     }
   }
+})
+
+
+test('jobSandboxDecision: 缺省策略 inherit —— 外部引擎同样可继承会话模式并走审批', () => {
+  // 宿主不知道引擎是谁，只看声明：不传策略 = inherit（与 pwsh 同语义）。
+  assert.deepEqual(jobSandboxDecision('workspace-write', undefined, 'ext', false), { mode: 'workspace-write', escalate: false })
+  assert.deepEqual(jobSandboxDecision('workspace-write', 'off', 'ext', false), { mode: 'off', escalate: true })
 })
 
 

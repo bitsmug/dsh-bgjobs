@@ -13,6 +13,13 @@
 
 适合大文件下载、批量脚本、编译、数据同步/导出这类长任务—— **DSH 崩溃（通常因内存不足OOM）亦不影响任务运行**。
 
+---
+
+⚠️ **升级提示⚠️:** MCP 任务能力由可选插件 `bgjob-mcp` 提供（只升级本包不装它 ⇒ MCP 能力消失，新提交被拒绝）。**更名/解耦后旧版本创建的 MCP 任务已不再支持**：历史任务仍可查看/清理，但重新启动会立即以退出码 `2` 失败并提示重新提交。
+
+---
+
+
 ## 快速安装
 
 1. 打开 DSH 官方桌面客户端或网页，点击左侧导航栏的“插件”入口，转至插件页，点击右上角的“添加插件”；
@@ -24,6 +31,7 @@
 - [特性一览](#特性一览)
 - [前置依赖与兼容性](#前置依赖与兼容性)
 - [安装 / 卸载](#安装--卸载)
+- [Agent 工具](#Agent-工具)
 - [网页面板](#网页面板)
 - [离线管理 CLI（DSH 不运行也能用）](#离线管理-clidsd-不运行也能用)
 - [图形面板（GUI）](#图形面板gui)
@@ -46,7 +54,7 @@
 | 断线续跟 | DSH 重启自动恢复跟踪；旧任务 id 也能从磁盘查询状态 |
 | 离线管理 | 不依赖 DSH 的 CLI / GUI：list / status / log / submit / kill（终止进程）/ delete（删记录）/ cleanup |
 | 可选沙箱 | `bgjob_submit_pwsh` 可选 `sandbox` 约束后台任务文件权限，权限不高于当前会话模式 。沙箱后端选择开关（默认关）：开启后可传 `sandbox_backend: 'dsh'`，改为复用当前会话的 dsh 沙箱 provider（`ctx.sandbox.confine`），支持 [dsh-sandbox-mxc](https://github.com/bitsmug/dsh-sandbox-mxc) 沙箱后端（约束文件权限和网络权限） 。沙箱后端选择开关 = 面板「沙箱选择」 |
-| MCP 调用托管（可选插件） | 已拆到独立插件 [dsh-mcp-control](https://github.com/bitsmug/dsh-mcp-control)：它注册 `mcp` 引擎并提供 `bgjob_submit_mcp` / `mcp_list_tools` 与「MCP 任务」设置页。本包只提供引擎注册点（`ctx.bgjobEngines`）；未安装该插件时 `engine: 'mcp'` 直接报 `engine "mcp" not registered`（不降级） |
+| MCP 调用托管（可选插件） | 已拆到独立插件 [bgjob-mcp](https://github.com/bitsmug/bgjob-mcp)：它注册 `mcp` 引擎并提供 `bgjob_submit_mcp` / `mcp_list_tools` 与「MCP 任务」设置页。本包只提供引擎注册点（`ctx.bgjobEngines`）；未安装该插件时 `engine: 'mcp'` 直接报 `engine "mcp" not registered`（不降级） |
 | 零残留 | 任务跑完自删任务计划；done 任务默认保留展示，用户手动清理 |
 
 ## 前置依赖与兼容性
@@ -61,18 +69,25 @@
 | 插件（可选） | 兼容 |
 |---|---|
 | [dsh-sandbox-mxc](https://github.com/bitsmug/dsh-sandbox-mxc) | `0.1.2` (最新版)|
+| bgjob-mcp | `0.2.2` (最新版)（要求 bgjobs `>=0.4.1-beta <0.5.0`） |
 | [dsh-multi-folder](https://github.com/AngelosZou/dsh-multi-folder) | `0.3.4` |
 
 
 ## 安装 / 卸载
 
-
-**方式 A（最省事，插件管理器（GUI 插件入口）；DSH `>=0.2.0-rc.2`）**
+<details>
+<summary>
+方式 A（DSH 插件面板，最省事）
+</summary>
 
 1. 打开 DSH 官方桌面客户端或网页，点击左侧导航栏的“插件”入口，转至插件页，点击右上角的“添加插件”；
 2. 在插件安装输入框中输入 `bgjobs` （或 GitHub 最新版：`github:bitsmug/dsh-bgjobs`）并确认安装；首次安装时会提示要求允许 `pnpm approve build`，点击允许后再次安装即可。
 
-**方式 B（快速，npm 发布版）**
+</details>
+<details>
+<summary>
+方式 B（npm 发布版，下载快）
+</summary>
 
 ```sh
 $pf="web"; dsh plugin --profile $pf add bgjobs || dsh plugin --profile $pf approve-builds koffi; dsh plugin --profile $pf add bgjobs && Write-Host "✓ bgjobs安装成功！" -ForegroundColor Green
@@ -80,7 +95,11 @@ $pf="web"; dsh plugin --profile $pf add bgjobs || dsh plugin --profile $pf appro
 
 > 把 `web` 改成你自己的 profile 名，整行粘贴到 PowerShell（pwsh）即可。第一次 `add` 会报 `ERR_PNPM_IGNORED_BUILDS`（koffi 构建脚本未批准），`||` 会自动触发 `approve-builds` 批准并运行 koffi 构建，再 `add` 成功后打印「bgjobs 安装成功」。
 
-**方式 C（从 GitHub 安装，始终最新）**
+</details>
+<details>
+<summary>
+方式 C（GitHub 版，始终最新）
+</summary>
 
 ```sh
 $pf="web"; dsh plugin --profile $pf add github:bitsmug/dsh-bgjobs || dsh plugin --profile $pf approve-builds koffi; dsh plugin --profile $pf add github:bitsmug/dsh-bgjobs && Write-Host "✓ bgjobs安装成功！" -ForegroundColor Green
@@ -114,9 +133,13 @@ allowBuilds:
 
 仅首次安装需要，装好后 koffi 已编译完毕，升级/重装无需重复。
 
-重启 DSH 后生效（**完全退出并重新启动**——桌面客户端与网页版都是）：网页右下角出现「后台任务监控」面板，agent 获得 `bgjob_submit` / `bgjob_config` / `bgjob_status` / `bgjob_wait` / `bgjob_list` / `bgjob_pending_list` / `bgjob_kill` / `bgjob_delete` 工具（MCP 相关工具与设置页在可选插件 dsh-mcp-control 里）。
+重启 DSH 后生效（**完全退出并重新启动**——桌面客户端与网页版都是）：网页右下角出现「后台任务监控」面板，agent 获得 `bgjob_submit` / `bgjob_config` / `bgjob_status` / `bgjob_wait` / `bgjob_list` / `bgjob_pending_list` / `bgjob_kill` / `bgjob_delete` 工具（MCP 相关工具与设置页在可选插件 bgjob-mcp 里）。
 
-**方式 D（本地源码开发）**
+</details>
+<details>
+<summary>
+方式 D（本地源码开发）
+</summary>
 
 1. 把仓库放到本地插件目录（路径不要含中文），如 `D:\dsh\plugins\bgjobs`；
 2. 让 DSH 的模块解析器能找到它（把插件目录 junction 到 DSH 的 `node_modules\bgjobs`，或把目录加到 DSH 的插件扫描路径）；本地开发还需在插件目录执行一次 `pnpm install`（沙箱 runner 依赖，见下）；
@@ -128,9 +151,35 @@ allowBuilds:
       name: bgjobs
 ```
 
-**卸载：** `dsh plugin --profile <profile> remove bgjobs`
+</details>
 
-> 方式  B / C / D 装完都要**重启 DSH**（完全退出并重新启动）才生效。
+<br>
+
+方式  B / C / D 装完都要**重启 DSH**（完全退出并重新启动）才生效；
+
+卸载： `dsh plugin --profile <profile> remove bgjobs`
+
+## Agent 工具
+
+| 工具 | 一句话 |
+|---|---|
+| `bgjob_submit` | 提交后台任务（支持 **bat** / **PowerShell**；UTF-8 日志、`exit <code>` 语义安全；可选 `sandbox` / `sandbox_backend` / `output_encoding`（缺省 `auto` = 无损捕获 + 收尾自动识别）） |
+| `bgjob_status` | 查询状态 / 退出码 / 日志尾部 |
+| `bgjob_wait` | 等任务结束并立即返回；`logic: 'any'`（缺省，竞速）/ `'all'`（合取）；`timeoutSeconds` 缺省 = 设置页「默认等待超时」 |
+| `bgjob_list` | 列出当前 agent 会话提交的全部任务（id/状态/退出码） |
+| `bgjob_kill` | **只终止进程树、不删记录**（补写非 0 退出码 1 + `exitCodeSource: 'killed'`；`mode` 三态，`unknown` 需显式 `force`） |
+| `bgjob_delete` | **只删记录、不杀进程**（有活进程时拒绝并提示先 `kill`；`mode` 三态） |
+| ~~`bgjob_submit_mcp`~~ / ~~`bgjob_mcp_tools`~~ | 已迁到可选插件 **bgjob-mcp**（`bgjob_submit_mcp` / `mcp_list_tools`）；本包未安装它时不注册这两个工具，`engine: 'mcp'` 报 `engine "mcp" not registered` |
+
+直接对 AI 说一句即可（说清工作目录、任务名，以及要不要等结果 / 通知）：
+
+> 把「clone Linux 内核源码到 `D:\work\linux`，再 `make -j16` 编译」这条长链路放后台跑，跑完通知我（`notify: on-exit`）——别让编译占着对话。
+
+> 并行起两个后台任务：一边下载数据集、一边重新编译；**谁先完成就先给我看结果**，另一个继续跑（any 竞速，不必等齐）。
+
+> 用 pwsh 引擎把 `D:\data` 下 30 个 CSV 批量转成 UTF-8；我要**全部成功才继续**，任何一个失败就立刻停下来（`logic: 'all'`）。
+
+> 把一次 MCP 调用提交成后台任务：server `glm` 的 `web_search`，query=「大模型最新进展」，跑完把结果发回本会话。
 
 ## 网页面板
 
@@ -138,7 +187,7 @@ allowBuilds:
 
 **接入 DSH 侧边栏**：左侧栏（聊天列表列）底部有 bgjobs 入口（宽栏显示「后台任务」，收起成窄栏时仅图标）——点击可整体隐藏/唤出右侧浮动面板；面板隐藏期间任务照跑、完成照弹 Toast。该入口可在 **DSH 设置 → 后台任务**里开关（**默认隐藏**）。
 
-**DSH 设置里的 bgjobs（一个页面）**：打开 DSH 设置（左下角齿轮），左侧出现「后台任务」页；监控面板标题栏的 ⚙ 可直达该页（可在设置 → 后台任务 → 界面元素里隐藏）。装可选插件 dsh-mcp-control 后，它会在设置里额外提供「MCP 任务」页，并在标题栏加一个数据齿轮快捷入口。
+**DSH 设置里的 bgjobs（一个页面）**：打开 DSH 设置（左下角齿轮），左侧出现「后台任务」页；监控面板标题栏的 ⚙ 可直达该页（可在设置 → 后台任务 → 界面元素里隐藏）。装可选插件 bgjob-mcp 后，它会在设置里额外提供「MCP 任务」页，并在标题栏加一个数据齿轮快捷入口。
 
 - 「后台任务」（顶部显示当前插件版本）：① 开关「左侧栏显隐按钮」（默认关，打开后左栏底部出现入口）；② 开关「监控面板」（直接显示/隐藏右下角监控面板与悬浮球，与入口开关相互独立）；③ 「默认等待超时」（数字输入 + 保存）：agent 调用 `bgjob_wait` 未指定 `timeoutSeconds` 时使用的缺省秒数，`0` 或留空 = 不限时；④ 「打开离线 GUI」一键启动独立管理窗口，附 GUI 脚本路径；⑤「打开所在文件夹」经 DSH 自身的文件资源管理器机制打开离线工具目录（找不到 GUI 就到这里找 dsh-bgjobs-gui.bat）；⑥「字段显示」可配置每个任务字段（含「运行时长」）显示在列表/详情/隐藏；⑦ 开关「隐藏任务窗口（实验）」（默认关）。
 
@@ -201,12 +250,15 @@ allowBuilds:
 
 ## 近期更新
 
+**v0.4.2**
+
+- **⚠️升级提示⚠️**：MCP 任务能力由可选插件 `bgjob-mcp` 提供（只升级本包不装它 ⇒ MCP 能力消失，新提交被拒绝）。**更名/解耦后旧版本创建的 MCP 任务已不再支持**：历史任务仍可查看/清理，但重新启动会立即以退出码 `2` 失败并提示重新提交。
+
 **v0.4.1-beta**
 
 - **新增：面板作用域三态（当前会话 / 当前工作区 / 全）**：把此前"仅当前会话"布尔开关升级为三段式，选择**持久化到宿主** `ui-prefs.json`（`scope` 键，多面板/多标签同源）。同时修掉它在 DSH 0.2.x 上不生效的老 bug —— 旧实现读 `SessionListState.current`（该字段早已不存在，恒为 `undefined`），现在改用会话的 `retainedBy.mainView > 0` 判定活动会话（0.1.x 没有 `retainedBy`，自动回退到 `current`）；「会话」按任务的创建者会话过滤（老记录无创建者时保留，不会凭空消失），「工作区」沿用路径前缀语义。取不到活动会话时自动降级，设置页隐藏控件即不过滤。**注意**：因老 bug 此前实际是"不过滤"，升级后默认「会话」会真正开始过滤，首帧可能看到任务变少，属预期。
 - **新增面板开关「隐藏任务窗口（实验）」**：Win11 把控制台委派给 Windows Terminal 时，计划任务拉起的 `pwsh`/`node` 会弹可见终端；开关打开后改经包内静态资产 `launch.vbs`（`wscript.exe`，GUI 子系统）启动，隐藏窗口且不影响退出码、进程树与沙箱链路。**默认关**（关掉即与旧行为逐字相同）；WSH 被策略禁用时自动降级为原路径并给提示；只影响开关打开后新提交的任务。
 - **新增 engine 注册表**：内置 `bat` / `pwsh`；第三方插件可注册自己的 engine（`supportsSandbox` 决定能否沙箱），未注册的 engine 一律 fail-closed（报错，不降级到其它 engine）。
-- **升级提示**：只升级本包不装 `dsh-mcp-control` ⇒ MCP 任务能力消失（历史 MCP 任务仍可查看/清理；新提交会被拒绝）。
 
 ## 许可证
 

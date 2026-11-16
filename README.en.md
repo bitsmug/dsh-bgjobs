@@ -13,6 +13,12 @@
 
 Built for long-running work — large downloads, batch scripts, compilation, data sync/export — **a DSH crash (usually OOM) does not affect running jobs either**.
 
+---
+
+⚠️ **Upgrade notice:** MCP tasks are now provided by the `bgjob-mcp` plugin. Upgrading this plugin without installing `bgjob-mcp` will disable MCP tasks. History of MCP tasks will remain, but they will fail on restart.
+
+---
+
 ## Quick install
 
 1. Open the official DSH desktop client or the web page, click the "Plugins" entry in the left navigation bar, go to the plugin page and click "Add plugin" in the top-right corner;
@@ -46,7 +52,7 @@ Built for long-running work — large downloads, batch scripts, compilation, dat
 | Reconnect & track | Auto-recovers after a DSH restart; old job ids can still be queried from disk |
 | Offline management | CLI / GUI that don't need DSH: list / status / log / submit / kill (terminate processes) / delete (remove records) / cleanup |
 | Optional sandbox | `bgjob_submit_pwsh` can pass `sandbox` to constrain job file permissions (never wider than the current session mode). With the **Sandbox selection** switch on (experimental, off by default) it can also pass `sandbox_backend: 'dsh'` to reuse the current session's dsh sandbox provider (`ctx.sandbox.confine`) instead, with support for the [dsh-sandbox-mxc](https://github.com/bitsmug/dsh-sandbox-mxc) backend (file and network constraints). Switch = panel "Sandbox selection" |
-| MCP tool calls (optional plugin) | Moved to the separate [dsh-mcp-control](https://github.com/bitsmug/dsh-mcp-control) plugin: it registers the `mcp` engine and provides `bgjob_submit_mcp` / `mcp_list_tools` plus the "MCP jobs" settings page. This package only exposes the engine registry (`ctx.bgjobEngines`); without that plugin `engine: 'mcp'` fails with `engine "mcp" not registered` (no fallback) |
+| MCP tool calls (optional plugin) | Moved to the separate `bgjob-mcp` plugin: it registers the `mcp` engine and provides `bgjob_submit_mcp` / `mcp_list_tools` plus the "MCP jobs" settings page. This package only exposes the engine registry (`ctx.bgjobEngines`); without that plugin `engine: 'mcp'` fails with `engine "mcp" not registered` (no fallback). MCP jobs created by older releases are no longer supported: they stay visible/cleanable but fail immediately with exit code `2` on re-run — re-submit them |
 | No residue | A finished job removes its own scheduled task; done jobs stay visible until you clean them up |
 
 ## Prerequisites & compatibility
@@ -62,6 +68,7 @@ Built for long-running work — large downloads, batch scripts, compilation, dat
 |---|---|
 | [dsh-sandbox-mxc](https://github.com/bitsmug/dsh-sandbox-mxc) | `0.1.2` (latest version) |
 | [dsh-multi-folder](https://github.com/AngelosZou/dsh-multi-folder) | `0.3.4` |
+| bgjob-mcp | `0.1.0` (requires bgjobs `>=0.4.1-beta <0.5.0`) |
 
 ## Install / uninstall
 
@@ -112,7 +119,7 @@ allowBuilds:
 
 Only the first install needs this — once koffi is compiled it stays compiled, and upgrades/reinstalls don't repeat the step.
 
-Restart DSH afterwards (that means **fully quit and relaunch** — both the desktop client and the web version): the "Background Jobs Monitor" panel appears bottom-right of the web page and the agent gains `bgjob_submit` / `bgjob_config` / `bgjob_status` / `bgjob_wait` / `bgjob_list` / `bgjob_pending_list` / `bgjob_kill` / `bgjob_delete` tools (MCP tools and their settings page live in the optional dsh-mcp-control plugin).
+Restart DSH afterwards (that means **fully quit and relaunch** — both the desktop client and the web version): the "Background Jobs Monitor" panel appears bottom-right of the web page and the agent gains `bgjob_submit` / `bgjob_config` / `bgjob_status` / `bgjob_wait` / `bgjob_list` / `bgjob_pending_list` / `bgjob_kill` / `bgjob_delete` tools (MCP tools and their settings page live in the optional bgjob-mcp plugin).
 
 **Method D (local source)**
 
@@ -136,7 +143,7 @@ Top bar, left to right: cleanup (opens the bottom trash bar: drag a finished job
 
 **Sidebar entry**: the left sidebar (chat-list column) has a bgjobs entry at the bottom — at full width it shows "Background Jobs", collapsed to a narrow rail it is the icon only. Click it to hide/show the whole floating panel; while the panel is hidden, jobs keep running and completion toasts still pop. The entry can be toggled under **DSH Settings → Background Jobs** (**hidden by default**).
 
-**The bgjobs page in DSH Settings** (gear at the bottom-left): one page — "Background Jobs" — and the panel's title bar ⚙ opens it (hide it under Settings → Background Jobs → UI elements). With the optional dsh-mcp-control plugin installed, it adds a "MCP jobs" page and a data-gear shortcut of its own.
+**The bgjobs page in DSH Settings** (gear at the bottom-left): one page — "Background Jobs" — and the panel's title bar ⚙ opens it (hide it under Settings → Background Jobs → UI elements). With the optional bgjob-mcp plugin installed, it adds a "MCP jobs" page and a data-gear shortcut of its own.
 
 - "Background Jobs" (shows the current plugin version): ① sidebar-entry toggle (off by default; turning it on adds an entry at the bottom of the sidebar — click it to hide/show the floating panel); ② monitor-panel toggle (show/hide the floating panel and bubble, independent of the entry); ③ **"Default wait timeout"** (number input + Save): the default `timeoutSeconds` for `bgjob_wait` when the agent omits it — `0`/empty means unlimited; ④ Open the offline GUI in its own window (the row shows the GUI script path); ⑤ Open the tools folder in File Explorer (find `dsh-bgjobs-gui.bat` there if the GUI won't open); ⑥ **Field display**: place each job field in the list / detail view / hidden (includes the "Runtime" field); ⑦ the **"Hide task window (experimental)"** toggle (off by default).
 
@@ -198,6 +205,18 @@ Issues and PRs are welcome: bug reports, panel / CLI experience, docs and transl
 
 - Repository: <https://github.com/bitsmug/dsh-bgjobs>
 - Issues and suggestions: <https://github.com/bitsmug/dsh-bgjobs/issues>
+
+## Recent updates
+
+**v0.4.2**
+
+- **⚠️Upgrade notice:** MCP tasks are now provided by the `bgjob-mcp` plugin. Upgrading this plugin without installing `bgjob-mcp` will disable MCP tasks. History of MCP tasks will remain, but they will fail on restart.
+
+**v0.4.1-beta**
+
+- **New: three-state panel scope (current session / current workspace / all)**: upgrades the previous "current session only" boolean into a three-way selector; the choice is **persisted to the host** in `ui-prefs.json` (the `scope` key, shared across panels and tabs). It also fixes the long-standing bug where the setting had no effect on DSH 0.2.x — the old implementation read `SessionListState.current` (a field that no longer exists and was always `undefined`); it now determines the active session via the session's `retainedBy.mainView > 0` (0.1.x has no `retainedBy`, so it automatically falls back to `current`). "Session" filters by the job's creator session (older records without a creator are kept, so nothing disappears), and "workspace" keeps the path-prefix semantics. When no active session can be resolved it degrades automatically, and when the control is hidden on the settings page nothing is filtered. **Note**: because of that old bug the setting was effectively "no filtering", so after upgrading the default "session" mode really will start filtering — the first frame may show fewer jobs, which is expected.
+- **New panel switch "Hide job windows (experimental)"**: when Win11 delegates the console to Windows Terminal, the `pwsh`/`node` processes started by the scheduled task pop up a visible terminal window; with the switch on, launching goes through the bundled static asset `launch.vbs` (`wscript.exe`, GUI subsystem) instead, hiding the window without affecting the exit code, process tree, or the sandbox chain. **Off by default** (off is byte-for-byte identical to the old behavior); if WSH is disabled by policy it automatically falls back to the original path and shows a notice; it only affects jobs submitted after the switch is turned on.
+- **New engine registry**: built-in `bat` / `pwsh`; third-party plugins can register their own engines (`supportsSandbox` decides whether sandboxing is allowed). Unregistered engines always fail closed (they error out rather than falling back to another engine).
 
 ## License
 
